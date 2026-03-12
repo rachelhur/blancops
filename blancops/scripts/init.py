@@ -1,15 +1,25 @@
 import os
 import argparse
 from pathlib import Path
-import importlib.resources as pkg_resources
+# import importlib.resources as pkg_resources
+from importlib import resources
+
+import logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 def main():
-    parser = argparse.ArgumentParser(description="Initialize workspace.")
+    """
+    .
+    Default workspace is the project root directory, blancops
+    """
+    parser = argparse.ArgumentParser(description="Initialize blancops workspace and saves a pointer to ~/.blancops_profile")
     parser.add_argument(
-        '--workspace', 
+        '--workspace',
+        '-w',
         type=Path, 
-        default=Path(os.getenv("blancops_WORKSPACE", Path.home() / ".blancops")),
-        help="Target directory to initialize the workspace. Defaults to ~/.blancops"
+        default=Path(os.getenv("BLANCOPS_WORKSPACE", Path('./').resolve().parent)),
+        help="Target directory to initialize the workspace. Defaults to project root, `blancops`"
     )
     parser.add_argument(
         '--force',
@@ -20,7 +30,7 @@ def main():
     args = parser.parse_args()
     workspace = args.workspace.resolve()
 
-    print(f"Initializing workspace at: {workspace}")
+    logger.info(f"Initializing workspace at: {workspace}")
 
     # 1. Create the necessary directory structure
     directories_to_create = [
@@ -33,27 +43,32 @@ def main():
     
     for dir_path in directories_to_create:
         dir_path.mkdir(parents=True, exist_ok=True)
-        print(f"  [+] Created directory: {dir_path}")
+        logger.info(f"  [+] Created directory: {dir_path}")
 
     # 2. Copy the default global_config.json out of the package
-    config_dest = workspace / "configs" / "global_config.json"
+    config_dict = {
+        "global_config.json": workspace / "configs" / "global_config.json",
+        "template_train_config.json": workspace / "configs" / "template_train_config.json"
+    }
     
-    if config_dest.exists() and not args.force:
-        print(f"  [!] Config already exists at {config_dest}. Use --force to overwrite.")
-    else:
-        try:
-            # Copy global_config.json from within package to config_dest
-            config_text = pkg_resources.files('blancops.configs').joinpath('global_config.json').read_text()
-            config_dest.write_text(config_text)
-            print(f"  [+] Copied default global_config.json to: {config_dest}")
-        except Exception as e:
-            print(f"  [!] Failed to copy config. Reason: {e}")
+    for cfg_name, cfg_dest in config_dict.items():
+        if cfg_dest.exists() and not args.force:
+            logger.warning(f" [!] Config already exists at {cfg_dest}. Use --force to overwrite.")
+        else:
+            try:
+                # Copy global_config.json from within package to config_dest
+                config_text = resources.files('blancops.configs').joinpath(cfg_name).read_text()
+                cfg_dest.write_text(config_text)
+                logger.info(f"  [+] Copied default {cfg_name} to: {cfg_dest}")
+            except Exception as e:
+                logger.warning(f"  [!] Failed to copy config. Reason: {e}")
+
     # save workspace pointer file
     pointer_file = Path.home() / ".blancops_profile"
     pointer_file.write_text(str(workspace))
-    print(f"  [+] Saved workspace pointer to {pointer_file}")
+    logger.warning(f"  [+] Saved workspace pointer to {pointer_file}")
 
-    print("\nInitialization complete!")
+    logger.warning("\nInitialization complete!")
 
 if __name__ == "__main__":
     main()
