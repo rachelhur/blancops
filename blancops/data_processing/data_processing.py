@@ -862,6 +862,102 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
 
     return calculated_features
 
+import json
+import pickle
+import copy
+
+def save_DES_bin_and_field_mappings(
+    data_fits_fn=None,
+    outdir='../data/lookups/',
+    field2radec_fn = 'field2radec.json',
+    field2name_fn = 'field2name.json',
+):
+    if data_fits_fn is None:
+        data_fits_fn = '../data/fits/decam-exposures-20251211.fits'
+
+    # Filter data
+    objects_to_remove = ["guide", "DES vvds","J0'","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "outlier"]
+    df = load_raw_data_to_dataframe(fits_path=data_fits_fn)
+    df = drop_rows_in_DECam_data(
+        df,
+        objects_to_remove=objects_to_remove
+    )
+    assert len(df) > 0, "No observations found for the specified year/month/day/filter selections."
+    df = df.sort_values(by='timestamp').reset_index(drop=True)
+
+    # Convert degrees to radians and define field_ids
+    df['el'] = np.pi/2 - df['zd'].values
+    df.loc[:, ['ra', 'dec', 'az', 'el', 'zd']] *= units.deg
+    df['field_id'] = pd.factorize(df['object'])[0]
+    # df['field_id'] = df['object'].map({v: k for k, v in field2name.items()})
+
+    # field2name: Save mapping from field id to `object` name
+    field2name = {fid: g.loc[:, ['object']].values.tolist()[0][0] for fid, g in df.groupby('field_id')}
+    with open(outdir + field2name_fn, "w") as f:
+        json.dump(field2name, f)
+
+    # 4. field2radec: Save mapping from field id to its respective ra, dec, defined by mean of tilings
+    field2radec = {int(fid): (g.loc[:, ['ra', 'dec']]).mean(axis=0).values.tolist() for fid, g in df.groupby('field_id')}
+    with open(outdir + field2radec_fn, "w") as f:
+        json.dump(field2radec, f)
+
+    # Only fields with teff > .3 are counted as a visit (as defined by obztak)
+        # Fields with *only* teff < .3 have had 0 visits, but should still be present in the dictionary
+        # Need a separate history for train vs eval
+        # In training, when calculating field tilings, we need a minimum visit of one for all exposures, even if all exposures for a specific field do not meet the teff threshold
+            # Otherwise, we get a division by 0 when normalizing by the total tilings thus far
+        # In evaluating, we don't want to include exposures with teff < .3 in the visit history 
+    unique_field_ids, u_fid_counts = np.unique(df['field_id'][df['teff'] > .3], return_counts=True)
+
+    # 5. field2nvisits
+    field2nvisits_default1 = {int(fid): 1 for fid in field2radec.keys()} # make sure fields which never have a good teff are at least present in the field2nvisits mapping
+    field2nvisits_default1.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
+    with open(outdir + 'field2nvisits_default1.json', "w") as f:
+        json.dump(field2nvisits_default1, f)
+
+    field2nvisits_default0 = {int(fid): 0 for fid in field2radec.keys()}
+    field2nvisits_default0.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
+    with open(outdir + 'field2nvisits_default0.json', "w") as f:
+        json.dump(field2nvisits_default0, f)
+        
+    # 6. night2fieldhistory: field visits each night
+    night2fieldhistory = {}
+    prev_visit_history = np.zeros(shape=(df['field_id'].max() + 1))
+    for i, (night, grouped) in enumerate(df.groupby('night')):
+        night2fieldhistory[night] = prev_visit_history.copy()
+        mask_teff = grouped['teff'] > .3
+        fids, cs = np.unique(grouped['field_id'][mask_teff].values, return_counts=True)
+        prev_visit_history[fids] += cs
+        
+    with open(outdir + 'night2fieldhistory.pkl', 'wb') as f:
+        pickle.dump(night2fieldhistory, f)
+
+    # 7. field2filter: save viable filter visits per field -- #TODO will probably have to also do default0 and default1 like with field2nvisits
+    field2filters = {fid: g['filter'].unique() for fid, g in df.groupby('field_id')}
+    with open(outdir + 'field2filters.pkl', "wb") as f:
+        pickle.dump(field2filters, f)
+        
+
+    # 7. night2filterhistory: filter visits per field each night
+    night2filterhistory = {}
+    running_counts = {}
+    mask_teff = df['teff'] > .3
+    
+    for night, grouped in df[mask_teff].groupby('night'):
+        # Update our running history dictionary
+        night2filterhistory[night] = copy.deepcopy(running_counts)
+        current_counts = grouped.groupby(['field_id', 'filter']).size().to_dict()
+        
+        for (fid, filt), count in current_counts.items():
+            if fid not in running_counts:
+                running_counts[fid] = {}
+            running_counts[fid][filt] = running_counts[fid].get(filt, 0) + count
+        
+    with open(outdir + 'night2filterhistory.pkl', "wb") as f:
+        pickle.dump(night2filterhistory, f)
+    
+    return df
+
 def old_calculate_night_history_bin_features_radec(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, field2maxvisits):
     n_bins = len(hpGrid.idx_lookup)
     fids = np.array(list(field2maxvisits.keys()))
