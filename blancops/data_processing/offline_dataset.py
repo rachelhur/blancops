@@ -73,7 +73,7 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         with open(field2name_path, 'r') as f:
             field2name = json.load(f)
-        with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
+        with open(gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
             night2fieldvisits = pickle.load(f)
         with open(field2radec_path, 'r') as f:
             field2radec = json.load(f)
@@ -81,11 +81,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         with open(field2maxvisits_path, 'r') as f:
             field2maxvisits = json.load(f)
             field2maxvisits = {int(k): v for k, v in field2maxvisits.items()}
-        with open(night2filtervisithistory_path, 'rb') as f:
-            night2filtervisithistory = pickle.load(f)
-        # Add this block to load the pickle file into the dictionary variable
-        with open(fieldfilter2maxvisits, 'rb') as f:
-            fieldfilter2maxvisits = pickle.load(f)
 
         # Initialize healpix grid if binning_method is healpix
         self.hpGrid = None if binning_method != 'healpix' else ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in bin_space))
@@ -138,9 +133,10 @@ class OfflineDataset(torch.utils.data.Dataset):
             bin_feature_names=self.bin_feature_names, 
             cyclical_feature_names=self.cyclical_feature_names, 
             do_cyclical_norm=self.do_cyclical_norm, 
-            field2radec=self.field2radec,
-            night2fieldvisits=self.night2fieldvisits,
-            field2maxvisits=self.field2maxvisits,
+            field2radec=field2radec,
+            night2fieldvisits=night2fieldvisits,
+            night2filtervisithistory=self.night2
+            field2maxvisits=field2maxvisits,
             bin_space=bin_space
         )
         self._df = df # Save for diagnostics
