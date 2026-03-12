@@ -276,9 +276,9 @@ def main():
         real_obs_mask = np.array(metrics['field_id'][f'night-{night_idx}']) != -1
         real_obs_mask &= np.array(metrics['field_id'][f'night-{night_idx}']) != -2
         
-        timestamps = np.array(metrics['timestamp'][f'night-{night_idx}'])
-        field_ids = np.array(metrics['field_id'][f'night-{night_idx}'])
-        bin_nums = np.array(metrics['bin'][f'night-{night_idx}'])
+        timestamps = metrics['timestamp'][f'night-{night_idx}']
+        field_ids = metrics['field_id'][f'night-{night_idx}']
+        bin_nums = metrics['bin'][f'night-{night_idx}']
 
         night_ts = env.unwrapped._night_dt.timestamp()
         sunset_time = math.ceil(get_nautical_twilight(night_ts, 'set', env.unwrapped.horizon))
