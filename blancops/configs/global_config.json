@@ -48,26 +48,8 @@
       "night_num_incomplete_fields",
       "night_min_tiling",
       "survey_num_unvisited_fields",
-      "survey_num_unvisited_fields_u",
-      "survey_num_unvisited_fields_r",
-      "survey_num_unvisited_fields_g",
-      "survey_num_unvisited_fields_i",
-      "survey_num_unvisited_fields_z",
-      "survey_num_unvisited_fields_Y",
       "survey_num_incomplete_fields",
-      "survey_num_incomplete_fields_u",
-      "survey_num_incomplete_fields_r",
-      "survey_num_incomplete_fields_g",
-      "survey_num_incomplete_fields_i",
-      "survey_num_incomplete_fields_z",
-      "survey_num_incomplete_fields_Y",
-      "survey_min_tiling",
-      "survey_min_tiling_u",
-      "survey_min_tiling_r",
-      "survey_min_tiling_g",
-      "survey_min_tiling_i",
-      "survey_min_tiling_z",
-      "survey_min_tiling_Y"
+      "survey_min_tiling"
     ]
   },
   "files": {
