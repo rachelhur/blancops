@@ -69,15 +69,15 @@ class OfflineDataset(torch.utils.data.Dataset):
         if field2name_path is None:
             field2name_path = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['FIELD2NAME']
         with open(field2name_path, 'r') as f:
-            self.field2name = json.load(f)
+            field2name = json.load(f)
         with open(gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
-            self.night2fieldvisits = pickle.load(f)
+            night2fieldvisits = pickle.load(f)
         with open(field2radec_path, 'r') as f:
-            self.field2radec = json.load(f)
-            self.field2radec = {int(k): v for k, v in self.field2radec.items()}
+            field2radec = json.load(f)
+            field2radec = {int(k): v for k, v in field2radec.items()}
         with open(field2maxvisits_path, 'r') as f:
-            self.field2maxvisits = json.load(f)
-            self.field2maxvisits = {int(k): v for k, v in self.field2maxvisits.items()}
+            field2maxvisits = json.load(f)
+            field2maxvisits = {int(k): v for k, v in field2maxvisits.items()}
 
         # Initialize healpix grid if binning_method is healpix
         self.hpGrid = None if binning_method != 'healpix' else ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in bin_space))
@@ -115,7 +115,7 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         df = calculate_and_add_global_features(
             df=df, 
-            field2name=self.field2name, 
+            field2name=field2name, 
             hpGrid=self.hpGrid, 
             base_global_feature_names=self.base_global_feature_names,
             cyclical_feature_names=self.cyclical_feature_names, 
@@ -130,9 +130,10 @@ class OfflineDataset(torch.utils.data.Dataset):
             bin_feature_names=self.bin_feature_names, 
             cyclical_feature_names=self.cyclical_feature_names, 
             do_cyclical_norm=self.do_cyclical_norm, 
-            field2radec=self.field2radec,
-            night2fieldvisits=self.night2fieldvisits,
-            field2maxvisits=self.field2maxvisits,
+            field2radec=field2radec,
+            night2fieldvisits=night2fieldvisits,
+            night2filtervisithistory=self.night2
+            field2maxvisits=field2maxvisits,
             bin_space=bin_space
         )
         self._df = df # Save for diagnostics
