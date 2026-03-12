@@ -1024,20 +1024,20 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
 
 import json
 import pickle
+import copy
 
-def save_DES_bin_and_field_mappings(fits_path, outdir):
-    
-    if type(outdir) is not Path:
-        outdir = Path(outdir).resolve()
-    if type(fits_path) is not Path:
-        fits_path = Path(fits_path).resolve()
-    workspace = get_workspace_dir()
-    with open(workspace / "configs" / "global_config.json", "r") as f:
-        gcfg = json.load(f)
+def save_DES_bin_and_field_mappings(
+    data_fits_fn=None,
+    outdir='../data/lookups/',
+    field2radec_fn = 'field2radec.json',
+    field2name_fn = 'field2name.json',
+):
+    if data_fits_fn is None:
+        data_fits_fn = '../data/fits/decam-exposures-20251211.fits'
 
     # Filter data
     objects_to_remove = ["guide", "DES vvds","J0'","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "outlier"]
-    df = load_raw_data_to_dataframe(fits_path=fits_path)
+    df = load_raw_data_to_dataframe(fits_path=data_fits_fn)
     df = drop_rows_in_DECam_data(
         df,
         objects_to_remove=objects_to_remove
@@ -1053,70 +1053,69 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
 
     # field2name: Save mapping from field id to `object` name
     field2name = {fid: g.loc[:, ['object']].values.tolist()[0][0] for fid, g in df.groupby('field_id')}
-    with open(outdir / gcfg['files']['FIELD2NAME'], "w") as f:
+    with open(outdir + field2name_fn, "w") as f:
         json.dump(field2name, f)
 
     # 4. field2radec: Save mapping from field id to its respective ra, dec, defined by mean of tilings
     field2radec = {int(fid): (g.loc[:, ['ra', 'dec']]).mean(axis=0).values.tolist() for fid, g in df.groupby('field_id')}
-    with open(outdir / gcfg['files']['FIELD2RADEC'], "w") as f:
+    with open(outdir + field2radec_fn, "w") as f:
         json.dump(field2radec, f)
 
-    unique_field_ids = np.unique(df['field_id'])
-    u_fid_counts = np.zeros(len(unique_field_ids), dtype=int)
-    valid_unique_field_ids, valid_u_fid_counts = np.unique(df['field_id'][df['teff'] > .3], return_counts=True)
-    u_fid_counts[valid_unique_field_ids] = valid_u_fid_counts
-
-    num_fields = len(unique_field_ids)
+    # Only fields with teff > .3 are counted as a visit (as defined by obztak)
+        # Fields with *only* teff < .3 have had 0 visits, but should still be present in the dictionary
+        # Need a separate history for train vs eval
+        # In training, when calculating field tilings, we need a minimum visit of one for all exposures, even if all exposures for a specific field do not meet the teff threshold
+            # Otherwise, we get a division by 0 when normalizing by the total tilings thus far
+        # In evaluating, we don't want to include exposures with teff < .3 in the visit history 
+    unique_field_ids, u_fid_counts = np.unique(df['field_id'][df['teff'] > .3], return_counts=True)
 
     # 5. field2nvisits
     field2nvisits_default1 = {int(fid): 1 for fid in field2radec.keys()} # make sure fields which never have a good teff are at least present in the field2nvisits mapping
     field2nvisits_default1.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
-    with open(outdir / gcfg['files']['FIELD2MAXVISITS_TRAIN'], "w") as f:
+    with open(outdir + 'field2nvisits_default1.json', "w") as f:
         json.dump(field2nvisits_default1, f)
 
     field2nvisits_default0 = {int(fid): 0 for fid in field2radec.keys()}
     field2nvisits_default0.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
-    with open(outdir / gcfg['files']['FIELD2MAXVISITS_EVAL'], "w") as f:
+    with open(outdir + 'field2nvisits_default0.json', "w") as f:
         json.dump(field2nvisits_default0, f)
+        
+    # 6. night2fieldhistory: field visits each night
+    night2fieldhistory = {}
+    prev_visit_history = np.zeros(shape=(df['field_id'].max() + 1))
+    for i, (night, grouped) in enumerate(df.groupby('night')):
+        night2fieldhistory[night] = prev_visit_history.copy()
+        mask_teff = grouped['teff'] > .3
+        fids, cs = np.unique(grouped['field_id'][mask_teff].values, return_counts=True)
+        prev_visit_history[fids] += cs
+        
+    with open(outdir + 'night2fieldhistory.pkl', 'wb') as f:
+        pickle.dump(night2fieldhistory, f)
 
     # 7. field2filter: save viable filter visits per field -- #TODO will probably have to also do default0 and default1 like with field2nvisits
     field2filters = {fid: g['filter'].unique() for fid, g in df.groupby('field_id')}
-    with open(outdir / gcfg['files']['FIELD2FILTERS'], "wb") as f:
+    with open(outdir + 'field2filters.pkl', "wb") as f:
         pickle.dump(field2filters, f)
+        
 
     # 7. night2filterhistory: filter visits per field each night
     night2filterhistory = {}
-    night2fieldhistory = {}
-    df['filt_idx'] = df['filter'].map(FILTER2IDX)
-
-    filt_running_counts = np.zeros(shape=(num_fields, len(FILTER2IDX)), dtype=np.int32)
-    field_running_counts = np.zeros(shape=(num_fields), dtype=np.int32)
-    # mask_teff = df['teff'] > .3
-
-    for night, grouped in df.groupby('night'):
-        night2filterhistory[night] = filt_running_counts.copy()
-        night2fieldhistory[night] = field_running_counts.copy()
-
-        fids = grouped['field_id'].values
+    running_counts = {}
+    mask_teff = df['teff'] > .3
+    
+    for night, grouped in df[mask_teff].groupby('night'):
+        # Update our running history dictionary
+        night2filterhistory[night] = copy.deepcopy(running_counts)
+        current_counts = grouped.groupby(['field_id', 'filter']).size().to_dict()
         
-        field_running_counts += np.bincount(fids, minlength=num_fields)
-        np.add.at(
-            filt_running_counts, 
-            (grouped['field_id'].values, grouped['filt_idx'].values), 
-            1
-        )
-    
-    fieldfilter2nvisits = filt_running_counts.copy()
-    
-    with open(outdir / gcfg['files']['FIELDFILTER2MAXVISITS'], "wb") as f:
-        pickle.dump(fieldfilter2nvisits, f)
-
-    with open(outdir / gcfg['files']['NIGHT2FILTERVISITS'], "wb") as f:
+        for (fid, filt), count in current_counts.items():
+            if fid not in running_counts:
+                running_counts[fid] = {}
+            running_counts[fid][filt] = running_counts[fid].get(filt, 0) + count
+        
+    with open(outdir + 'night2filterhistory.pkl', "wb") as f:
         pickle.dump(night2filterhistory, f)
-            
-    with open(outdir / gcfg['files']['NIGHT2FIELDVISITS'], 'wb') as f:
-        pickle.dump(night2fieldhistory, f)
-
+    
     return df
 
 def old_calculate_night_history_bin_features_radec(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, field2maxvisits):
