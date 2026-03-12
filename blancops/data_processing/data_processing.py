@@ -906,8 +906,14 @@ def save_DES_bin_and_field_mappings(
         # Need a separate history for train vs eval
         # In training, when calculating field tilings, we need a minimum visit of one for all exposures, even if all exposures for a specific field do not meet the teff threshold
             # Otherwise, we get a division by 0 when normalizing by the total tilings thus far
-        # In evaluating, we don't want to include exposures with teff < .3 in the visit history 
-    unique_field_ids, u_fid_counts = np.unique(df['field_id'][df['teff'] > .3], return_counts=True)
+        # In evaluating, we don't want to include exposures with teff < .3 in the visit history
+     
+    unique_field_ids = np.unique(df['field_id'])
+    u_fid_counts = np.zeros(len(unique_field_ids), dtype=int)
+    valid_unique_field_ids, valid_u_fid_counts = np.unique(df['field_id'][df['teff'] > .3], return_counts=True)
+    u_fid_counts[valid_unique_field_ids] = valid_u_fid_counts
+
+    num_fields = len(unique_field_ids)
 
     # 5. field2nvisits
     field2nvisits_default1 = {int(fid): 1 for fid in field2radec.keys()} # make sure fields which never have a good teff are at least present in the field2nvisits mapping
@@ -936,23 +942,25 @@ def save_DES_bin_and_field_mappings(
     field2filters = {fid: g['filter'].unique() for fid, g in df.groupby('field_id')}
     with open(outdir + 'field2filters.pkl', "wb") as f:
         pickle.dump(field2filters, f)
-        
 
     # 7. night2filterhistory: filter visits per field each night
     night2filterhistory = {}
-    running_counts = {}
+    df['filt_idx'] = df['filter'].map(FILTER2IDX)
+
+    # 2. Initialize the running tracker
+    running_counts = np.zeros(shape=(num_fields, len(FILTER2IDX)), dtype=int)
+
+    # 3. Iterate and accumulate
     mask_teff = df['teff'] > .3
-    
+
     for night, grouped in df[mask_teff].groupby('night'):
-        # Update our running history dictionary
-        night2filterhistory[night] = copy.deepcopy(running_counts)
-        current_counts = grouped.groupby(['field_id', 'filter']).size().to_dict()
-        
-        for (fid, filt), count in current_counts.items():
-            if fid not in running_counts:
-                running_counts[fid] = {}
-            running_counts[fid][filt] = running_counts[fid].get(filt, 0) + count
-        
+        night2filterhistory[night] = running_counts.copy()
+        np.add.at(
+            running_counts, 
+            (grouped['field_id'].values, grouped['filt_idx'].values), 
+            1
+        )
+
     with open(outdir + 'night2filterhistory.pkl', "wb") as f:
         pickle.dump(night2filterhistory, f)
     
