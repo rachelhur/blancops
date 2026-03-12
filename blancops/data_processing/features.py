@@ -1085,18 +1085,6 @@ def save_DES_bin_and_field_mappings(
     field2nvisits_default0.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
     with open(outdir + 'field2nvisits_default0.json', "w") as f:
         json.dump(field2nvisits_default0, f)
-        
-    # 6. night2fieldhistory: field visits each night
-    night2fieldhistory = {}
-    prev_visit_history = np.zeros(shape=(df['field_id'].max() + 1))
-    for i, (night, grouped) in enumerate(df.groupby('night')):
-        night2fieldhistory[night] = prev_visit_history.copy()
-        mask_teff = grouped['teff'] > .3
-        fids, cs = np.unique(grouped['field_id'][mask_teff].values, return_counts=True)
-        prev_visit_history[fids] += cs
-        
-    with open(outdir + 'night2fieldhistory.pkl', 'wb') as f:
-        pickle.dump(night2fieldhistory, f)
 
     # 7. field2filter: save viable filter visits per field -- #TODO will probably have to also do default0 and default1 like with field2nvisits
     field2filters = {fid: g['filter'].unique() for fid, g in df.groupby('field_id')}
@@ -1105,25 +1093,32 @@ def save_DES_bin_and_field_mappings(
 
     # 7. night2filterhistory: filter visits per field each night
     night2filterhistory = {}
+    night2fieldhistory = {}
     df['filt_idx'] = df['filter'].map(FILTER2IDX)
 
-    # 2. Initialize the running tracker
-    running_counts = np.zeros(shape=(num_fields, len(FILTER2IDX)), dtype=int)
-
-    # 3. Iterate and accumulate
+    filt_running_counts = np.zeros(shape=(num_fields, len(FILTER2IDX)), dtype=np.int32)
+    field_running_counts = np.zeros(shape=(num_fields), dtype=np.int32)
     mask_teff = df['teff'] > .3
 
     for night, grouped in df[mask_teff].groupby('night'):
-        night2filterhistory[night] = running_counts.copy()
+        night2filterhistory[night] = filt_running_counts.copy()
+        night2fieldhistory[night] = field_running_counts.copy()
+
+        fids = grouped['field_id'].values
+        
+        field_running_counts += np.bincount(fids, minlength=num_fields)
         np.add.at(
-            running_counts, 
+            filt_running_counts, 
             (grouped['field_id'].values, grouped['filt_idx'].values), 
             1
         )
 
     with open(outdir + 'night2filterhistory.pkl', "wb") as f:
         pickle.dump(night2filterhistory, f)
-    
+            
+    with open(outdir + 'night2fieldhistory.pkl', 'wb') as f:
+        pickle.dump(night2fieldhistory, f)
+
     return df
 
 def old_calculate_night_history_bin_features_radec(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, field2maxvisits):
