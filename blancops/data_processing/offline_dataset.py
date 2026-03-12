@@ -132,7 +132,8 @@ class OfflineDataset(torch.utils.data.Dataset):
             do_cyclical_norm=self.do_cyclical_norm, 
             field2radec=self.field2radec,
             night2fieldvisits=self.night2fieldvisits,
-            field2maxvisits=self.field2maxvisits
+            field2maxvisits=self.field2maxvisits,
+            bin_space=bin_space
         )
         self._df = df # Save for diagnostics
         self._bin_df = bin_df # Save for diagnostics
