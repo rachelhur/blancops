@@ -1041,8 +1041,8 @@ def save_DES_bin_and_field_mappings(
 ):
     if fits_path is None:
         fits_path = '../data/fits/decam-exposures-20251211.fits'
-
-    outdir = str(outdir)
+    if type(outdir) is not str:
+        outdir = str(outdir) + '/'
     # Filter data
     objects_to_remove = ["guide", "DES vvds","J0'","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "outlier"]
     df = load_raw_data_to_dataframe(fits_path=fits_path)
