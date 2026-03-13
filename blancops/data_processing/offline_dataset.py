@@ -33,7 +33,9 @@ class TestDataset(torch.utils.data.Dataset):
 class OfflineDataset(torch.utils.data.Dataset):
     def __init__(self, df=None, cfg=None, gcfg=None,
                  specific_years=None, specific_months=None, specific_days=None, specific_filters=None,
-                 field2maxvisits_path=None, field2radec_path=None, field2name_path=None):
+                 field2maxvisits_path=None, field2radec_path=None, field2name_path=None,
+                 night2filtervisithistory_path=None, fieldfilter2maxvisits=None
+                 ): 
         assert cfg is not None and gcfg is not None, "Must pass both cfg and gcfg"
 
         # Assign static attributes
@@ -68,6 +70,11 @@ class OfflineDataset(torch.utils.data.Dataset):
             field2radec_path = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['FIELD2RADEC']
         if field2name_path is None:
             field2name_path = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['FIELD2NAME']
+        if night2filtervisithistory_path is None:
+            night2filtervisithistory_path = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['NIGHT2FILTERVISITS']
+        if fieldfilter2maxvisits is None:
+            fieldfilter2maxvisits = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS']
+
         with open(field2name_path, 'r') as f:
             field2name = json.load(f)
         with open(gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
@@ -78,6 +85,11 @@ class OfflineDataset(torch.utils.data.Dataset):
         with open(field2maxvisits_path, 'r') as f:
             field2maxvisits = json.load(f)
             field2maxvisits = {int(k): v for k, v in field2maxvisits.items()}
+        with open(night2filtervisithistory_path, 'rb') as f:
+            night2filtervisithistory = pickle.load(f)
+        # Add this block to load the pickle file into the dictionary variable
+        with open(fieldfilter2maxvisits, 'rb') as f:
+            fieldfilter2maxvisits = pickle.load(f)
 
         # Initialize healpix grid if binning_method is healpix
         self.hpGrid = None if binning_method != 'healpix' else ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in bin_space))
@@ -111,7 +123,6 @@ class OfflineDataset(torch.utils.data.Dataset):
             specific_filters=cfg['data']['specific_filters'] if specific_filters is None else specific_filters,
             objects_to_remove=self.objects_to_remove
             )
-        
 
         df = calculate_and_add_global_features(
             df=df, 
@@ -121,6 +132,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             cyclical_feature_names=self.cyclical_feature_names, 
             do_cyclical_norm=self.do_cyclical_norm
             )
+        
         bin_df = calculate_and_add_bin_features(
             pt_df=df,
             datetimes=df['datetime'],
@@ -132,7 +144,8 @@ class OfflineDataset(torch.utils.data.Dataset):
             do_cyclical_norm=self.do_cyclical_norm, 
             field2radec=field2radec,
             night2fieldvisits=night2fieldvisits,
-            night2filtervisithistory=self.night2
+            fieldfilter2maxvisits=fieldfilter2maxvisits,
+            night2filtervisithistory=night2filtervisithistory,
             field2maxvisits=field2maxvisits,
             bin_space=bin_space
         )
