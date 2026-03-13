@@ -3,8 +3,7 @@ import argparse
 from pathlib import Path
 # import importlib.resources as pkg_resources
 from importlib import resources
-from blancops.data_processing.features import save_DES_bin_and_field_mappings
-from blancops.utils.sys_utils import generate_global_config
+from blancops.data_processing.data_processing import save_DES_bin_and_field_mappings
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -68,7 +67,13 @@ def main():
             except Exception as e:
                 logger.warning(f"  [!] Failed to copy config. Reason: {e}")
 
-    # 3. Save workspace pointer file
+    try:
+        save_DES_bin_and_field_mappings(fits_path= workspace / "data" / "fits" / "decam-exposures-20251211.fits", outdir=workspace / "data" / "lookups")
+        logger.info(f" [!] Constructed train data lookup tables")
+    except Exception as e:
+        logger.warning(f" [!] Failed to construct train data lookup tables. Reason: {e}")
+
+    # save workspace pointer file
     pointer_file = Path.home() / ".blancops_profile"
     pointer_file.write_text(str(workspace))
     logger.info(f"  [+] Saved workspace pointer to {pointer_file}")
