@@ -1024,17 +1024,18 @@ import json
 import pickle
 
 def save_DES_bin_and_field_mappings(
-    data_fits_fn=None,
+    fits_path=None,
     outdir='../data/lookups/',
     field2radec_fn = 'field2radec.json',
     field2name_fn = 'field2name.json',
 ):
-    if data_fits_fn is None:
-        data_fits_fn = '../data/fits/decam-exposures-20251211.fits'
+    if fits_path is None:
+        fits_path = '../data/fits/decam-exposures-20251211.fits'
 
+    outdir = str(outdir)
     # Filter data
     objects_to_remove = ["guide", "DES vvds","J0'","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "outlier"]
-    df = load_raw_data_to_dataframe(fits_path=data_fits_fn)
+    df = load_raw_data_to_dataframe(fits_path=fits_path)
     df = drop_rows_in_DECam_data(
         df,
         objects_to_remove=objects_to_remove
@@ -1105,7 +1106,7 @@ def save_DES_bin_and_field_mappings(
     
     fieldfilter2nvisits = filt_running_counts.copy()
     
-    with open(f'../data/lookups/fieldfilter2nvisits.pkl', "wb") as f:
+    with open(outdir + 'fieldfilter2nvisits.pkl', "wb") as f:
         pickle.dump(fieldfilter2nvisits, f)
 
     with open(outdir + 'night2filterhistory.pkl', "wb") as f:

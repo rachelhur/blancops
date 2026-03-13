@@ -3,10 +3,12 @@ import argparse
 from pathlib import Path
 # import importlib.resources as pkg_resources
 from importlib import resources
+from blancops.data_processing.data_processing import save_DES_bin_and_field_mappings
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 def main():
     """
@@ -18,7 +20,7 @@ def main():
         '--workspace',
         '-w',
         type=Path, 
-        default=Path(os.getenv("BLANCOPS_WORKSPACE", Path('./').resolve().parent)),
+        default=Path(os.getenv("BLANCOPS_WORKSPACE", PROJECT_DIR)),
         help="Target directory to initialize the workspace. Defaults to project root, `blancops`"
     )
     parser.add_argument(
@@ -62,6 +64,12 @@ def main():
                 logger.info(f"  [+] Copied default {cfg_name} to: {cfg_dest}")
             except Exception as e:
                 logger.warning(f"  [!] Failed to copy config. Reason: {e}")
+
+    try:
+        save_DES_bin_and_field_mappings(fits_path= workspace / "data" / "fits" / "decam-exposures-20251211.fits", outdir=workspace / "data" / "lookups")
+        logger.info(f" [!] Constructed train data lookup tables")
+    except Exception as e:
+        logger.warning(f" [!] Failed to construct train data lookup tables. Reason: {e}")
 
     # save workspace pointer file
     pointer_file = Path.home() / ".blancops_profile"
