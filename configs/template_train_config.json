@@ -1,0 +1,87 @@
+{
+    "cfg": "config.json",
+    "save_to_model_dir": true,
+    "model_name": "bc-azel-filter-nside16",
+    "fits_path": "../data/decam-exposures-20251211.fits",
+    "json_path": "../data/decam-exposures-20251211.json",
+    "metadata": {
+        "parent_results_dir": "experiments/nside16",
+        "exp_name": "bc-azel-filter-4years",
+        "seed": 10,
+        "outdir": "/home/hurra/Projects/blancops/experiments/nside16/bc-azel-filter-4years"
+    },
+    "model": {
+        "algorithm": "BC",
+        "loss_function": "cross_entropy",
+        "contextual_gating": false,
+        "tau": 0.005,
+        "gamma": 0.99,
+        "activation": "relu",
+        "grid_network": "multi_dim_scorer"
+    },
+    "data": {
+        "bin_method": "healpix",
+        "nside": 16,
+        "num_bins_1d": null,
+        "bin_space": "azel_filter",
+        "specific_years": [
+            2015,
+            2016,
+            2017,
+            2018
+        ],
+        "specific_months": null,
+        "specific_days": null,
+        "specific_filters": null,
+        "do_cyclical_norm": true,
+        "do_max_norm": true,
+        "do_inverse_norm": true,
+        "remove_large_time_diffs": true,
+        "bin_features": [
+            "ha",
+            "airmass",
+            "moon_distance",
+            "angular_distance_to_pointing"
+        ],
+        "pointing_features": [],
+        "do_ang_distance_norm": true,
+        "global_features": [
+            "ra",
+            "dec",
+            "az",
+            "el",
+            "airmass",
+            "ha",
+            "sun_ra",
+            "sun_dec",
+            "sun_az",
+            "sun_el",
+            "moon_ra",
+            "moon_dec",
+            "moon_az",
+            "moon_el",
+            "filter_wave",
+            "lst",
+            "time_fraction_since_start"
+        ],
+        "reward_choice": "expert_actions",
+        "state_dim": 25,
+        "bin_state_dim": 5,
+        "num_actions": 9024
+    },
+    "train": {
+        "max_epochs": 500,
+        "batch_size": 1024,
+        "num_workers": 8,
+        "use_train_as_val": false,
+        "lr": 0.001,
+        "lr_scheduler": null,
+        "lr_scheduler_num_epochs": 150,
+        "lr_scheduler_epoch_start": 10,
+        "eta_min": 0.0001,
+        "hidden_dim": 64,
+        "patience": 40,
+        "lr_scheduler_kwargs": {}
+    },
+    "logging_level": "info"
+}

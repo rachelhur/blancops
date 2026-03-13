@@ -462,7 +462,7 @@ def calculate_and_add_global_features(df, field2name, hpGrid,
 
 def calculate_and_add_bin_features(pt_df, datetimes, hpGrid, base_bin_feature_names, prenorm_bin_feature_names, 
                                    bin_feature_names, cyclical_feature_names, do_cyclical_norm, night2fieldvisits,
-                                   field2radec, field2maxvisits, bin_space):
+                                   night2filtervisithistory, fieldfilter2maxvisits, field2radec, field2maxvisits, bin_space):
     """
     Calculate bin features dynamically based on requested feature names.
     
@@ -553,7 +553,9 @@ def calculate_and_add_bin_features(pt_df, datetimes, hpGrid, base_bin_feature_na
 
     # Calculate night-based features if needed
     if do_history_based_features:
-        calculated_night_history_features = calculate_history_dependent_bin_features(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, night2visithistory=night2fieldvisits, field2maxvisits=field2maxvisits, bin_space=bin_space)
+        calculated_night_history_features = calculate_history_dependent_bin_features(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, 
+                                                                                     night2visithistory=night2fieldvisits, night2filtervisithistory=night2filtervisithistory,
+                                                                                     field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space)
         calculated_features = calculated_features | calculated_night_history_features
     
     # Dynamically stack features in the order they appear in base_bin_feature_names
@@ -623,7 +625,8 @@ def calculate_and_add_bin_features(pt_df, datetimes, hpGrid, base_bin_feature_na
     
     return bin_df
 
-def calculate_history_dependent_bin_features(pt_df, hpGrid, night2visithistory, field2radec, field2maxvisits, bin_space):
+def calculate_history_dependent_bin_features(pt_df, hpGrid, night2visithistory, night2filtervisithistory, 
+                                             fieldfilter2maxvisits, field2radec, field2maxvisits, bin_space):
     n_bins = len(hpGrid.idx_lookup)
     arr_shape = (len(pt_df), n_bins)
     calculated_features = {
@@ -646,9 +649,12 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, night2visithistory, 
 
     if hpGrid.is_azel:
         calculated_features = calculate_history_dependent_bin_features_azel(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, calculated_features=calculated_features, 
-                                                                            night2visithistory=night2visithistory, field2maxvisits=field2maxvisits, bin_space=bin_space)
+                                                                            night2visithistory=night2visithistory, night2filtervisithistory=night2filtervisithistory,
+                                                                            field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space)
     else:
-        calculated_features = calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, field2maxvisits, bin_space=bin_space)
+        calculated_features = calculate_history_dependent_bin_features_radec(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, calculated_features=calculated_features, 
+                                                                            night2visithistory=night2visithistory, night2filtervisithistory=night2filtervisithistory,
+                                                                            field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space)
     
     for key, arr in calculated_features.items():
         if arr.min() < -.1 and arr.max() > 1.:
@@ -656,7 +662,8 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, night2visithistory, 
 
     return calculated_features
 
-def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, field2maxvisits, bin_space):
+def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, 
+                                                   night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, bin_space):
     n_bins = len(hpGrid.idx_lookup)
     field_ids = np.array(list(field2maxvisits.keys()))
     nfields = len(field_ids)
@@ -895,7 +902,8 @@ def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, c
             
     return calculated_features
         
-def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, field2maxvisits, bin_space):
+def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, 
+                                                  night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, bin_space):
     n_bins = len(hpGrid.idx_lookup)
     fids = np.array(list(field2maxvisits.keys()))
     nfields = len(fids)
@@ -1024,7 +1032,6 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
 
 import json
 import pickle
-import copy
 
 def save_DES_bin_and_field_mappings(
     data_fits_fn=None,
@@ -1061,13 +1068,6 @@ def save_DES_bin_and_field_mappings(
     with open(outdir + field2radec_fn, "w") as f:
         json.dump(field2radec, f)
 
-    # Only fields with teff > .3 are counted as a visit (as defined by obztak)
-        # Fields with *only* teff < .3 have had 0 visits, but should still be present in the dictionary
-        # Need a separate history for train vs eval
-        # In training, when calculating field tilings, we need a minimum visit of one for all exposures, even if all exposures for a specific field do not meet the teff threshold
-            # Otherwise, we get a division by 0 when normalizing by the total tilings thus far
-        # In evaluating, we don't want to include exposures with teff < .3 in the visit history
-     
     unique_field_ids = np.unique(df['field_id'])
     u_fid_counts = np.zeros(len(unique_field_ids), dtype=int)
     valid_unique_field_ids, valid_u_fid_counts = np.unique(df['field_id'][df['teff'] > .3], return_counts=True)
@@ -1098,9 +1098,9 @@ def save_DES_bin_and_field_mappings(
 
     filt_running_counts = np.zeros(shape=(num_fields, len(FILTER2IDX)), dtype=np.int32)
     field_running_counts = np.zeros(shape=(num_fields), dtype=np.int32)
-    mask_teff = df['teff'] > .3
+    # mask_teff = df['teff'] > .3
 
-    for night, grouped in df[mask_teff].groupby('night'):
+    for night, grouped in df.groupby('night'):
         night2filterhistory[night] = filt_running_counts.copy()
         night2fieldhistory[night] = field_running_counts.copy()
 
@@ -1112,6 +1112,11 @@ def save_DES_bin_and_field_mappings(
             (grouped['field_id'].values, grouped['filt_idx'].values), 
             1
         )
+    
+    fieldfilter2nvisits = filt_running_counts.copy()
+    
+    with open(f'../data/lookups/fieldfilter2nvisits.pkl', "wb") as f:
+        pickle.dump(fieldfilter2nvisits, f)
 
     with open(outdir + 'night2filterhistory.pkl', "wb") as f:
         pickle.dump(night2filterhistory, f)

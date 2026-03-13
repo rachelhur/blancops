@@ -65,11 +65,11 @@ class OfflineDataset(torch.utils.data.Dataset):
         if field2radec_path is None:
             field2radec_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2RADEC']
         if field2name_path is None:
-            field2name_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2NAME']
+            field2name_path = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['FIELD2NAME']
         if night2filtervisithistory_path is None:
-            night2filtervisithistory_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FILTERVISITS']
+            night2filtervisithistory_path = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['NIGHT2FILTERVISITS']
         if fieldfilter2maxvisits is None:
-            fieldfilter2maxvisits = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS']
+            fieldfilter2maxvisits = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS']
 
         with open(field2name_path, 'r') as f:
             field2name = json.load(f)
@@ -81,6 +81,11 @@ class OfflineDataset(torch.utils.data.Dataset):
         with open(field2maxvisits_path, 'r') as f:
             field2maxvisits = json.load(f)
             field2maxvisits = {int(k): v for k, v in field2maxvisits.items()}
+        with open(night2filtervisithistory_path, 'rb') as f:
+            night2filtervisithistory = pickle.load(f)
+        # Add this block to load the pickle file into the dictionary variable
+        with open(fieldfilter2maxvisits, 'rb') as f:
+            fieldfilter2maxvisits = pickle.load(f)
 
         # Initialize healpix grid if binning_method is healpix
         self.hpGrid = None if binning_method != 'healpix' else ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in bin_space))
@@ -135,7 +140,8 @@ class OfflineDataset(torch.utils.data.Dataset):
             do_cyclical_norm=self.do_cyclical_norm, 
             field2radec=field2radec,
             night2fieldvisits=night2fieldvisits,
-            night2filtervisithistory=self.night2
+            fieldfilter2maxvisits=fieldfilter2maxvisits,
+            night2filtervisithistory=night2filtervisithistory,
             field2maxvisits=field2maxvisits,
             bin_space=bin_space
         )
