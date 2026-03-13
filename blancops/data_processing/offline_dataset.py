@@ -26,10 +26,6 @@ logger = logging.getLogger(__name__)
 def reward_func_v0():
     raise NotImplementedError
 
-class TestDataset(torch.utils.data.Dataset):
-    def __init__(self):
-        pass
-
 class OfflineDataset(torch.utils.data.Dataset):
     def __init__(self, df=None, cfg=None, gcfg=None,
                  specific_years=None, specific_months=None, specific_days=None, specific_filters=None,
