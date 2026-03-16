@@ -68,18 +68,19 @@ def main():
             except Exception as e:
                 logger.warning(f"  [!] Failed to copy config. Reason: {e}")
 
-    # 3. Save lookups for train data - assumes fits file is in train dir already
+    # 3. Save workspace pointer file
+    pointer_file = Path.home() / ".blancops_profile"
+    pointer_file.write_text(str(workspace))
+    logger.info(f"  [+] Saved workspace pointer to {pointer_file}")
+
+    # 4. Use workspace to save files:
+    ## Save lookups for train data - assumes fits file is in train dir already
     try:
         train_dir = workspace / "data" / "train"
         save_DES_bin_and_field_mappings(fits_path= train_dir / "decam-exposures-20251211.fits", outdir=train_dir)
         logger.info(f"  [+] Constructed train data lookup tables in {train_dir}")
     except Exception as e:
         logger.warning(f"  [!] Failed to construct train data lookup tables. Reason: {e}")
-
-    # save workspace pointer file
-    pointer_file = Path.home() / ".blancops_profile"
-    pointer_file.write_text(str(workspace))
-    logger.info(f"  [+] Saved workspace pointer to {pointer_file}")
 
     logger.info("\nInitialization complete!")
 

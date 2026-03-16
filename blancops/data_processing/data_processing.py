@@ -1,16 +1,18 @@
-import fitsio
 import pandas as pd
+from blancops.utils.sys_utils import get_workspace_dir
 import numpy as np
-import logging
-from collections import defaultdict
 from datetime import timezone, timedelta
 import ephem
 from astropy.time import Time
 import torch
 
+import fitsio
+from pathlib import Path
+from tqdm import tqdm
+
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-from tqdm import tqdm
+import logging
 logger = logging.getLogger(__name__)
 
 # Filter wavelengths (nm) according to obztak https://github.com/kadrlica/obztak/blob/c28fab23b09bcff1cf46746eae4ec7e40aeb7f7a/obztak/seeing.py#L22
@@ -1023,16 +1025,16 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
 import json
 import pickle
 
-def save_DES_bin_and_field_mappings(
-    fits_path=None,
-    outdir='../data/lookups/',
-    field2radec_fn = 'field2radec.json',
-    field2name_fn = 'field2name.json',
-):
-    if fits_path is None:
-        fits_path = '../data/fits/decam-exposures-20251211.fits'
-    if type(outdir) is not str:
-        outdir = str(outdir) + '/'
+def save_DES_bin_and_field_mappings(fits_path, outdir):
+    
+    if type(outdir) is not Path:
+        outdir = Path(outdir).resolve()
+    if type(fits_path) is not Path:
+        fits_path = Path(fits_path).resolve()
+    workspace = get_workspace_dir()
+    with open(workspace / "configs" / "global_config.json", "r") as f:
+        gcfg = json.load(f)
+
     # Filter data
     objects_to_remove = ["guide", "DES vvds","J0'","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "outlier"]
     df = load_raw_data_to_dataframe(fits_path=fits_path)
@@ -1051,12 +1053,12 @@ def save_DES_bin_and_field_mappings(
 
     # field2name: Save mapping from field id to `object` name
     field2name = {fid: g.loc[:, ['object']].values.tolist()[0][0] for fid, g in df.groupby('field_id')}
-    with open(outdir + field2name_fn, "w") as f:
+    with open(outdir / gcfg['files']['FIELD2NAME'], "w") as f:
         json.dump(field2name, f)
 
     # 4. field2radec: Save mapping from field id to its respective ra, dec, defined by mean of tilings
     field2radec = {int(fid): (g.loc[:, ['ra', 'dec']]).mean(axis=0).values.tolist() for fid, g in df.groupby('field_id')}
-    with open(outdir + field2radec_fn, "w") as f:
+    with open(outdir / gcfg['files']['FIELD2RADEC'], "w") as f:
         json.dump(field2radec, f)
 
     unique_field_ids = np.unique(df['field_id'])
@@ -1069,17 +1071,17 @@ def save_DES_bin_and_field_mappings(
     # 5. field2nvisits
     field2nvisits_default1 = {int(fid): 1 for fid in field2radec.keys()} # make sure fields which never have a good teff are at least present in the field2nvisits mapping
     field2nvisits_default1.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
-    with open(outdir + 'field2nvisits_default1.json', "w") as f:
+    with open(outdir / gcfg['files']['FIELD2MAXVISITS_TRAIN'], "w") as f:
         json.dump(field2nvisits_default1, f)
 
     field2nvisits_default0 = {int(fid): 0 for fid in field2radec.keys()}
     field2nvisits_default0.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
-    with open(outdir + 'field2nvisits_default0.json', "w") as f:
+    with open(outdir / gcfg['files']['FIELD2MAXVISITS_EVAL'], "w") as f:
         json.dump(field2nvisits_default0, f)
 
     # 7. field2filter: save viable filter visits per field -- #TODO will probably have to also do default0 and default1 like with field2nvisits
     field2filters = {fid: g['filter'].unique() for fid, g in df.groupby('field_id')}
-    with open(outdir + 'field2filters.pkl', "wb") as f:
+    with open(outdir / gcfg['files']['FIELD2FILTERS'], "wb") as f:
         pickle.dump(field2filters, f)
 
     # 7. night2filterhistory: filter visits per field each night
@@ -1106,13 +1108,13 @@ def save_DES_bin_and_field_mappings(
     
     fieldfilter2nvisits = filt_running_counts.copy()
     
-    with open(outdir + 'fieldfilter2nvisits.pkl', "wb") as f:
+    with open(outdir / gcfg['files']['FIELDFILTER2MAXVISITS'], "wb") as f:
         pickle.dump(fieldfilter2nvisits, f)
 
-    with open(outdir + 'night2filterhistory.pkl', "wb") as f:
+    with open(outdir / gcfg['files']['NIGHT2FILTERVISITS'], "wb") as f:
         pickle.dump(night2filterhistory, f)
             
-    with open(outdir + 'night2fieldhistory.pkl', 'wb') as f:
+    with open(outdir / gcfg['files']['NIGHT2FIELDVISITS'], 'wb') as f:
         pickle.dump(night2fieldhistory, f)
 
     return df
