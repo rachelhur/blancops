@@ -291,7 +291,7 @@ def main():
 
     device = get_device()
     logger.info("Loading raw data...")
-    df = load_raw_data_to_dataframe(Path(global_cfg['paths']['FITS_DIR']) / Path(global_cfg['files']['DECFITS']))
+    df = load_raw_data_to_dataframe(Path(global_cfg['paths']['TRAIN_DIR']) / Path(global_cfg['files']['DECFITS']))
     
     nside = cfg['data']['nside']
 
