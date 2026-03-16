@@ -1,4 +1,5 @@
 import pandas as pd
+from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.utils.sys_utils import get_workspace_dir
 import numpy as np
 from datetime import timezone, timedelta
@@ -373,8 +374,14 @@ def calculate_and_add_global_features(df, field2name, hpGrid,
         df['lst'] = lst_obj.radian
         df['lst_hours'] = lst_obj.hour # for debugging
 
+    timestamps = df['timestamp'].values
+    indices = df.index
+    ra_arr = df['ra'].values
+    dec_arr = df['dec'].values
+    filt_arr = df['filter'].values
+
     # 3. Get time dependent features (sun and moon pos)
-    for idx, time in tqdm(zip(df.index, df['timestamp'].values), total=len(df['timestamp']), desc='Calculating sun and moon ra/dec and az/el'):
+    for idx, time in tqdm(zip(indices, timestamps), total=len(timestamps), desc='Calculating sun and moon ra/dec and az/el'):
         sun_ra, sun_dec = ephemerides.get_source_ra_dec('sun', time=time)
         df.loc[idx, ['sun_ra', 'sun_dec']] = sun_ra, sun_dec
         df.loc[idx, ['sun_az', 'sun_el']] = ephemerides.equatorial_to_topographic(ra=sun_ra, dec=sun_dec, time=time)
@@ -383,7 +390,6 @@ def calculate_and_add_global_features(df, field2name, hpGrid,
         df.loc[idx, ['moon_ra', 'moon_dec']] = moon_ra, moon_dec
         df.loc[idx, ['moon_az', 'moon_el']] = ephemerides.equatorial_to_topographic(ra=moon_ra, dec=moon_dec, time=time)
 
-    # 4. Get times
     # Use first and last observation in night of offline dataset as time start and end
     def normalize_times(time_series):
         sunset = get_nautical_twilight(time_series.median(), event_type='set')
@@ -435,6 +441,8 @@ def calculate_and_add_global_features(df, field2name, hpGrid,
                 dDECdt = delta_decs / delta_ts
                 df['ra_vel'] = dRAdt
                 df['dec_vel'] = dDECdt
+            elif feat_name == 'sky_brightness':
+                df['sky_brightness'] = estimate_sky_brightness(time=timestamps, ra=ra_arr, dec=dec_arr, band=filt_arr)
             else:
                 raise NotImplementedError(f"Feature {feat_name} not found in dataframe columns. Check spelling. Or, this feature is not yet implemented.")
 
