@@ -13,6 +13,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+
 def seed_everything(seed, deterministic=False):
     random.seed(seed)
     np.random.seed(seed)
