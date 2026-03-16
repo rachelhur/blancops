@@ -298,7 +298,8 @@ def main():
                                 hidden_dim=cfg['train']['hidden_dim'], lr=cfg['train']['lr'], lr_scheduler=lr_scheduler, 
                                 device=device, lr_scheduler_kwargs=lr_scheduler_kwargs, lr_scheduler_epoch_start=lr_scheduler_epoch_start, 
                                 lr_scheduler_num_epochs=lr_scheduler_num_epochs, gamma=cfg['model']['gamma'], 
-                                tau=cfg['model']['tau'], activation=cfg['model']['activation'], grid_network=cfg['model']['grid_network'])
+                                tau=cfg['model']['tau'], activation=cfg['model']['activation'], grid_network=cfg['model']['grid_network'],
+                                use_contextual_gating=args.use_contextual_gating)
 
     agent = Agent(
         algorithm=algorithm,
