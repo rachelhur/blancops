@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 # import importlib.resources as pkg_resources
 from importlib import resources
-from blancops.data_processing.data_processing import save_DES_bin_and_field_mappings
+from blancops.data_processing.features import save_DES_bin_and_field_mappings
 from blancops.utils.sys_utils import generate_global_config
 
 import logging
