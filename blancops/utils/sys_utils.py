@@ -13,7 +13,6 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-
 def seed_everything(seed, deterministic=False):
     random.seed(seed)
     np.random.seed(seed)
@@ -24,7 +23,8 @@ def seed_everything(seed, deterministic=False):
     torch.backends.cudnn.benchmark = False
 
 def get_workspace_dir() -> Path:
-    """Determines the active workspace. Priority: (1) environment variable (2) pointer file (saved after running model-init) (3) default=$HOME.blancops"""
+    """Determines the active workspace. Priority: (1) environment variable (2) pointer file (saved after running model-init) (3) default=`~/.blancops`
+    """
     env_workspace = os.getenv("BLANCOPS_WORKSPACE")
     if env_workspace:
         return Path(env_workspace).resolve()
@@ -37,6 +37,70 @@ def get_workspace_dir() -> Path:
             
     # 3. Fallback to default
     return Path.home() / ".blancops"
+
+def generate_global_config(output_fn="global_config.json"):
+    workspace_dir = get_workspace_dir()
+    workspace_dir_str = str(workspace_dir)
+    outpath = workspace_dir / "configs" / output_fn
+    config_data = {
+        "features": {
+            "CYCLICAL_FEATURE_NAMES": [
+                "ra", "az", "ha", "lst"
+            ],
+            "MAX_NORM_FEATURE_NAMES": [
+                "el", "dec"
+            ],
+            "INVERSE_NORM_FEATURES_NAMES": [
+                "airmass"
+            ],
+            "ANG_DISTANCE_NORM_FEATURE_NAMES": [
+                "distance"
+            ],
+            "GLOBAL_FEATURES": [
+                "ra", "dec", "az", "el", "airmass", "ha", "sun_ra", "sun_dec",
+                "sun_az", "sun_el", "moon_ra", "moon_dec", "moon_az", "moon_el",
+                "filter_wave", "lst", "time_fraction_since_start"
+            ],
+            "BIN_FEATURES": [
+                "ha", "airmass", "moon_distance", "az", "el", "ra", "dec",
+                "angular_distance_to_pointing", "night_num_unvisited_fields",
+                "night_num_incomplete_fields", "night_min_tiling",
+                "survey_num_unvisited_fields", "survey_num_unvisited_fields_u",
+                "survey_num_unvisited_fields_r", "survey_num_unvisited_fields_g",
+                "survey_num_unvisited_fields_i", "survey_num_unvisited_fields_z",
+                "survey_num_unvisited_fields_Y", "survey_num_incomplete_fields",
+                "survey_num_incomplete_fields_u", "survey_num_incomplete_fields_r",
+                "survey_num_incomplete_fields_g", "survey_num_incomplete_fields_i",
+                "survey_num_incomplete_fields_z", "survey_num_incomplete_fields_Y",
+                "survey_min_tiling", "survey_min_tiling_u", "survey_min_tiling_r",
+                "survey_min_tiling_g", "survey_min_tiling_i", "survey_min_tiling_z",
+                "survey_min_tiling_Y"
+            ]
+        },
+        "files": {
+            "DECFITS": "decam-exposures-20251211.fits",
+            "FIELD2RADEC": "field2radec.json",
+            "FIELD2NAME": "field2name.json",
+            "FIELD2MAXVISITS_TRAIN": "field2nvisits_default1.json",
+            "FIELD2MAXVISITS_EVAL": "field2nvisits_default0.json",
+            "NIGHT2FIELDVISITS": "night2fieldhistory.pkl",
+            "NIGHT2FILTERVISITS": "night2filterhistory.pkl",
+            "FIELD2FILTERS": "field2filters.pkl",
+            "FIELDFILTER2MAXVISITS": "fieldfilter2nvisits.pkl"
+        },
+        "paths": {
+            "TRAIN_DIR": f"{workspace_dir_str}/data/train/",
+            "BLANCOPS": f"{workspace_dir_str}/",
+            "HEALPIX-GRID": f"{workspace_dir_str}/data/test_suite/healpix-grid/",
+            "MAGIC-SPRING": f"{workspace_dir_str}/data/test_suite/magic-spring/",
+            "SAMPLE-110825": f"{workspace_dir_str}/data/test_suite/sample-110825/"
+        }
+    }
+
+    # Write the assembled dictionary to the specified JSON file
+    with open(outpath, 'w') as f:
+        json.dump(config_data, f, indent=2)
+    logger.info(f"  [+] Constructed new global config at {outpath}")
 
 def load_global_config(config_path=None):
     """Loads a custom config if provided, otherwise loads the default from the package."""

@@ -148,7 +148,7 @@ def main():
     args_dict = vars(args)
 
     # Get configs
-    global_cfg = load_global_config()
+    gcfg = load_global_config()
     workspace = get_workspace_dir()
     cfg_dir = workspace / "models" / args.model_name 
     assert os.path.exists(cfg_dir), f"Directory {cfg_dir} does not exist"
@@ -252,7 +252,7 @@ def main():
     )
 
     # Creat env
-    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, lookup_path=lookup_dirpath / 'field_lookup.json',
+    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, lookup_path=lookup_dirpath / 'field_lookup.json',
                     night_str=args.observing_night, horizon='-12', max_nights=args.max_nights)
     field2nvisits = {int(fid): n for fid, n in field_lookup['n_visits'].items()}
     field2radec = {int(fid): (field_lookup['ra'][fid], field_lookup['dec'][fid]) for fid in field_lookup['ra'].keys()}

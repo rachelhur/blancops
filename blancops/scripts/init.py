@@ -4,6 +4,7 @@ from pathlib import Path
 # import importlib.resources as pkg_resources
 from importlib import resources
 from blancops.data_processing.data_processing import save_DES_bin_and_field_mappings
+from blancops.utils.sys_utils import generate_global_config
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -60,6 +61,7 @@ def main():
         else:
             try:
                 # Copy global_config.json from within package to config_dest
+                generate_global_config()
                 config_text = resources.files('blancops.configs').joinpath(cfg_name).read_text()
                 cfg_dest.write_text(config_text)
                 logger.info(f"  [+] Copied default {cfg_name} to: {cfg_dest}")
@@ -69,7 +71,6 @@ def main():
     # 3. Save lookups for train data - assumes fits file is in train dir already
     try:
         train_dir = workspace / "data" / "train"
-        logger.info(" Constructing train data lookup tables...")
         save_DES_bin_and_field_mappings(fits_path= train_dir / "decam-exposures-20251211.fits", outdir=train_dir)
         logger.info(f"  [+] Constructed train data lookup tables in {train_dir}")
     except Exception as e:
