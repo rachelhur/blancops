@@ -81,8 +81,10 @@
     "FIELD2FILTERS": "field2filters.pkl"
   },
   "paths": {
-    "LOOKUP_DIR": "/home/hurra/Projects/blancops/data/lookups/",
-    "FITS_DIR": "/home/hurra/Projects/blancops/data/fits/",
-    "blancops": "/home/hurra/Projects/blancops/"
-    }
+    "TRAIN_DIR": "/home/hurra/Projects/blancops/data/train/",
+    "BLANCOPS": "/home/hurra/Projects/blancops/",
+    "HEALPIX-GRID": "/home/hurra/Projects/blancops/data/test_suite/healpix-grid/",
+    "MAGIC-SPRING": "/home/hurra/Projects/blancops/data/test_suite/magic-spring/",
+    "SAMPLE-110825": "/home/hurra/Projects/blancops/data/test_suite/sample-110825/"
+  }
 }

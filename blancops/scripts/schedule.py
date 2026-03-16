@@ -198,14 +198,19 @@ def main():
     seed_everything(args.seed)
     device = get_device()
 
+    if args.field_lookup_dir in ['healpix-grid', 'magic-spring', 'sample-110825']:
+        lookup_dirpath = workspace / "data" / "test_suite"
+    else:
+        lookup_dirpath = workspace / "data" 
+    lookup_dirpath = lookup_dirpath / args.field_lookup_dir
     # Load lookup tables
-    for f in ['lookup.json', 'field2radec.json']:
-        path = workspace / 'data' / 'lookups' / args.field_lookup_dir
-        assert os.path.exists(path / f), f"Path to {f} not found in {path}"
+    for f in ['field_lookup.json', 'field2radec.json']:
+        filepath = lookup_dirpath / f
+        assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
 
-    with open(args.field_lookup_dir + 'lookup.json', 'r') as f:
+    with open(lookup_dirpath / 'field_lookup.json', 'r') as f:
         field_lookup = json.load(f)
-    with open(args.field_lookup_dir + 'field2radec.json') as f:
+    with open(lookup_dirpath / 'field2radec.json') as f:
         field2radec = json.load(f)
     
     # Check that field_lookup has all required columns needed to run environment
@@ -247,7 +252,7 @@ def main():
     )
 
     # Creat env
-    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, lookup_path=args.field_lookup_dir + 'lookup.json',
+    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, lookup_path=lookup_dirpath / 'field_lookup.json',
                     night_str=args.observing_night, horizon='-12', max_nights=args.max_nights)
     field2nvisits = {int(fid): n for fid, n in field_lookup['n_visits'].items()}
     field2radec = {int(fid): (field_lookup['ra'][fid], field_lookup['dec'][fid]) for fid in field_lookup['ra'].keys()}
@@ -373,7 +378,7 @@ def main():
 
         logger.info(f'Creating schedule gif for {night_idx}th night')
         save_schedule(eval_metrics=eval_metrics, save_dir=night_dir, night_idx=night_idx, nside=nside, make_gifs=args.make_gifs, 
-                      is_azel='azel' in cfg['data']['bin_space'], field2radec_filepath=workspace / 'data' / 'lookups' / args.field_lookup_dir / 'field2radec.json')
+                      is_azel='azel' in cfg['data']['bin_space'], field2radec_filepath= lookup_dirpath / 'field2radec.json')
         current_night += timedelta(days=1)
 
 if __name__ == "__main__":

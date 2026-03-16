@@ -159,13 +159,13 @@ class OfflineDECamTestingEnv(BaseTelescope):
         self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
 
-        with open(gcfg['paths']['LOOKUP_DIR'] + '/' + gcfg['files']['FIELD2RADEC'], 'r') as f:
+        with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2RADEC'], 'r') as f:
             field2radec = json.load(f)
             self.field2radec = {int(k): v for k, v in field2radec.items()}
-        with open(gcfg['paths']['LOOKUP_DIR'] + '/' + gcfg['files']['FIELD2MAXVISITS_EVAL'], 'r') as f:
+        with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2MAXVISITS_EVAL'], 'r') as f:
             field2maxvisits = json.load(f)
             self.field2maxvisits = {int(fid): int(count) for fid, count in field2maxvisits.items()}
-        with open(gcfg['paths']['LOOKUP_DIR'] + '/' + gcfg['files']['FIELD2FILTERS'], 'rb') as f:
+        with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2FILTERS'], 'rb') as f:
             field2filters = pickle.load(f)
             self.field2radec = {int(k): v for k, v in field2radec.items()}
         # Field to index mapping for sparse field ids; unused fields maps to -1
@@ -183,7 +183,7 @@ class OfflineDECamTestingEnv(BaseTelescope):
         for idx, fid in enumerate(self._fids):
             fid2idx[fid] = idx
  
-        with open(gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
+        with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
             self.night2visithistory = pickle.load(f)
 
         # Bin-space dependent function to get fields in bin

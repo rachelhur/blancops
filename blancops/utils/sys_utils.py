@@ -20,8 +20,8 @@ def seed_everything(seed, deterministic=False):
     torch.backends.cudnn.benchmark = False
 
 def get_workspace_dir() -> Path:
-    """Determines the active workspace. Priority: (1) environment variable (2) pointer file (saved in model-init) (3) default"""
-    env_workspace = os.getenv("blancops_WORKSPACE")
+    """Determines the active workspace. Priority: (1) environment variable (2) pointer file (saved after running model-init) (3) default=$HOME.blancops"""
+    env_workspace = os.getenv("BLANCOPS_WORKSPACE")
     if env_workspace:
         return Path(env_workspace).resolve()
         

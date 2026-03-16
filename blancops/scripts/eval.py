@@ -398,9 +398,9 @@ def main():
     with open(eval_outdir + 'eval_metrics.pkl', 'rb') as handle:
         eval_metrics = pickle.load(handle)
     logger.info("Generating evaluation plots...")
-    bin2pos_filepath = global_cfg['paths']['LOOKUP_DIR'] + f"nside{nside}_bin2{cfg['data']['bin_space']}.json"
+    bin2pos_filepath = global_cfg['paths']['TRAIN_DIR'] + f"nside{nside}_bin2{cfg['data']['bin_space']}.json"
     bin2pos_filepath = bin2pos_filepath.replace("_filter", "")
-    field2radec_filepath = global_cfg['paths']['LOOKUP_DIR'] + global_cfg['files']['FIELD2RADEC']
+    field2radec_filepath = global_cfg['paths']['TRAIN_DIR'] + global_cfg['files']['FIELD2RADEC']
     with open(field2radec_filepath, 'r') as f:
         FIELD2RADEC = json.load(f)
 

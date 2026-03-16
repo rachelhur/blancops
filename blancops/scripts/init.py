@@ -40,7 +40,8 @@ def main():
         workspace / "configs",
         workspace / "experiments",
         workspace / "models",
-        workspace / "data" / "lookups"
+        workspace / "data" / "train",
+        workspace / "data" / "test_suite"
     ]
     
     for dir_path in directories_to_create:
@@ -65,10 +66,11 @@ def main():
             except Exception as e:
                 logger.warning(f"  [!] Failed to copy config. Reason: {e}")
 
+    # 3. Save lookups for train data - assumes fits file is in train dir already
     try:
-        lookup_dir = workspace / "data" / "lookups"
-        save_DES_bin_and_field_mappings(fits_path= workspace / "data" / "fits" / "decam-exposures-20251211.fits", outdir=lookup_dir)
-        logger.info(f"  [+] Constructed train data lookup tables in {lookup_dir}")
+        train_dir = workspace / "data" / "TRAIN_DIR"
+        save_DES_bin_and_field_mappings(fits_path= train_dir / "decam-exposures-20251211.fits", outdir=train_dir)
+        logger.info(f"  [+] Constructed train data lookup tables in {train_dir}")
     except Exception as e:
         logger.warning(f"  [!] Failed to construct train data lookup tables. Reason: {e}")
 
