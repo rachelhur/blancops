@@ -65,15 +65,15 @@ class OfflineDataset(torch.utils.data.Dataset):
         if field2radec_path is None:
             field2radec_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2RADEC']
         if field2name_path is None:
-            field2name_path = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['FIELD2NAME']
+            field2name_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2NAME']
         if night2filtervisithistory_path is None:
-            night2filtervisithistory_path = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['NIGHT2FILTERVISITS']
+            night2filtervisithistory_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FILTERVISITS']
         if fieldfilter2maxvisits is None:
-            fieldfilter2maxvisits = gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS']
+            fieldfilter2maxvisits = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS']
 
         with open(field2name_path, 'r') as f:
             field2name = json.load(f)
-        with open(gcfg['paths']['LOOKUP_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
+        with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
             night2fieldvisits = pickle.load(f)
         with open(field2radec_path, 'r') as f:
             field2radec = json.load(f)
