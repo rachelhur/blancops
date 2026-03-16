@@ -9,6 +9,10 @@ import numpy as np
 import random
 import torch
 
+import logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
 
 def seed_everything(seed, deterministic=False):
     random.seed(seed)
@@ -45,7 +49,10 @@ def load_global_config(config_path=None):
             "Need to run `model-init` to set up workspace"
         )
     with open(config_path, 'r') as f:
-        return json.load(f)
+        gcfg = json.load(f)
+    logger.info(f"Loaded config file at {config_path}")
+    return gcfg
+    
     
 def load_model_config(config_path=None):
     """Loads a custom config if provided, otherwise loads the default from the package."""

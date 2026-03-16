@@ -78,7 +78,8 @@
     "FIELD2MAXVISITS_EVAL": "field2nvisits_default0.json",
     "NIGHT2FIELDVISITS": "night2fieldhistory.pkl",
     "NIGHT2FILTERVISITS": "night2filterhistory.pkl",
-    "FIELD2FILTERS": "field2filters.pkl"
+    "FIELD2FILTERS": "field2filters.pkl",
+    "FIELDFILTER2MAXVISITS": "fieldfilter2nvisits.pkl"
   },
   "paths": {
     "TRAIN_DIR": "/home/hurra/Projects/blancops/data/train/",

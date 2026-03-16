@@ -188,7 +188,7 @@ def get_args():
 def main():
     args = get_args()
     cfg = dict_to_nested(vars(args))
-    global_cfg = load_global_config()
+    gcfg = load_global_config()
     workspace = get_workspace_dir()
     
     # Define standard output directories based on the workspace
@@ -222,7 +222,7 @@ def main():
     lr_scheduler_epoch_start = cfg['train']['lr_scheduler_epoch_start'] #cfg.get('experiment.training.lr_scheduler_epoch_start')
     lr_scheduler_num_epochs = cfg['train']['lr_scheduler_num_epochs'] #cfg.get('experiment.training.lr_scheduler_num_epochs')
     for bin_feat in cfg['data']['bin_features']:
-        assert bin_feat in global_cfg['features']['BIN_FEATURES'], f"{bin_feat} has not yet been implemented. Check global config file for valid inputs."
+        assert bin_feat in gcfg['features']['BIN_FEATURES'], f"{bin_feat} has not yet been implemented. Check global config file for valid inputs."
     # assert errors dne before running rest of code
     if lr_scheduler is not None:
         assert max_epochs - lr_scheduler_epoch_start - lr_scheduler_num_epochs >= 0, "The number of epochs must be greater than lr_scheduler_epoch_start + lr_scheduler_num_epochs"
@@ -236,19 +236,19 @@ def main():
 
     logger.info("Loading raw data...")
 
-    df = load_raw_data_to_dataframe(Path(global_cfg['paths']['FITS_DIR']) / Path(global_cfg['files']['DECFITS']))
+    df = load_raw_data_to_dataframe(Path(gcfg['paths']['TRAIN_DIR']) / Path(gcfg['files']['DECFITS']))
 
     logger.info("Processing raw data into OfflineDataset()...")
     # Need to include paths.lookup_dir in cfg before sending to offline dataset -- brittle
     # train_dataset = OfflineDELVEDataset(
     #     df=df,
     #     cfg=cfg,
-    #     gcfg=global_cfg,
+    #     gcfg=gcfg,
     # )
     train_dataset = OfflineDataset(
         df=df,
         cfg=cfg,
-        gcfg=global_cfg,
+        gcfg=gcfg,
         )
     logger.info("Finished constructing train_dataset.")
     logger.info(f"Train dataset has {train_dataset.n_nights} nights and {train_dataset.num_transitions} transitions")
