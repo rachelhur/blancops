@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, RandomSampler, Subset
 from collections import defaultdict
+import gc
 
 from tqdm import tqdm
 
@@ -30,7 +31,8 @@ class OfflineDataset(torch.utils.data.Dataset):
     def __init__(self, df=None, cfg=None, gcfg=None,
                  specific_years=None, specific_months=None, specific_days=None, specific_filters=None,
                  field2maxvisits_path=None, field2radec_path=None, field2name_path=None,
-                 night2filtervisithistory_path=None, fieldfilter2maxvisits=None
+                 night2filtervisithistory_path=None, fieldfilter2maxvisits=None,
+                 save_df=False
                  ): 
         assert cfg is not None and gcfg is not None, "Must pass both cfg and gcfg"
 
@@ -145,8 +147,12 @@ class OfflineDataset(torch.utils.data.Dataset):
             field2maxvisits=field2maxvisits,
             bin_space=bin_space
         )
-        self._df = df # Save for diagnostics
-        self._bin_df = bin_df # Save for diagnostics
+
+        if save_df:
+            self._df = df # Save for diagnostics
+            self._bin_df = bin_df # Save for diagnostics
+        del df, bin_df
+        gc.collect()
                     
         # Save night dates, total number of nights in dataset, and number of obs per night
         groups_by_night = df.groupby('night')
@@ -155,7 +161,8 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.n_obs_per_night = groups_by_night.size() # nights have different numbers of observations
 
         # Construct Transitions
-        states, next_states, bin_states, next_bin_states, bin_actions, rewards, dones, action_masks, num_transitions = self._construct_transitions(
+        states, next_states, bin_states, next_bin_states, self.bin_actions, self.rewards, self.dones, self.action_masks, self.num_transitions \
+            = self._construct_transitions(
             df=df, 
             bin_df=bin_df,  
             include_bin_features=include_bin_features, 
@@ -164,26 +171,11 @@ class OfflineDataset(torch.utils.data.Dataset):
             bin_space=bin_space,
             remove_large_time_diffs=remove_large_time_diffs
             )
+
         
-        logger.info(f"States shape: {states.shape}, Actions shape: {bin_actions.shape}, Rewards shape: {rewards.shape}, Next states shape: {next_states.shape}, Dones shape: {dones.shape}, Action masks shape: {action_masks.shape}")
+        logger.info(f"States shape: {states.shape}, Actions shape: {self.bin_actions.shape}, Rewards shape: {self.rewards.shape}, Next states shape: {next_states.shape}, Dones shape: {self.dones.shape}, Action masks shape: {action_masks.shape}")
         logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}, Next bin states shape: {next_bin_states.shape if next_bin_states is not None else None}")
 
-        self.num_transitions = num_transitions
-
-        # # Save Transitions as tensors
-        self.states = torch.as_tensor(states, dtype=torch.float32)
-        self.next_states = torch.as_tensor(next_states, dtype=torch.float32)
-        self.bin_actions = torch.as_tensor(bin_actions, dtype=torch.int32)
-        self.rewards = torch.as_tensor(rewards, dtype=torch.float32)
-        self.dones = torch.as_tensor(dones, dtype=torch.bool)
-        self.action_masks = torch.as_tensor(action_masks, dtype=torch.bool)
-        if include_bin_features:
-            self.bin_states = torch.as_tensor(bin_states, dtype=torch.float32)
-            self.next_bin_states = torch.as_tensor(next_bin_states, dtype=torch.float32)
-        else:
-            self.bin_states = None
-            self.next_bin_states = None
-        
         # Set dimension of observation
         self.state_dim = self.states.shape[-1]
         if self._grid_network is None:
@@ -195,7 +187,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         # Normalize states and next_states
 
         self.states = normalize_noncyclic_features(
-            state=self.states,
+            state=states,
             state_feature_names=state_feature_names,
             max_norm_feature_names=self.max_norm_feature_names,
             ang_distance_norm_feature_names=self.ang_distance_feature_names,
@@ -205,7 +197,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             fix_nans=True
         )
         self.next_states = normalize_noncyclic_features(
-            state=self.next_states,
+            state=next_states,
             state_feature_names=state_feature_names,
             max_norm_feature_names=self.max_norm_feature_names,
             ang_distance_norm_feature_names=self.ang_distance_feature_names,
@@ -217,7 +209,7 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         if self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
             self.bin_states = normalize_noncyclic_features(
-                state=self.bin_states,
+                state=bin_states,
                 state_feature_names=self.bin_feature_names,
                 max_norm_feature_names=self.max_norm_feature_names,
                 ang_distance_norm_feature_names=self.ang_distance_feature_names,
@@ -227,7 +219,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 fix_nans=True
             )
             self.next_bin_states = normalize_noncyclic_features(
-                state=self.next_bin_states,
+                state=next_bin_states,
                 state_feature_names=self.bin_feature_names,
                 max_norm_feature_names=self.max_norm_feature_names,
                 ang_distance_norm_feature_names=self.ang_distance_feature_names,
@@ -256,6 +248,21 @@ class OfflineDataset(torch.utils.data.Dataset):
         # dones = df.groupby('night').apply(lambda x: [False]*(len(x)-1) + [True]).explode().values.astype(bool)
         # dones = df.groupby('night').apply(lambda x: [False]*(len(x)-1) + [True]).explode().values
         action_masks = self._construct_action_masks(df=df, bin_space=bin_space, num_transitions=num_transitions, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs)
+        
+        states = torch.as_tensor(states, dtype=torch.float32)
+        next_states = torch.as_tensor(next_states, dtype=torch.float32)
+        bin_actions = torch.as_tensor(bin_actions, dtype=torch.int32)
+        rewards = torch.as_tensor(rewards, dtype=torch.float32)
+        dones = torch.as_tensor(dones, dtype=torch.bool)
+        action_masks = torch.as_tensor(action_masks, dtype=torch.bool)
+
+        if include_bin_features:
+            bin_features = torch.as_tensor(bin_features, dtype=torch.float32)
+            next_bin_features = torch.as_tensor(next_bin_features, dtype=torch.float32)
+        else:
+            bin_features = None
+            next_bin_features = None
+            
         return states, next_states, bin_features, next_bin_features, actions, rewards, dones, action_masks, num_transitions
 
     def _construct_states(self, df, bin_df, include_bin_features, remove_large_time_diffs, next_state_idxs):

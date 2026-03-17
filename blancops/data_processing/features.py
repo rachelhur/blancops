@@ -652,6 +652,7 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, night2visithistory, 
         calculated_features |= additional_feats
 
     if hpGrid.is_azel:
+        warnings.filterwarnings("error", category=RuntimeWarning)
         calculated_features = calculate_history_dependent_bin_features_azel(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, calculated_features=calculated_features, 
                                                                             night2visithistory=night2visithistory, night2filtervisithistory=night2filtervisithistory,
                                                                             field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space)
