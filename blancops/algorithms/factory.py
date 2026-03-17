@@ -5,7 +5,8 @@ logger = logging.getLogger(__name__)
 import torch.nn as nn
 import torch.nn.functional as F
 
-from blancops.algorithms.algorithms import DDQN, BehaviorCloning
+from blancops.algorithms.ddqn import DDQN
+from blancops.algorithms.bc import BehaviorCloning
 
 def setup_algorithm(algorithm_name=None, num_actions=None, loss_fxn=None, hidden_dim=None, lr=None, lr_scheduler=None, device=None, 
                     lr_scheduler_kwargs=None, gamma=None, tau=None, lr_scheduler_epoch_start=None, lr_scheduler_num_epochs=None, activation=None, 
