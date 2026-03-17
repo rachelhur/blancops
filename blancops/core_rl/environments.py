@@ -4,18 +4,17 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 import math
-from blancops.data_processing.features import get_nautical_twilight
+from blancops.data_processing.data_processing import expand_feature_names_for_cyclic_norm
 
-from blancops.data_processing.features import normalize_noncyclic_features, normalize_timestamp
+from blancops.data_processing.data_processing import normalize_noncyclic_features
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-from blancops.math.geometry import angular_separation
 from blancops.data_processing.offline_dataset import setup_feature_names
-from blancops.data_processing.features import *
+from blancops.data_processing.features import NUM_FILTERS, normalize_timestamp, get_nautical_twilight
 from blancops.math import geometry
 
 from astropy.time import Time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pickle
 import json
 

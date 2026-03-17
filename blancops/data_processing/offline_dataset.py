@@ -7,12 +7,14 @@ import gc
 from tqdm import tqdm
 
 from blancops.ephemerides import ephemerides
-from blancops.data_processing.features import *
 import pandas as pd
 import json
 from torch.utils.data import random_split, RandomSampler
 import pickle
 import gc
+
+from blancops.data_processing.features import *
+from blancops.data_processing.data_processing import *
 
 # Get the logger associated with this module's name (e.g., 'my_module')
 import logging
@@ -172,7 +174,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         del df, bin_df
         gc.collect()
 
-        logger.info(f"States shape: {states.shape}, Actions shape: {self.bin_actions.shape}, Rewards shape: {self.rewards.shape}, Next states shape: {next_states.shape}, Dones shape: {self.dones.shape}, Action masks shape: {action_masks.shape}")
+        logger.info(f"States shape: {states.shape}, Actions shape: {self.bin_actions.shape}, Rewards shape: {self.rewards.shape}, Next states shape: {next_states.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
         logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}, Next bin states shape: {next_bin_states.shape if next_bin_states is not None else None}")
 
         # Set dimension of observation
