@@ -13,8 +13,11 @@ from tqdm import tqdm
 
 from blancops.math import units
 from blancops.ephemerides import ephemerides
+
+import warnings
 import logging
 logger = logging.getLogger(__name__)
+
 
 # Filter wavelengths (nm) according to obztak https://github.com/kadrlica/obztak/blob/c28fab23b09bcff1cf46746eae4ec7e40aeb7f7a/obztak/seeing.py#L22
 FILTER2WAVE = {
@@ -347,6 +350,7 @@ def get_zenith_features(original_df):
     zenith_df['ha'] = 0
     zenith_df['object'] = 'zenith'
     zenith_df['field_id'] = -1
+    zenith_df['filter'] = 0
     zenith_df['datetime'] = pd.to_datetime(zenith_df['datetime'], utc=True)
     zenith_df['night'] = pd.to_datetime(zenith_df['night'], utc=True)
 
@@ -642,9 +646,9 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, night2visithistory, 
     if 'filter' in bin_space:
         additional_feats = {}
         for key, arr in calculated_features.items():
-            if 'survey' in key:
-                for filt in FILTER2IDX.keys():
-                    additional_feats[key + f'_{filt}'] = arr.copy()
+            # if 'survey' in key:
+            for filt in FILTER2IDX.keys():
+                additional_feats[key + f'_{filt}'] = np.zeros(arr_shape, dtype=np.float32)
         calculated_features |= additional_feats
 
     if hpGrid.is_azel:
@@ -652,6 +656,7 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, night2visithistory, 
                                                                             night2visithistory=night2visithistory, night2filtervisithistory=night2filtervisithistory,
                                                                             field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space)
     else:
+        warnings.filterwarnings("error", category=RuntimeWarning)
         calculated_features = calculate_history_dependent_bin_features_radec(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, calculated_features=calculated_features, 
                                                                             night2visithistory=night2visithistory, night2filtervisithistory=night2filtervisithistory,
                                                                             field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space)
@@ -670,6 +675,7 @@ def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, c
     nfilters = len(FILTER2IDX)
     idx2filter = {v: k for k, v in FILTER2IDX.items()}
 
+    # Before looping over nights, get survey-wide visits
     # Get bin membership of all fields in survey
     ra_arr = np.array([field2radec[fid][0] for fid in field_ids])
     dec_arr = np.array([field2radec[fid][1] for fid in field_ids])
@@ -687,13 +693,17 @@ def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, c
     active_bins_s = nfields_s > 0
     
     global_idx = 0
-    pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX)
+    pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX).fillna(-1)
 
     night_groups = pt_df.groupby('night')
 
-    sample_key = next(iter(night2visithistory))
-
-    if False:
+    # if False:
+    if 'filter' in bin_space:
+        # Precompute survey-wide filters for each filter
+        nfields_s_filter = np.zeros((n_bins, nfilters), dtype=np.int32)
+        for f in range(nfilters):
+            nfields_s_filter[:, f] = np.bincount(bins_membership_arr, weights=in_survey_filter_plan[:, f], minlength=n_bins)
+        active_bins_s_filter = nfields_s_filter > 0
 
         for night, group in tqdm(night_groups, total=night_groups.ngroups, desc='Calculating night history bin features'):
             # Initialize 1D total visit counters
@@ -707,7 +717,8 @@ def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, c
             # Get field ids and filter indices at each step before loop
             step_fids = group['field_id'].to_numpy(dtype=np.int32)
             step_filts = group['filt_idx'].to_numpy(dtype=np.int32)
-            
+                        
+            # Get night visit limits
             # Get max visits to each field tonight
             valid_night_mask = group['object'] != 'zenith'
             night_fids_raw = group['field_id'][valid_night_mask].to_numpy().astype(np.int32)
@@ -728,11 +739,18 @@ def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, c
             )
             in_night_filter_plan = max_n_filter_visits_arr > 0
 
+            # specific case of teff < .3
             max_s_visits_arr = np.maximum(max_n_visits_arr, max_s_visits_arr_all)
             max_s_filter_visits_arr = np.maximum(max_n_filter_visits_arr, max_s_filter_visits_arr_all)
             
             nfields_n = np.bincount(bins_membership_arr, weights=in_night_plan, minlength=n_bins)
             active_bins_n = nfields_n > 0
+
+            # Precompute tonight's valid fields per bin for each filter
+            nfields_n_filter = np.zeros((n_bins, nfilters), dtype=np.float64)
+            for f in range(nfilters):
+                nfields_n_filter[:, f] = np.bincount(bins_membership_arr, weights=in_night_filter_plan[:, f], minlength=n_bins)
+            active_bins_n_filter = nfields_n_filter > 0
             
             for i in range(len(group)):
                 obs_fid = step_fids[i]
@@ -748,75 +766,53 @@ def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, c
                         # Update 2D filter counters
                         cur_survey_filter_visits[idx, obs_filt] += 1
                         cur_night_filter_visits[idx, obs_filt] += 1
-
-                # --- Bin's historic features based on FIELD --- #
-
-                # Get number of unvisited fields in each bin - bins below horizon have 0 fields unvisited
-                s_unvisited = np.bincount(bins_membership_arr, weights=(cur_survey_visits == 0) & in_survey_plan, minlength=n_bins)
-                n_unvisited = np.bincount(bins_membership_arr, weights=(cur_night_visits == 0) & in_night_plan, minlength=n_bins)
-
-                # Get number of incomplete fields in each bin
-                s_incomplete_mask = (cur_survey_visits < max_s_visits_arr) & in_survey_plan
-                n_incomplete_mask = (cur_night_visits < max_n_visits_arr) & in_night_plan
-                s_incomplete = np.bincount(bins_membership_arr, weights=s_incomplete_mask, minlength=n_bins)
-                n_incomplete = np.bincount(bins_membership_arr, weights=n_incomplete_mask, minlength=n_bins)
-        
-                # Create a zero-filled array for the results
-                for key in ['survey_num_unvisited_fields', 'night_num_unvisited_fields', 
-                            'survey_num_incomplete_fields', 'night_num_incomplete_fields']:
-                    calculated_features[key][global_idx] = -1. # bins with no viable fields get sentinel value -1
-                
-                # Do division in-place (bypasses runtimewarning error )
-                np.divide(s_unvisited, nfields_s, out=calculated_features['survey_num_unvisited_fields'][global_idx], where=active_bins_s)
-                np.divide(n_unvisited, nfields_n, out=calculated_features['night_num_unvisited_fields'][global_idx], where=active_bins_n)
-                np.divide(s_incomplete, nfields_s, out=calculated_features['survey_num_incomplete_fields'][global_idx], where=active_bins_s)
-                np.divide(n_incomplete, nfields_n, out=calculated_features['night_num_incomplete_fields'][global_idx], where=active_bins_n)
-                
-                # Min tiling
-                s_tiling_all = np.full_like(cur_survey_visits, 2.0, dtype=np.float32)
-                n_tiling_all = np.full_like(cur_night_visits, 2.0, dtype=np.float32)
-                # current_num_visits_field / max_num_visits_field only where max_num_visits_field > 0 ie, in the plan
-                np.divide(cur_survey_visits, max_s_visits_arr, out=s_tiling_all, where=in_survey_plan)
-                np.divide(cur_night_visits, max_n_visits_arr, out=n_tiling_all, where=in_night_plan)
-                
-                s_mins = np.full(n_bins, 2.0, dtype=np.float32)
-                n_mins = np.full(n_bins, 2.0, dtype=np.float32)
-                np.minimum.at(s_mins, bins_membership_arr, s_tiling_all)
-                np.minimum.at(n_mins, bins_membership_arr, n_tiling_all)
-                
-                # Reset bins with no fields back to -0.1
-                s_mins[s_mins > 1.0] = -1.0
-                n_mins[n_mins > 1.0] = -1.0
-                calculated_features['survey_min_tiling'][global_idx] = s_mins
-                calculated_features['night_min_tiling'][global_idx] = n_mins
                 
                 # --- Bin's historic features based on (FIELD, FILTER) --- #
 
-                # 1. Calculate ratios
+                # Assign sentinel values
+                for key in ['survey_num_unvisited_fields', 'night_num_unvisited_fields', 
+                            'survey_num_incomplete_fields', 'night_num_incomplete_fields']:
+                    for filt_name in idx2filter.values():
+                        calculated_features[f'{key}_{filt_name}'][global_idx] = -1. # bins with no viable fields get sentinel value -1
+                                
+                for f in range(nfilters):
+                    filt_name = idx2filter[f]
+                    
+                    # Unvisited specific filter
+                    s_unvisited_f = np.bincount(bins_membership_arr, weights=(cur_survey_filter_visits[:, f] == 0) & in_survey_filter_plan[:, f], minlength=n_bins)
+                    n_unvisited_f = np.bincount(bins_membership_arr, weights=(cur_night_filter_visits[:, f] == 0) & in_night_filter_plan[:, f], minlength=n_bins)
+
+                    # Incomplete specific filter
+                    s_incomplete_f = np.bincount(bins_membership_arr, weights=(cur_survey_filter_visits[:, f] < max_s_filter_visits_arr[:, f]) & in_survey_filter_plan[:, f], minlength=n_bins)
+                    n_incomplete_f = np.bincount(bins_membership_arr, weights=(cur_night_filter_visits[:, f] < max_n_filter_visits_arr[:, f]) & in_night_filter_plan[:, f], minlength=n_bins)
+
+                    # Filter specific division
+                    np.divide(s_unvisited_f, nfields_s_filter[:, f], out=calculated_features[f'survey_num_unvisited_fields_{filt_name}'][global_idx], where=active_bins_s_filter[:, f])
+                    np.divide(n_unvisited_f, nfields_n_filter[:, f], out=calculated_features[f'night_num_unvisited_fields_{filt_name}'][global_idx], where=active_bins_n_filter[:, f])
+                    np.divide(s_incomplete_f, nfields_s_filter[:, f], out=calculated_features[f'survey_num_incomplete_fields_{filt_name}'][global_idx], where=active_bins_s_filter[:, f])
+                    np.divide(n_incomplete_f, nfields_n_filter[:, f], out=calculated_features[f'night_num_incomplete_fields_{filt_name}'][global_idx], where=active_bins_n_filter[:, f])
+                
+                # Min tiling
                 s_filter_tiling_all = np.full_like(cur_survey_filter_visits, 2.0, dtype=np.float32)
                 n_filter_tiling_all = np.full_like(cur_night_filter_visits, 2.0, dtype=np.float32)
                 
                 np.divide(cur_survey_filter_visits, max_s_filter_visits_arr, out=s_filter_tiling_all, where=in_survey_filter_plan)
                 np.divide(cur_night_filter_visits, max_n_filter_visits_arr, out=n_filter_tiling_all, where=in_night_filter_plan)
                 
-                # 2. Find minimums per bin
                 s_filter_mins = np.full((n_bins, nfilters), 2.0, dtype=np.float32) 
-                # n_filter_mins = np.full((n_bins, nfilters), 2.0, dtype=np.float32)
+                n_filter_mins = np.full((n_bins, nfilters), 2.0, dtype=np.float32)
                 
-                # Iterate over filters to apply np.minimum.at efficiently on the 1D slices
                 for f in range(nfilters):
                     np.minimum.at(s_filter_mins[:, f], bins_membership_arr, s_filter_tiling_all[:, f])
-                    # np.minimum.at(n_filter_mins[:, f], bins_membership_arr, n_filter_tiling_all[:, f])
+                    np.minimum.at(n_filter_mins[:, f], bins_membership_arr, n_filter_tiling_all[:, f])
                 
-                # 3. Clean up sentinel values
                 s_filter_mins[s_filter_mins > 1.0] = -1.0
-                # n_filter_mins[n_filter_mins > 1.0] = -1.0
+                n_filter_mins[n_filter_mins > 1.0] = -1.0
                 
-                # 4. Assign to output dictionary dynamically using the filter names
                 for f in range(nfilters):
                     filt_name = idx2filter[f]
                     calculated_features[f'survey_min_tiling_{filt_name}'][global_idx] = s_filter_mins[:, f]
-                    # calculated_features[f'night_min_tiling_{filt_name}'][global_idx] = n_filter_mins[:, f]
+                    calculated_features[f'night_min_tiling_{filt_name}'][global_idx] = n_filter_mins[:, f]
 
                 global_idx += 1
     else:
@@ -832,7 +828,6 @@ def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, c
         for night, group in tqdm(night_groups, total=night_groups.ngroups, desc='Calculating night history bin features'):
             # Initialize visit counters
             cur_survey_visits = night2visithistory[night].copy()
-            cur_survey_filt_visits = night2filtervisithistory[night].copy() # shape (nfields, nfilts)
             cur_night_visits = np.zeros(nfields, dtype=np.int32)
             
             # Get field ids at each step before loop
@@ -905,15 +900,14 @@ def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, c
 def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, 
                                                   night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, bin_space):
     n_bins = len(hpGrid.idx_lookup)
-    fids = np.array(list(field2maxvisits.keys()))
-    nfields = len(fids)
-    fid2idx = np.full(fids.max() + 1, -1, dtype=np.int32)
-    for idx, fid in enumerate(fids):
-        fid2idx[fid] = idx
+    field_ids = np.array(list(field2maxvisits.keys()))
+    nfields = len(field_ids)
+    idx2filter = {v: k for k, v in FILTER2IDX.items()}
 
-    ra_arr = np.array([field2radec[fid][0] for fid in fids])
-    dec_arr = np.array([field2radec[fid][1] for fid in fids])
-    max_v_arr = np.array([field2maxvisits[fid] for fid in fids], dtype=np.int32)
+    ra_arr = np.array([field2radec[fid][0] for fid in field_ids])
+    dec_arr = np.array([field2radec[fid][1] for fid in field_ids])
+    max_s_visits_arr = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
+    max_s_filter_visits_arr = np.array([fieldfilter2maxvisits[fid] for fid in field_ids], dtype=np.int32)
 
     # --- TIME CACHING VARIABLES ---
     cache_time = -1e9
@@ -924,21 +918,21 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
 
     global_idx = 0
     for night, group in tqdm(pt_df.groupby('night'), desc='Calculating AzEl History'):
-        cur_survey_visits = night2visithistory[night][fids].copy().astype(np.int32)
+        cur_survey_visits = night2visithistory[night][field_ids].copy().astype(np.int32)
         cur_night_visits = np.zeros(nfields, dtype=np.int32)
         
         step_fids = group['field_id'].to_numpy(dtype=np.int32)
         step_times = group['timestamp'].to_numpy(dtype=np.int32)
 
         night_fids_raw = group['field_id'][group['object'] != 'zenith'].to_numpy().astype(np.int32)
-        max_n_visits_arr = np.bincount(fid2idx[night_fids_raw], minlength=nfields)
+        max_n_visits_arr = np.bincount(field_ids[night_fids_raw], minlength=nfields)
 
         for i in range(len(group)):
             timestamp = step_times[i]
             obs_fid = step_fids[i]
 
             if obs_fid != -1:
-                idx = fid2idx[obs_fid]
+                idx = field_ids[obs_fid]
                 if idx != -1:
                     cur_survey_visits[idx] += 1
                     cur_night_visits[idx] += 1
@@ -955,7 +949,7 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
                 v_bins = bins[valid_mask]
                 
                 # Check if the fields above horizon are actually in the plans
-                in_s_plan = max_v_arr[valid_mask] > 0
+                in_s_plan = max_s_visits_arr[valid_mask] > 0
                 in_n_plan = max_n_visits_arr[valid_mask] > 0
                 
                 # Count fields per bin for Survey vs Night
@@ -979,7 +973,7 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
             v_survey_counts = cur_survey_visits[valid_mask]
             v_night_counts = cur_night_visits[valid_mask]
             
-            v_max_v_survey = max_v_arr[valid_mask]
+            v_max_v_survey = max_s_visits_arr[valid_mask]
             v_max_v_night = max_n_visits_arr[valid_mask]
 
             # Re-create the plan masks for the state checks
@@ -1095,7 +1089,7 @@ def save_DES_bin_and_field_mappings(
     # 7. night2filterhistory: filter visits per field each night
     night2filterhistory = {}
     night2fieldhistory = {}
-    df['filt_idx'] = df['filter'].map(FILTER2IDX)
+    df['filt_idx'] = df['filter'].map(FILTER2IDX).fillna(-1)
 
     filt_running_counts = np.zeros(shape=(num_fields, len(FILTER2IDX)), dtype=np.int32)
     field_running_counts = np.zeros(shape=(num_fields), dtype=np.int32)
