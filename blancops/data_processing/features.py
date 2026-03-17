@@ -236,50 +236,6 @@ def expand_feature_names_for_cyclic_norm(feature_names, cyclical_feature_names):
         ]
     return feature_names
 
-def setup_feature_names(include_default_features, additional_global_features, additional_bin_features,
-                        default_global_feature_names, cyclical_feature_names, hpGrid, do_cyclical_norm,
-                        grid_network):
-
-    # include_bin_features = len(additional_global_features) > 0
-    # Any experiment will likely have at least these state features
-    required_point_features = default_global_feature_names \
-                                if include_default_features else []
-    # required_bin_features = default_bin_feature_names \
-                                # if (include_default_features and include_bin_features) else []
-    
-    # Include additional features not in default features above
-    additional_global_features = [] if additional_global_features is None else additional_global_features
-
-    base_global_feature_names = required_point_features + additional_global_features
-    base_bin_feature_names = np.unique(np.array(additional_bin_features)).tolist()
-    if grid_network == None:
-        prenorm_bin_feature_names = np.array([ [f'bin_{bin_num}_{bin_feat}'
-                                        for bin_feat in base_bin_feature_names]
-                                        for bin_num in range(len(hpGrid.idx_lookup))])
-        prenorm_bin_feature_names = prenorm_bin_feature_names.flatten().tolist()
-    elif grid_network == 'single_bin_scorer':
-        prenorm_bin_feature_names = np.array([ [f'bin_{bin_num}_{bin_feat}'
-                            for bin_feat in base_bin_feature_names]
-                            for bin_num in range(len(hpGrid.idx_lookup))])
-        prenorm_bin_feature_names = prenorm_bin_feature_names.flatten().tolist()
-    else:
-        raise NotImplementedError(f"grid_network {grid_network} not supported")
-
-    base_feature_names = base_global_feature_names + prenorm_bin_feature_names
-
-    # Replace cyclical features with their cyclical transforms/normalizations if on  
-    if do_cyclical_norm:
-        global_feature_names = expand_feature_names_for_cyclic_norm(base_global_feature_names.copy(), cyclical_feature_names)
-        bin_feature_names = expand_feature_names_for_cyclic_norm(prenorm_bin_feature_names, cyclical_feature_names)
-    
-    if grid_network is None:
-        state_feature_names = global_feature_names + bin_feature_names
-    elif grid_network == 'single_bin_scorer':
-        state_feature_names = global_feature_names
-
-    return base_global_feature_names, base_bin_feature_names, base_feature_names, global_feature_names, \
-        bin_feature_names, state_feature_names, prenorm_bin_feature_names
-
 def setup_feature_names(base_global_feature_names, base_bin_feature_names, cyclical_feature_names, nbins, do_cyclical_norm, grid_network):
     """
     Returns
