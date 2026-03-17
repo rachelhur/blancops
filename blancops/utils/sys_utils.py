@@ -117,7 +117,6 @@ def load_global_config(config_path=None):
     logger.info(f"Loaded config file at {config_path}")
     return gcfg
     
-    
 def load_model_config(config_path=None):
     """Loads a custom config if provided, otherwise loads the default from the package."""
     if config_path:
@@ -140,7 +139,6 @@ def save_config(args=None, config_dict=None, outdir=None):
     
     with open(out_path / "config.json", "w") as f:
         json.dump(config_dict, f, indent=4)
-
 
 def dict_to_nested(data):
     """Converts {'model.lr': 0.1} to {'model': {'lr': 0.1}}"""
