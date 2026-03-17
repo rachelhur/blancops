@@ -903,40 +903,83 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
     n_bins = len(hpGrid.idx_lookup)
     field_ids = np.array(list(field2maxvisits.keys()))
     nfields = len(field_ids)
+    nfilters = len(FILTER2IDX)
     idx2filter = {v: k for k, v in FILTER2IDX.items()}
 
     ra_arr = np.array([field2radec[fid][0] for fid in field_ids])
     dec_arr = np.array([field2radec[fid][1] for fid in field_ids])
-    max_s_visits_arr = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
-    max_s_filter_visits_arr = np.array([fieldfilter2maxvisits[fid] for fid in field_ids], dtype=np.int32)
+    
+    max_s_visits_arr_all = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
+    max_s_filter_visits_arr_all = np.array([fieldfilter2maxvisits[fid] for fid in field_ids], dtype=np.int32)
+
+    # Add filter idx mapping to dataframe safely
+    pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX).fillna(-1)
 
     # --- TIME CACHING VARIABLES ---
     cache_time = -1e9
     v_bins_cache = None
-    active_bins_cache = None
-    bin_count_cache = None
     valid_mask_cache = None
+    bc_s_cache = None
+    bc_n_cache = None
+    act_s_cache = None
+    act_n_cache = None
+    
+    # Filter caching variables
+    bc_s_f_cache = None
+    bc_n_f_cache = None
+    act_s_f_cache = None
+    act_n_f_cache = None
 
     global_idx = 0
     for night, group in tqdm(pt_df.groupby('night'), desc='Calculating AzEl History'):
+        # 1D counters
         cur_survey_visits = night2visithistory[night][field_ids].copy().astype(np.int32)
         cur_night_visits = np.zeros(nfields, dtype=np.int32)
         
-        step_fids = group['field_id'].to_numpy(dtype=np.int32)
+        # 2D counters
+        if 'filter' in bin_space:
+            cur_survey_filter_visits = night2filtervisithistory[night].copy()
+            cur_night_filter_visits = np.zeros((nfields, nfilters), dtype=np.int32)
+        
+        step_fids = group['field_id'].fillna(-1).to_numpy(dtype=np.int32)
+        step_filts = group['filt_idx'].to_numpy(dtype=np.int32)
         step_times = group['timestamp'].to_numpy(dtype=np.int32)
 
-        night_fids_raw = group['field_id'][group['object'] != 'zenith'].to_numpy().astype(np.int32)
-        max_n_visits_arr = np.bincount(field_ids[night_fids_raw], minlength=nfields)
+        valid_night_mask = group['object'] != 'zenith'
+        night_fids_raw = group['field_id'][valid_night_mask].fillna(-1).to_numpy().astype(np.int32)
+        mapped_night_fids = field_ids[night_fids_raw]
+        valid_mapped_mask = mapped_night_fids != -1
+        
+        # Night limits 1D
+        max_n_visits_arr = np.bincount(mapped_night_fids[valid_mapped_mask], minlength=nfields)
+        
+        # Night limits 2D
+        if 'filter' in bin_space:
+            night_filts_raw = group['filt_idx'][valid_night_mask].to_numpy().astype(np.int32)
+            max_n_filter_visits_arr = np.zeros((nfields, nfilters), dtype=np.int32)
+            np.add.at(
+                max_n_filter_visits_arr, 
+                (mapped_night_fids[valid_mapped_mask], night_filts_raw[valid_mapped_mask]), 
+                1
+            )
+            max_s_filter_visits_arr = np.maximum(max_n_filter_visits_arr, max_s_filter_visits_arr_all)
+            
+        max_s_visits_arr = np.maximum(max_n_visits_arr, max_s_visits_arr_all)
 
         for i in range(len(group)):
             timestamp = step_times[i]
             obs_fid = step_fids[i]
+            obs_filt = step_filts[i]
 
             if obs_fid != -1:
                 idx = field_ids[obs_fid]
                 if idx != -1:
                     cur_survey_visits[idx] += 1
                     cur_night_visits[idx] += 1
+                    
+                    if 'filter' in bin_space and obs_filt != -1:
+                        cur_survey_filter_visits[idx, obs_filt] += 1
+                        cur_night_filter_visits[idx, obs_filt] += 1
 
             # 1. TIME CACHING: Refresh every 5 minutes (300s)
             if abs(timestamp - cache_time) > 300:
@@ -949,62 +992,80 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
                 
                 v_bins = bins[valid_mask]
                 
-                # Check if the fields above horizon are actually in the plans
+                # 1D Cache
                 in_s_plan = max_s_visits_arr[valid_mask] > 0
                 in_n_plan = max_n_visits_arr[valid_mask] > 0
                 
-                # Count fields per bin for Survey vs Night
                 bin_count_s = np.bincount(v_bins, weights=in_s_plan, minlength=n_bins)
                 bin_count_n = np.bincount(v_bins, weights=in_n_plan, minlength=n_bins)
                 
                 active_bins_s = bin_count_s > 0
                 active_bins_n = bin_count_n > 0
                 
+                # Update 1D cache variables
                 cache_time, v_bins_cache, valid_mask_cache = timestamp, v_bins, valid_mask
-                
-                # Update cache variables
                 bc_s_cache, bc_n_cache = bin_count_s, bin_count_n
                 act_s_cache, act_n_cache = active_bins_s, active_bins_n
+                
+                # 2D Filter Cache
+                if 'filter' in bin_space:
+                    in_s_f_plan = max_s_filter_visits_arr[valid_mask] > 0
+                    in_n_f_plan = max_n_filter_visits_arr[valid_mask] > 0
+
+                    bin_count_s_filter = np.zeros((n_bins, nfilters), dtype=np.float64)
+                    bin_count_n_filter = np.zeros((n_bins, nfilters), dtype=np.float64)
+
+                    for f in range(nfilters):
+                        bin_count_s_filter[:, f] = np.bincount(v_bins, weights=in_s_f_plan[:, f], minlength=n_bins)
+                        bin_count_n_filter[:, f] = np.bincount(v_bins, weights=in_n_f_plan[:, f], minlength=n_bins)
+
+                    active_bins_s_filter = bin_count_s_filter > 0
+                    active_bins_n_filter = bin_count_n_filter > 0
+                    
+                    # Update 2D cache variables
+                    bc_s_f_cache, bc_n_f_cache = bin_count_s_filter, bin_count_n_filter
+                    act_s_f_cache, act_n_f_cache = active_bins_s_filter, active_bins_n_filter
             else:
+                # Load from cache
                 v_bins, valid_mask = v_bins_cache, valid_mask_cache
                 bin_count_s, bin_count_n = bc_s_cache, bc_n_cache
                 active_bins_s, active_bins_n = act_s_cache, act_n_cache
+                
+                if 'filter' in bin_space:
+                    bin_count_s_filter, bin_count_n_filter = bc_s_f_cache, bc_n_f_cache
+                    active_bins_s_filter, active_bins_n_filter = act_s_f_cache, act_n_f_cache
 
-            # 2. CALCULATE STATE
+            # 2. CALCULATE 1D STATE
             v_survey_counts = cur_survey_visits[valid_mask]
             v_night_counts = cur_night_visits[valid_mask]
             
             v_max_v_survey = max_s_visits_arr[valid_mask]
             v_max_v_night = max_n_visits_arr[valid_mask]
 
-            # Re-create the plan masks for the state checks
             in_s_plan = v_max_v_survey > 0
             in_n_plan = v_max_v_night > 0
 
             for key_n, key_s, mask_n, mask_s in [
-                # Must be unvisited AND in the respective plan
                 ('night_num_unvisited_fields', 'survey_num_unvisited_fields', 
                  (v_night_counts == 0) & in_n_plan, 
                  (v_survey_counts == 0) & in_s_plan),
                  
-                # Must be incomplete AND in the respective plan
                 ('night_num_incomplete_fields', 'survey_num_incomplete_fields', 
                  (v_night_counts < v_max_v_night) & in_n_plan, 
                  (v_survey_counts < v_max_v_survey) & in_s_plan)
                 ]:
                 res_n, res_s = np.zeros(n_bins, dtype=np.float32), np.zeros(n_bins, dtype=np.float32)
                 
-                # Use the correct denominators and active masks!
                 np.divide(np.bincount(v_bins, weights=mask_n, minlength=n_bins), bin_count_n, out=res_n, where=active_bins_n)
                 np.divide(np.bincount(v_bins, weights=mask_s, minlength=n_bins), bin_count_s, out=res_s, where=active_bins_s)
                 
-                res_n[~active_bins_n] = 0.
-                res_s[~active_bins_s] = 0.
+                res_n[~active_bins_n] = -0.0
+                res_s[~active_bins_s] = -0.0
                 
                 calculated_features[key_n][global_idx] = res_n
                 calculated_features[key_s][global_idx] = res_s
 
-            # Vectorized Min Tiling (With Safe Division)
+            # Vectorized Min Tiling 1D
             s_tiling_all = np.full_like(v_survey_counts, 2.0, dtype=np.float32)
             n_tiling_all = np.full_like(v_night_counts, 2.0, dtype=np.float32)
             
@@ -1015,15 +1076,206 @@ def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, ca
             np.minimum.at(s_mins, v_bins, s_tiling_all)
             np.minimum.at(n_mins, v_bins, n_tiling_all)
             
-            s_mins[~active_bins_s] = 0.
-            n_mins[~active_bins_n] = 0.
+            s_mins[~active_bins_s] = 0.0
+            n_mins[~active_bins_n] = 0.0
             
             calculated_features['survey_min_tiling'][global_idx] = s_mins
             calculated_features['night_min_tiling'][global_idx] = n_mins
             
+            # 3. CALCULATE 2D FILTER STATE
+            if 'filter' in bin_space:
+                v_survey_f_counts = cur_survey_filter_visits[valid_mask]
+                v_night_f_counts = cur_night_filter_visits[valid_mask]
+                
+                v_max_v_survey_f = max_s_filter_visits_arr[valid_mask]
+                v_max_v_night_f = max_n_filter_visits_arr[valid_mask]
+
+                in_s_f_plan = v_max_v_survey_f > 0
+                in_n_f_plan = v_max_v_night_f > 0
+                
+                for f in range(nfilters):
+                    filt_name = idx2filter[f]
+                    
+                    # Unvisited specific filter
+                    mask_n_unv_f = (v_night_f_counts[:, f] == 0) & in_n_f_plan[:, f]
+                    mask_s_unv_f = (v_survey_f_counts[:, f] == 0) & in_s_f_plan[:, f]
+
+                    # Incomplete specific filter
+                    mask_n_inc_f = (v_night_f_counts[:, f] < v_max_v_night_f[:, f]) & in_n_f_plan[:, f]
+                    mask_s_inc_f = (v_survey_f_counts[:, f] < v_max_v_survey_f[:, f]) & in_s_f_plan[:, f]
+                    
+                    res_n_unv, res_s_unv = np.zeros(n_bins, dtype=np.float32), np.zeros(n_bins, dtype=np.float32)
+                    res_n_inc, res_s_inc = np.zeros(n_bins, dtype=np.float32), np.zeros(n_bins, dtype=np.float32)
+
+                    # Filter specific division
+                    np.divide(np.bincount(v_bins, weights=mask_n_unv_f, minlength=n_bins), bin_count_n_filter[:, f], out=res_n_unv, where=active_bins_n_filter[:, f])
+                    np.divide(np.bincount(v_bins, weights=mask_s_unv_f, minlength=n_bins), bin_count_s_filter[:, f], out=res_s_unv, where=active_bins_s_filter[:, f])
+                    
+                    np.divide(np.bincount(v_bins, weights=mask_n_inc_f, minlength=n_bins), bin_count_n_filter[:, f], out=res_n_inc, where=active_bins_n_filter[:, f])
+                    np.divide(np.bincount(v_bins, weights=mask_s_inc_f, minlength=n_bins), bin_count_s_filter[:, f], out=res_s_inc, where=active_bins_s_filter[:, f])
+
+                    # Sentinel values for inactive filter bins
+                    res_n_unv[~active_bins_n_filter[:, f]] = -1.0
+                    res_s_unv[~active_bins_s_filter[:, f]] = -1.0
+                    res_n_inc[~active_bins_n_filter[:, f]] = -1.0
+                    res_s_inc[~active_bins_s_filter[:, f]] = -1.0
+
+                    calculated_features[f'night_num_unvisited_fields_{filt_name}'][global_idx] = res_n_unv
+                    calculated_features[f'survey_num_unvisited_fields_{filt_name}'][global_idx] = res_s_unv
+                    calculated_features[f'night_num_incomplete_fields_{filt_name}'][global_idx] = res_n_inc
+                    calculated_features[f'survey_num_incomplete_fields_{filt_name}'][global_idx] = res_s_inc
+
+                # Min tiling filter specific
+                s_filter_tiling_all = np.full_like(v_survey_f_counts, 2.0, dtype=np.float32)
+                n_filter_tiling_all = np.full_like(v_night_f_counts, 2.0, dtype=np.float32)
+                
+                np.divide(v_survey_f_counts, v_max_v_survey_f, out=s_filter_tiling_all, where=in_s_f_plan)
+                np.divide(v_night_f_counts, v_max_v_night_f, out=n_filter_tiling_all, where=in_n_f_plan)
+                
+                s_filter_mins = np.full((n_bins, nfilters), 2.0, dtype=np.float32) 
+                n_filter_mins = np.full((n_bins, nfilters), 2.0, dtype=np.float32)
+                
+                for f in range(nfilters):
+                    np.minimum.at(s_filter_mins[:, f], v_bins, s_filter_tiling_all[:, f])
+                    np.minimum.at(n_filter_mins[:, f], v_bins, n_filter_tiling_all[:, f])
+                    
+                    # Sentinel values
+                    s_filter_mins[~active_bins_s_filter[:, f], f] = -1.0
+                    n_filter_mins[~active_bins_n_filter[:, f], f] = -1.0
+                    
+                    filt_name = idx2filter[f]
+                    calculated_features[f'survey_min_tiling_{filt_name}'][global_idx] = s_filter_mins[:, f]
+                    calculated_features[f'night_min_tiling_{filt_name}'][global_idx] = n_filter_mins[:, f]
+
             global_idx += 1
 
     return calculated_features
+# def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, 
+#                                                   night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, bin_space):
+#     n_bins = len(hpGrid.idx_lookup)
+#     field_ids = np.array(list(field2maxvisits.keys()))
+#     nfields = len(field_ids)
+#     idx2filter = {v: k for k, v in FILTER2IDX.items()}
+
+#     ra_arr = np.array([field2radec[fid][0] for fid in field_ids])
+#     dec_arr = np.array([field2radec[fid][1] for fid in field_ids])
+#     max_s_visits_arr = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
+#     max_s_filter_visits_arr = np.array([fieldfilter2maxvisits[fid] for fid in field_ids], dtype=np.int32)
+
+#     # --- TIME CACHING VARIABLES ---
+#     cache_time = -1e9
+#     v_bins_cache = None
+#     active_bins_cache = None
+#     bin_count_cache = None
+#     valid_mask_cache = None
+
+#     global_idx = 0
+#     for night, group in tqdm(pt_df.groupby('night'), desc='Calculating AzEl History'):
+#         cur_survey_visits = night2visithistory[night][field_ids].copy().astype(np.int32)
+#         cur_night_visits = np.zeros(nfields, dtype=np.int32)
+        
+#         step_fids = group['field_id'].to_numpy(dtype=np.int32)
+#         step_times = group['timestamp'].to_numpy(dtype=np.int32)
+
+#         night_fids_raw = group['field_id'][group['object'] != 'zenith'].to_numpy().astype(np.int32)
+#         max_n_visits_arr = np.bincount(field_ids[night_fids_raw], minlength=nfields)
+
+#         for i in range(len(group)):
+#             timestamp = step_times[i]
+#             obs_fid = step_fids[i]
+
+#             if obs_fid != -1:
+#                 idx = field_ids[obs_fid]
+#                 if idx != -1:
+#                     cur_survey_visits[idx] += 1
+#                     cur_night_visits[idx] += 1
+
+#             # 1. TIME CACHING: Refresh every 5 minutes (300s)
+#             if abs(timestamp - cache_time) > 300:
+#                 az, el = ephemerides.equatorial_to_topographic(ra_arr, dec_arr, time=timestamp)
+#                 bins_raw = hpGrid.ang2idx(lon=az, lat=el)
+                
+#                 # FIX: Explicitly handle None values and convert to numeric sentinel (-1)
+#                 bins = np.array([b if b is not None else -1 for b in bins_raw], dtype=np.int32)
+#                 valid_mask = (el > 0) & (bins != -1)
+                
+#                 v_bins = bins[valid_mask]
+                
+#                 # Check if the fields above horizon are actually in the plans
+#                 in_s_plan = max_s_visits_arr[valid_mask] > 0
+#                 in_n_plan = max_n_visits_arr[valid_mask] > 0
+                
+#                 # Count fields per bin for Survey vs Night
+#                 bin_count_s = np.bincount(v_bins, weights=in_s_plan, minlength=n_bins)
+#                 bin_count_n = np.bincount(v_bins, weights=in_n_plan, minlength=n_bins)
+                
+#                 active_bins_s = bin_count_s > 0
+#                 active_bins_n = bin_count_n > 0
+                
+#                 cache_time, v_bins_cache, valid_mask_cache = timestamp, v_bins, valid_mask
+                
+#                 # Update cache variables
+#                 bc_s_cache, bc_n_cache = bin_count_s, bin_count_n
+#                 act_s_cache, act_n_cache = active_bins_s, active_bins_n
+#             else:
+#                 v_bins, valid_mask = v_bins_cache, valid_mask_cache
+#                 bin_count_s, bin_count_n = bc_s_cache, bc_n_cache
+#                 active_bins_s, active_bins_n = act_s_cache, act_n_cache
+
+#             # 2. CALCULATE STATE
+#             v_survey_counts = cur_survey_visits[valid_mask]
+#             v_night_counts = cur_night_visits[valid_mask]
+            
+#             v_max_v_survey = max_s_visits_arr[valid_mask]
+#             v_max_v_night = max_n_visits_arr[valid_mask]
+
+#             # Re-create the plan masks for the state checks
+#             in_s_plan = v_max_v_survey > 0
+#             in_n_plan = v_max_v_night > 0
+
+#             for key_n, key_s, mask_n, mask_s in [
+#                 # Must be unvisited AND in the respective plan
+#                 ('night_num_unvisited_fields', 'survey_num_unvisited_fields', 
+#                  (v_night_counts == 0) & in_n_plan, 
+#                  (v_survey_counts == 0) & in_s_plan),
+                 
+#                 # Must be incomplete AND in the respective plan
+#                 ('night_num_incomplete_fields', 'survey_num_incomplete_fields', 
+#                  (v_night_counts < v_max_v_night) & in_n_plan, 
+#                  (v_survey_counts < v_max_v_survey) & in_s_plan)
+#                 ]:
+#                 res_n, res_s = np.zeros(n_bins, dtype=np.float32), np.zeros(n_bins, dtype=np.float32)
+                
+#                 # Use the correct denominators and active masks!
+#                 np.divide(np.bincount(v_bins, weights=mask_n, minlength=n_bins), bin_count_n, out=res_n, where=active_bins_n)
+#                 np.divide(np.bincount(v_bins, weights=mask_s, minlength=n_bins), bin_count_s, out=res_s, where=active_bins_s)
+                
+#                 res_n[~active_bins_n] = 0.
+#                 res_s[~active_bins_s] = 0.
+                
+#                 calculated_features[key_n][global_idx] = res_n
+#                 calculated_features[key_s][global_idx] = res_s
+
+#             # Vectorized Min Tiling (With Safe Division)
+#             s_tiling_all = np.full_like(v_survey_counts, 2.0, dtype=np.float32)
+#             n_tiling_all = np.full_like(v_night_counts, 2.0, dtype=np.float32)
+            
+#             np.divide(v_survey_counts, v_max_v_survey, out=s_tiling_all, where=in_s_plan)
+#             np.divide(v_night_counts, v_max_v_night, out=n_tiling_all, where=in_n_plan)
+            
+#             s_mins, n_mins = np.full(n_bins, 2.0, dtype=np.float32), np.full(n_bins, 2.0, dtype=np.float32)
+#             np.minimum.at(s_mins, v_bins, s_tiling_all)
+#             np.minimum.at(n_mins, v_bins, n_tiling_all)
+            
+#             s_mins[~active_bins_s] = 0.
+#             n_mins[~active_bins_n] = 0.
+            
+#             calculated_features['survey_min_tiling'][global_idx] = s_mins
+#             calculated_features['night_min_tiling'][global_idx] = n_mins
+            
+#             global_idx += 1
+
+#     return calculated_features
 
 import json
 import pickle
