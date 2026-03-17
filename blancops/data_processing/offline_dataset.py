@@ -151,8 +151,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         if save_df:
             self._df = df # Save for diagnostics
             self._bin_df = bin_df # Save for diagnostics
-        del df, bin_df
-        gc.collect()
                     
         # Save night dates, total number of nights in dataset, and number of obs per night
         groups_by_night = df.groupby('night')
@@ -171,8 +169,9 @@ class OfflineDataset(torch.utils.data.Dataset):
             bin_space=bin_space,
             remove_large_time_diffs=remove_large_time_diffs
             )
+        del df, bin_df
+        gc.collect()
 
-        
         logger.info(f"States shape: {states.shape}, Actions shape: {self.bin_actions.shape}, Rewards shape: {self.rewards.shape}, Next states shape: {next_states.shape}, Dones shape: {self.dones.shape}, Action masks shape: {action_masks.shape}")
         logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}, Next bin states shape: {next_bin_states.shape if next_bin_states is not None else None}")
 
