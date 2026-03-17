@@ -33,8 +33,7 @@ class OfflineDataset(torch.utils.data.Dataset):
     def __init__(self, df=None, cfg=None, gcfg=None,
                  specific_years=None, specific_months=None, specific_days=None, specific_filters=None,
                  field2maxvisits_path=None, field2radec_path=None, field2name_path=None,
-                 night2filtervisithistory_path=None, fieldfilter2maxvisits=None,
-                 save_df=False
+                 night2filtervisithistory_path=None, fieldfilter2maxvisits=None
                  ): 
         assert cfg is not None and gcfg is not None, "Must pass both cfg and gcfg"
 
@@ -150,39 +149,38 @@ class OfflineDataset(torch.utils.data.Dataset):
             bin_space=bin_space
         )
 
-        if save_df:
-            self._df = df # Save for diagnostics
-            self._bin_df = bin_df # Save for diagnostics
+        self._df = df # Save for diagnostics
+        self._bin_df = bin_df # Save for diagnostics
+        del df, bin_df
+        gc.collect()
                     
         # Save night dates, total number of nights in dataset, and number of obs per night
-        groups_by_night = df.groupby('night')
-        self.unique_nights = df['night'].unique()
+        groups_by_night = self._df.groupby('night')
+        self.unique_nights = self._df['night'].unique()
         self.n_nights = groups_by_night.ngroups
         self.n_obs_per_night = groups_by_night.size() # nights have different numbers of observations
 
         # Construct Transitions
         states, next_states, bin_states, next_bin_states, self.bin_actions, self.rewards, self.dones, self.action_masks, self.num_transitions \
             = self._construct_transitions(
-            df=df, 
-            bin_df=bin_df,  
+            df=self._df, 
+            bin_df=self._bin_df,  
             include_bin_features=include_bin_features, 
             num_bins_1d=num_bins_1d, 
             binning_method=binning_method, 
             bin_space=bin_space,
             remove_large_time_diffs=remove_large_time_diffs
             )
-        del df, bin_df
-        gc.collect()
 
         logger.info(f"States shape: {states.shape}, Actions shape: {self.bin_actions.shape}, Rewards shape: {self.rewards.shape}, Next states shape: {next_states.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
         logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}, Next bin states shape: {next_bin_states.shape if next_bin_states is not None else None}")
 
         # Set dimension of observation
-        self.state_dim = self.states.shape[-1]
+        self.state_dim = states.shape[-1]
         if self._grid_network is None:
             state_feature_names = self.global_feature_names + self.bin_feature_names
         elif self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
-            self.bin_state_dim = self.bin_states.shape[-1]
+            self.bin_state_dim = bin_states.shape[-1]
             state_feature_names = self.global_feature_names
 
         # Normalize states and next_states
@@ -242,7 +240,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             next_state_idxs = None
         states, next_states, bin_features, next_bin_features = self._construct_states(df=df, bin_df=bin_df, include_bin_features=include_bin_features, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs)
         num_transitions = states.shape[0]
-        actions = self._construct_actions(df, next_states=next_states, bin_space=bin_space, binning_method=binning_method, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs, num_bins_1d=num_bins_1d)
+        bin_actions = self._construct_actions(df, next_states=next_states, bin_space=bin_space, binning_method=binning_method, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs, num_bins_1d=num_bins_1d)
         rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, remove_large_time_diffs=remove_large_time_diffs, reward_choice=self.reward_choice)
         dones = np.zeros(num_transitions, dtype=bool) # False unless last observation of the night
         dones[-1] = True
@@ -264,7 +262,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             bin_features = None
             next_bin_features = None
             
-        return states, next_states, bin_features, next_bin_features, actions, rewards, dones, action_masks, num_transitions
+        return states, next_states, bin_features, next_bin_features, bin_actions, rewards, dones, action_masks, num_transitions
 
     def _construct_states(self, df, bin_df, include_bin_features, remove_large_time_diffs, next_state_idxs):
         if remove_large_time_diffs:
