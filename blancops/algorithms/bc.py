@@ -76,72 +76,71 @@ class BehaviorCloning(AlgorithmBase):
         return loss.item(), None
     
     def val_step(self, batch, hpGrid=None):
+        
         state, expert_actions, rewards, next_obs, dones, action_masks, bin_states, next_bin_states = batch
 
-        with torch.no_grad():      
         # Assume batch is already tensor
-            state_dtype = torch.float32
-            state = state.to(device=self.device, dtype=state_dtype)
-            expert_actions = expert_actions.to(device=self.device, dtype=torch.long)
-            bin_states = bin_states.to(device=self.device, dtype=state_dtype)
+        state_dtype = torch.float32
+        state = state.to(device=self.device, dtype=state_dtype)
+        expert_actions = expert_actions.to(device=self.device, dtype=torch.long)
+        bin_states = bin_states.to(device=self.device, dtype=state_dtype)
 
-            self.policy_net.eval()
-            with torch.amp.autocast('cuda', dtype=state_dtype):
-                action_logits = self.policy_net(x_glob=state, x_bin=bin_states, y_data=expert_actions)
-                action_logits_masked = action_logits.clone()
-                action_logits_masked[~action_masks] = -1e9
+        with torch.amp.autocast('cuda', dtype=state_dtype):
+            action_logits = self.policy_net(x_glob=state, x_bin=bin_states, y_data=expert_actions)
+            action_logits_masked = action_logits.clone()
+            action_logits_masked[~action_masks] = -1e9
 
-                predicted_actions = action_logits_masked.argmax(dim=1)
-                loss = self.loss_fxn(action_logits, expert_actions)
+            predicted_actions = action_logits_masked.argmax(dim=1)
+            loss = self.loss_fxn(action_logits, expert_actions)
 
-            accuracy = (predicted_actions == expert_actions).float().mean()
+        accuracy = (predicted_actions == expert_actions).float().mean()
 
-            # Get logp(a_expert|state)
-            logp = F.log_softmax(action_logits, dim=-1)
-            logp_expert_actions = logp.gather(1, expert_actions.unsqueeze(1)).squeeze(1)
+        # Get logp(a_expert|state)
+        logp = F.log_softmax(action_logits, dim=-1)
+        logp_expert_actions = logp.gather(1, expert_actions.unsqueeze(1)).squeeze(1)
 
-            # Get action margin
-            _, num_actions = action_logits.shape
-            # expert logit: (B,)
-            z_expert = action_logits.gather(1, expert_actions.unsqueeze(1)).squeeze(1)
-            expert_mask = F.one_hot(expert_actions, num_classes=num_actions).bool()
-            # max logit among non-expert actions
-            z_max_other = action_logits.masked_fill(expert_mask, float("-inf")).max(dim=1).values
-            margin = (z_expert - z_max_other).mean()
+        # Get action margin
+        _, num_actions = action_logits.shape
+        # expert logit: (B,)
+        z_expert = action_logits.gather(1, expert_actions.unsqueeze(1)).squeeze(1)
+        expert_mask = F.one_hot(expert_actions, num_classes=num_actions).bool()
+        # max logit among non-expert actions
+        z_max_other = action_logits.masked_fill(expert_mask, float("-inf")).max(dim=1).values
+        margin = (z_expert - z_max_other).mean()
 
-            # Get policy entropy (p(a_i|s)logp(a_i|s))
-            p = F.softmax(action_logits, dim=-1)
-            entropy = -(p * logp).sum(dim=-1)
+        # Get policy entropy (p(a_i|s)logp(a_i|s))
+        p = F.softmax(action_logits, dim=-1)
+        entropy = -(p * logp).sum(dim=-1)
 
-            if hpGrid is not None:
-                # Get angular separation
-                predicted_actions = predicted_actions.cpu()
-                expert_actions = expert_actions.cpu()
+        if hpGrid is not None:
+            # Get angular separation
+            predicted_actions = predicted_actions.cpu()
+            expert_actions = expert_actions.cpu()
 
-                if self.num_filters is not None and self.num_filters != 1:                  
-                    predicted_bins = predicted_actions // self.num_filters
-                    expert_bins = expert_actions // self.num_filters
-                    predicted_filters = predicted_actions % self.num_filters
-                    expert_filters = expert_actions % self.num_filters
-                    # logger.debug(f'predicted filters = {predicted_filters} = {predicted_actions} % {self.num_filters}')
-                    # logger.debug(f'expert filters = {expert_filters} = {expert_actions} % {self.num_filters}')
-                    filter_accuracy = (predicted_filters == expert_filters).float().mean().item()
-                else:
-                    predicted_bins = predicted_actions
-                    expert_bins = expert_actions
-                    filter_accuracy = 0.
-
-                predicted_coords = np.array((hpGrid.lon[predicted_bins], hpGrid.lat[predicted_bins]))
-                expert_actions_coords = np.array((hpGrid.lon[expert_bins], hpGrid.lat[expert_bins]))
-                ang_seps = geometry.angular_separation(predicted_coords, expert_actions_coords)
-                ang_sep = ang_seps.mean()
-
-                # Prediction diversity
-                num_actions = len(hpGrid.lon)
-                unique_preds = len(torch.unique(predicted_actions))
-                unique_bins = unique_preds / num_actions
+            if self.num_filters is not None and self.num_filters != 1:                  
+                predicted_bins = predicted_actions // self.num_filters
+                expert_bins = expert_actions // self.num_filters
+                predicted_filters = predicted_actions % self.num_filters
+                expert_filters = expert_actions % self.num_filters
+                # logger.debug(f'predicted filters = {predicted_filters} = {predicted_actions} % {self.num_filters}')
+                # logger.debug(f'expert filters = {expert_filters} = {expert_actions} % {self.num_filters}')
+                filter_accuracy = (predicted_filters == expert_filters).float().mean().item()
             else:
-                ang_sep = 0
+                predicted_bins = predicted_actions
+                expert_bins = expert_actions
+                filter_accuracy = 0.
+
+            predicted_coords = np.array((hpGrid.lon[predicted_bins], hpGrid.lat[predicted_bins]))
+            expert_actions_coords = np.array((hpGrid.lon[expert_bins], hpGrid.lat[expert_bins]))
+            ang_seps = geometry.angular_separation(predicted_coords, expert_actions_coords)
+            ang_sep = ang_seps.mean()
+
+            # Prediction diversity
+            num_actions = len(hpGrid.lon)
+            unique_preds = len(torch.unique(predicted_actions))
+            unique_bins = unique_preds / num_actions
+        else:
+            ang_sep = 0
 
 
         return loss.item(), logp_expert_actions.mean().item(), margin.mean().item(), entropy.mean().item(), ang_sep, unique_bins, accuracy.item(), filter_accuracy
