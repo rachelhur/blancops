@@ -254,22 +254,6 @@ def main():
         os.makedirs(eval_outdir)
     eval_outdir += '/'
         
-    # if args.evaluation_name is None:
-    #     date_postfix = datetime.now().strftime("%Y-%m-%d_")
-    #     evaluation_name = 'eval_' + date_postfix + '0'
-    # results_outdir = cfg['metadata']['outdir'] + '/' + evaluation_name + '/'
-    # if not os.path.exists(results_outdir):
-    #     os.makedirs(results_outdir)
-    # else:
-    #     while os.path.exists(cfg['metadata']['outdir'] + '/' + evaluation_name + '/'):
-    #         ymd_pat = r"(\d{4}-\d{2}-\d{2})\d+"
-    #         date_group = evaluation_name.group(1)
-    #         num_group = int(evaluation_name.group(2))
-    #         evaluation_name = re.sub(ymd_pat, f"{date_group}{num_group + 1}", evaluation_name)
-    #         # evaluation_name = evaluation_name[:-1] + str(int(evaluation_name[-1]) + 1)
-    #     results_outdir = cfg['metadata']['outdir'] + '/' + evaluation_name + '/'
-    #     os.makedirs(results_outdir)
-            
     # Set up logging
     logger = setup_logger(save_dir=Path(eval_outdir).resolve(), logging_filename='eval.log', logging_level=args.logging_level)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
@@ -282,9 +266,8 @@ def main():
     logger.info("Saving results in " + eval_outdir)
 
     # Print args
-    logger.warning("Experiment parameters:")
-    for key, value in args_dict.items():
-        logger.info(f"{key}: {value}")
+    # for key, value in args_dict.items():
+    #     logger.info(f"{key}: {value}")
 
     # Seed everything
     seed_everything(args.seed)
@@ -489,6 +472,7 @@ def main():
                 axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
                 axs[i].legend()
             fig.tight_layout()
+            fig.suptitle(f"Bin {_most_common_bin}: (az, el) = {test_dataset.hpGrid.lon[_most_common_bin], test_dataset.hpGrid.lon[_most_common_bin]}")
             fig.savefig(subdir_path + f'bin_features_vs_time.png')
 
 
