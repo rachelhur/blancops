@@ -153,21 +153,20 @@ def dict_to_nested(data):
 
 def setup_logger(save_dir, logging_filename, logging_level='debug'):
     # Create logger
-    # logger = logging.getLogger(__name__)
-    logger = logging.getLogger()
+    logger = logging.getLogger(__name__)
+    # logger = logging.getLogger()
     if logging_level == 'debug':
         logger.setLevel(logging.DEBUG)
         format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     elif logging_level == 'info':
         logger.setLevel(logging.INFO)
         format = '%(asctime)s - %(levelname)s - %(message)s'
-        
     else:
         raise NotImplementedError
 
     # Avoid duplicate handlers if called twice
     if logger.handlers:
-        return logger
+        raise ValueError("Handler called twice")
     
     # Create handlers
     console_handler = logging.StreamHandler(sys.stdout)
