@@ -112,7 +112,6 @@ def plot_metrics(results_outdir, dataset):
     fig.tight_layout()
     fig.savefig(results_outdir / 'figures' / 'lr_steps.png')
     
-
 def get_args():
     parser = argparse.ArgumentParser()
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -169,8 +168,6 @@ def get_args():
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
 
     args = parser.parse_args()
-    if args.save_to_model_dir:
-        assert args.model_name is not None, "If saving this model and config, must pass a model name"
 
     # If a config file is passed, overwrite the argparse defaults
     if args.cfg is not None:
@@ -349,6 +346,8 @@ def main():
     logger.info("Training complete.")
 
     if args.save_to_model_dir:
+        if args.model_name is None:
+            args.model_name = cfg['metadata']['exp_name']
         model_dir = workspace / 'models' / args.model_name
         model_dir.mkdir(parents=True, exist_ok=True)  # <--- Add this line
         logger.info(f"Saving weights and config to {model_dir}")
