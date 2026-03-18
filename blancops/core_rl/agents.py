@@ -176,20 +176,17 @@ class Agent:
                 # At end of each epoch, do validation check
                 with torch.no_grad():
                     if i_step % steps_per_epoch == 0:
-                        
                         if trainloader is not None:
                             # --- evaluation from dataloader ---
                             val_metric_sums = [0.0] * len(val_metrics)
                             num_val_batches = len(valloader)
-
                             for eval_batch in valloader:
                                 batch_metrics = self.algorithm.val_step(eval_batch, hpGrid)
                                 for idx, val in enumerate(batch_metrics):
                                     val_metric_sums[idx] += val
-                                    
+                                
                             # Average the metrics across all validation batches
                             val_metric_vals = [total / num_val_batches for total in val_metric_sums]
-                            
                             # Also calculate train metrics on a single batch (or average if preferred)
                             val_train_metric_vals = self.algorithm.val_step(batch, hpGrid)
                         else:
@@ -271,20 +268,6 @@ class Agent:
                 terminated = False
                 truncated = False
                 num_nights = env.unwrapped.max_nights
-                # glob_observations = {f'night-0': [] for i in range(num_nights)}
-                # bin_observations = {f'night-0': [] for i in range(num_nights)}
-                # rewards = {f'night-0': [] for i in range(num_nights)}
-                # timestamps = {f'night-0': [] for i in range(num_nights)}
-                # fields = {f'night-0': [] for i in range(num_nights)}
-                # bins = {f'night-0': [] for i in range(num_nights)}
-                # filters = {f'night-0': [] for i in range(num_nights)}
-                glob_observations = {}
-                bin_observations = {}
-                rewards = {}
-                timestamps = {}
-                fields = {}
-                bins = {}
-                filters = {}
 
                 episode_data = {}
                 reward = 0
@@ -293,11 +276,11 @@ class Agent:
                 episode_data[current_night_key] = {
                     'glob_observations': [state['global_state']],
                     'bin_observations': [state['bin_state']],
-                    'rewards': [rewards],
+                    'rewards': [reward],
                     'timestamp': [info.get('timestamp')],
                     'field_id': [-1],
                     'bin': [-1],
-                    'filter': [0.]
+                    'filter_idx': [-1]
                 }
 
                 i = 0
@@ -311,18 +294,16 @@ class Agent:
                         # Catch the edge case where no fields are above the horizon - tell agent to wait
                         if not action_mask.any():
                             logger.warning(f"No valid fields available at step {i} (mask is all zeros).")
-                            bin_idx, field_id, filter_wave = -2, -2, 0.
+                            bin_idx, field_id, filter_idx = -2, -2, -2
                         else:
-                            action = self.act(x_glob=state['global_state'], x_bin=state['bin_state'], action_mask=action_mask, epsilon=None)
+                            action = self.choose_action(x_glob=state['global_state'], x_bin=state['bin_state'], action_mask=action_mask, epsilon=None)
                             if 'filter' in bin_space:
-                                bin_idx = action // self.algorithm.num_filters
-                                filter_idx = action % self.algorithm.num_filters
-                                filter_wave = IDX2WAVE[filter_idx] / FILTERWAVENORM
+                                bin_idx = int(action // self.algorithm.num_filters)
+                                filter_idx = int(action % self.algorithm.num_filters)
                                 logger.debug(f"agent evaluate bin_idx: {bin_idx}")
                             else:
                                 bin_idx = action
                                 filter_idx = None
-                                filter_wave = 0.
 
                             valid_fields_per_bin = info.get('valid_fields_per_bin', {})
                             fields_in_bin = np.array(valid_fields_per_bin.get(int(bin_idx), []))
@@ -341,11 +322,11 @@ class Agent:
                             current_night_dict['timestamp'].append(info.get('timestamp'))
                             current_night_dict['field_id'].append(field_id)
                             current_night_dict['bin'].append(bin_idx)
-                            current_night_dict['filter'].append(filter_wave)
+                            current_night_dict['filter_idx'].append(filter_idx)
                         
                         last_bin_idx = bin_idx
                         # Step environment
-                        actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter': np.array([filter_wave], dtype=np.float32)}
+                        actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
                         state, reward, terminated, truncated, info = env.step(actions)
                         if terminated or truncated:
                             break
@@ -363,7 +344,7 @@ class Agent:
                                 'timestamp': [info.get('timestamp')],
                                 'field_id': [field_id],
                                 'bin': [bin_idx],
-                                'filter': [filter_wave]
+                                'filter': [filter_idx]
                             }
 
                         # pbar update
@@ -394,7 +375,7 @@ class Agent:
             pickle.dump(eval_metrics, handle)
             logger.info(f'eval_metrics.pkl saved in {eval_outdir}')
 
-    def act(self, x_glob, x_bin, action_mask, epsilon):
+    def choose_action(self, x_glob, x_bin, action_mask, epsilon):
         """Selects an action using the underlying algorithm.
 
         Args:

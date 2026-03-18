@@ -4,13 +4,13 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 import math
-from blancops.data_processing.data_processing import expand_feature_names_for_cyclic_norm
 
+from blancops.data_processing.data_processing import expand_feature_names_for_cyclic_norm
 from blancops.data_processing.data_processing import normalize_noncyclic_features
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data_processing.offline_dataset import setup_feature_names
-from blancops.data_processing.features import NUM_FILTERS, normalize_timestamp, get_nautical_twilight
+from blancops.data_processing.features import FILTER2IDX, IDX2WAVE, NUM_FILTERS, FILTERWAVENORM, normalize_timestamp, get_nautical_twilight
 from blancops.math import geometry
 
 from astropy.time import Time
@@ -18,93 +18,56 @@ from datetime import datetime, timezone, timedelta
 import pickle
 import json
 
+from abc import ABC, abstractmethod
+
 import logging
 logger = logging.getLogger(__name__)
 
-class BaseTelescope(gym.Env):
-    """
-    Base class providing for a Gymnasium environment simulating sequential observation scheduling.
-
-    This class provides core Gym Env structure (reset, step) and common logic.
-
-    Subclasses must define the following methods:
-        - _init_to_first_state(): Initializes the environment state for a new episode
-        - _update_action_mask(): Updates action masks
-        - _update_obs(action): Updates the internal state based on teh action taken
-        - _get_state(): Converts internal state into the formal observation
-        - _get_info(): Computes auxiliary information dictionary
-        - _get_termination_status(): Checks if episode has terminated
-    """
+class BaseTelescope(gym.Env, ABC):
     def __init__(self):
-        '''
-        Subclasses must instantiate the following attributes here *before* calling self._init_to_first_state()):
-            - reward_func (Callable): Function to calculate rewards for transitions
-            - observation_space (gym.spaces)
-            - action_space (gym.spaces)
-            - obs_dim (int): Size of observation input vector
-            - normalize_obs (bool): Whether observations should be normalized
-            - norm (nd.array): Normalization factors for observations. If normalize_obs is False, it is simply an array of ones.
-        Subclasses must call self._init_to_first_state() after assigning attributes
-        '''
-
         super().__init__()
 
     def reset(self, seed=None, options=None):
-        """Start a new episode.
-
-        Args
-        ----
-            seed: Random seed for reproducible episodes
-            options: Additional configuration (unused in this example)
-
-        Returns
-        -------
-            tuple: (observation, info) for the initial state
-        """
-        # IMPORTANT: Must call this first to seed the random number generator
         super().reset(seed=seed)
-
-        # initialize into a non-state.
-        # this allows first field choice to be learned
         self._init_to_first_state()
         obs = self._get_state()
         info = self._get_info()
         return obs, info
     
-    def step(self, action: int):
-        """Execute one timestep within the environment.
+    def step(self, action):
+        pass
 
-        Args
-        ----
-            action (int): The field ID to observe next.
+    @abstractmethod
+    def _init_to_first_state(self):
+        """Initializes the environment state for a new episode."""
+        pass
 
-        Returns
-        -------
-            tuple: (next_obs, reward, terminated, truncated, info)
-                - next_obs (np.ndarray): The observation after the action.
-                - reward (float): The reward obtained from the action.
-                - terminated (bool): Whether the episode has ended (e.g., reached observation limit).
-                - truncated (bool): Whether the episode was truncated (always False here).
-                - info (dict): Auxiliary diagnostic information.
-        """
-        assert self.action_space.contains(action), f"Invalid action {action}"
-        # last_coord = self._coord
-        last_field_id = np.int32(self._field_id)
-        self._update_obs(action)
-        
-        # ------------------- Calculate reward ------------------- #
-        reward = 0
-        reward += self._get_rewards(last_field_id, self._field_id)
-        # ------------------------------------------ #
+    @abstractmethod
+    def _update_action_masks(self): # Note: ensure naming consistency (action_mask vs action_masks)
+        """Updates action masks."""
+        pass
 
-        # end condition
-        truncated = False
-        terminated = self._get_termination_status()
-        # get obs and info
-        next_obs = self._get_state()
-        info = self._get_info()
+    @abstractmethod
+    def _update_state(self, action): 
+        # Note: Your online env uses _update_state instead of _update_obs. 
+        # ABCs will force you to unify this naming convention.
+        """Updates the internal state based on the action taken."""
+        pass
 
-        return next_obs, reward, terminated, truncated, info
+    @abstractmethod
+    def _get_state(self):
+        """Converts internal state into the formal observation."""
+        pass
+
+    @abstractmethod
+    def _get_info(self):
+        """Computes auxiliary information dictionary."""
+        pass
+
+    @abstractmethod
+    def _get_termination_status(self):
+        """Checks if episode has terminated."""
+        pass
     
     def _get_rewards(self, last_field, next_field):
         '''
@@ -157,33 +120,40 @@ class OfflineDECamTestingEnv(BaseTelescope):
         self._grid_network = cfg['model']['grid_network']
         self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
-
+        self.do_filt = 'filter' in self.bin_space
+        
+        # Get field lookup tables
         with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2RADEC'], 'r') as f:
-            field2radec = json.load(f)
-            self.field2radec = {int(k): v for k, v in field2radec.items()}
+            self.field2radec = json.load(f)
+            self.field2radec = {int(k): v for k, v in self.field2radec.items()}
         with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2MAXVISITS_EVAL'], 'r') as f:
-            field2maxvisits = json.load(f)
-            self.field2maxvisits = {int(fid): int(count) for fid, count in field2maxvisits.items()}
-        with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2FILTERS'], 'rb') as f:
-            field2filters = pickle.load(f)
-            self.field2radec = {int(k): v for k, v in field2radec.items()}
+            self.field2maxvisits = json.load(f)
+            self.field2maxvisits = {int(fid): int(count) for fid, count in self.field2maxvisits.items()}
+        with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
+            self.night2fieldvisithistory = pickle.load(f)
+
         # Field to index mapping for sparse field ids; unused fields maps to -1
         self.nfields = len(self.field2maxvisits)
         self._fids = np.array(list(self.field2maxvisits.keys())).astype(np.int32)
-        self._ra_arr = np.zeros(self.nfields)
-        self._dec_arr = np.zeros(self.nfields)
-        self._max_s_visits_arr = np.zeros(self.nfields, dtype=np.int32)
-        for idx, fid in enumerate(self._fids):
-            self._ra_arr[idx], self._dec_arr[idx] = self.field2radec[fid]
-            self._max_s_visits_arr[idx] = self.field2maxvisits[fid]
+        self._ra_arr = np.array([self.field2radec[fid][0] for fid in self._fids])
+        self._dec_arr = np.array([self.field2radec[fid][1] for fid in self._fids])
+        self._max_s_visits_arr = np.array([self.field2maxvisits[fid] for fid in self._fids], dtype=np.int32)
 
-        max_fid = self._fids[-1]
-        fid2idx = np.full(max_fid + 1, -1, dtype=np.int32)
-        for idx, fid in enumerate(self._fids):
-            fid2idx[fid] = idx
- 
-        with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
-            self.night2visithistory = pickle.load(f)
+        # Get filter lookup tables
+        if self.do_filt:
+            with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2FILTERS'], 'rb') as f:
+                self.field2filters = pickle.load(f)
+                self.field2filters = {int(k): v for k, v in self.field2filters.items()}
+            with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FILTERVISITS'], 'rb') as f:
+                self.night2filtvisithistory = pickle.load(f)
+            with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS'], 'rb') as f:
+                self.fieldfilter2maxvisits = pickle.load(f)
+
+            self.nfilters = len(FILTER2IDX)
+            self.idx2filter = {v: k for k, v in FILTER2IDX.items()}
+            self.wave2idx = {v: k for k, v in IDX2WAVE.items()}
+            if self.do_filt: 
+                self._max_s_filter_visits_arr = np.array([self.fieldfilter2maxvisits[fid] for fid in self._fids], dtype=np.int32)
 
         # Bin-space dependent function to get fields in bin
         if not self.hpGrid.is_azel:
@@ -236,7 +206,7 @@ class OfflineDECamTestingEnv(BaseTelescope):
             {
                 "bin": gym.spaces.Discrete(self.nbins),
                 "field_id": gym.spaces.Discrete(len(self.field2radec)),
-                "filter": gym.spaces.Box(0., 1., dtype=np.float32)
+                "filter_idx": gym.spaces.Discrete(len(FILTER2IDX))
             }
         )       
         # self.action_space = gym.spaces.Box(low=np.array([0, 0, 0.]), high=np.array([self.nbins, len(self.field2radec), 1.]), dtype=np.int32)
@@ -346,18 +316,32 @@ class OfflineDECamTestingEnv(BaseTelescope):
         self._global_state = [global_first_row[feat_name] for feat_name in self.global_feature_names]
 
         # Get field visit counts at start of night
-        self._s_visits_cur = self.night2visithistory[night][self._fids].copy().astype(np.int32)
+        self._s_visits_cur = self.night2fieldvisithistory[night][self._fids].copy().astype(np.int32)
         self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
+        
+        # Get field filter visit counts at start of night
+        if self.do_filt:
+            self._s_filter_visits_cur = self.night2filtvisithistory[night].copy()
+            self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
 
         if self.include_bin_features:
             # bin_feature_names = expand_feature_names_for_cyclic_norm(self.base_global_feature_names.copy(), self.cyclical_feature_names)
             global_night_df = self.global_pd_nightgroup.get_group(night)
             first_row_in_night_bin = self.bin_pd_nightgroup.head(1).iloc[self._night_idx]
             self._bin_state = np.array([first_row_in_night_bin[feat_name] for feat_name in self.bin_feature_names])
-            # self._bin_state = np.array([first_row_in_night_bin[feat_name] for feat_name in self.bin_feature_names]).T
-            night_fids = global_night_df['field_id'][global_night_df['object'] != 'zenith'].to_numpy().astype(np.int32)
+
+            nonzenith_night_mask = global_night_df['object'] != 'zenith'
+            night_fids = global_night_df['field_id'][nonzenith_night_mask].to_numpy().astype(np.int32)
             self._max_n_visits_arr = np.bincount(self._fids[night_fids], minlength=self.nfields)
             self._in_n_plan = self._max_n_visits_arr > 0
+
+            if self.do_filt:
+                if 'filt_idx' not in global_night_df.columns:
+                    global_night_df['filt_idx'] = global_night_df['filter'].map(FILTER2IDX).fillna(0)
+                n_filts = global_night_df['filt_idx'][nonzenith_night_mask].to_numpy(dtype=np.int32)
+                self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
+                np.add.at(self._max_n_filter_visits_arr, (night_fids, n_filts), 1)
+
             if self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
                 A, B = self.nbins, self.bin_state_dim
                 self._bin_state = np.array(self._bin_state).reshape((A, B))
@@ -375,14 +359,19 @@ class OfflineDECamTestingEnv(BaseTelescope):
             action (int): The chosen field ID to observe next.
         """
         self._timestamp += self.time_between_obs
-        bin_num, field_id, filter_wave = int(action['bin']), int(action['field_id']), float(action['filter'])
+        bin_num, field_id, filter_idx = int(action['bin']), int(action['field_id']), int(action['filter_idx'])
 
         self._bin_num = bin_num
         self._field_id = field_id
-        self._n_visits_cur[field_id] += 1
+        self._filter = filter_idx
+        
         self._s_visits_cur[field_id] += 1
+        self._n_visits_cur[field_id] += 1
+        if self.do_filt:
+            self._s_filter_visits_cur[field_id, filter_idx] += 1
+            self._n_filter_visits_cur[field_id, filter_idx] += 1   
 
-        self._global_state = self._calculate_global_features(field_id=self._field_id, filter_wave=filter_wave, timestamp=self._timestamp,
+        self._global_state = self._calculate_global_features(field_id=self._field_id, filter_idx=filter_idx, timestamp=self._timestamp,
                                                           sunset_time=self._sunset_time, sunrise_time=self._sunrise_time
                                                           )
         self._bin_state = self._calculate_bin_features(timestamp=self._timestamp) if self.include_bin_features else np.array([])
@@ -391,7 +380,7 @@ class OfflineDECamTestingEnv(BaseTelescope):
         self._update_action_masks(timestamp=self._timestamp, field2nvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
                                                   hpGrid=self.hpGrid, visited=self._s_visits_cur)
 
-    def _calculate_global_features(self, field_id, filter_wave, timestamp, sunset_time, sunrise_time):
+    def _calculate_global_features(self, field_id, filter_idx, timestamp, sunset_time, sunrise_time):
         new_features = {}
         astro_time = Time(timestamp, format='unix', scale='utc')
         lst = astro_time.sidereal_time('apparent', longitude="-70:48:23.49")  # Blanco longitude
@@ -413,7 +402,7 @@ class OfflineDECamTestingEnv(BaseTelescope):
         else:
             new_features['time_fraction_since_start'] = (timestamp - sunset_time) / (sunrise_time - sunset_time)
 
-        new_features['filter_wave'] = filter_wave
+        new_features['filter_wave'] = IDX2WAVE[filter_idx] / FILTERWAVENORM
 
         for feat_name in self.base_global_feature_names:
             if any(string in feat_name and 'bin' not in feat_name and 'frac' not in feat_name for string in self.cyclical_feature_names):
@@ -426,8 +415,6 @@ class OfflineDECamTestingEnv(BaseTelescope):
             nan_idxs = np.where(nan_feats == True)[0]
             for idx in nan_idxs:
                 raise ValueError(f"Calculated nan value for global feature {self.global_feature_names[idx]}")
-
-
         return global_state_features
     
     def _calculate_bin_features(self, timestamp):
@@ -443,122 +430,116 @@ class OfflineDECamTestingEnv(BaseTelescope):
             features['ra'], features['dec'] = self.hpGrid.lon, self.hpGrid.lat
             features['az'], features['el'] = lons, lats
             current_lon, current_lat = current_ra, current_dec
-            
+        
+        # One-shot calculations
         features['angular_distance_to_pointing'] = self.hpGrid.get_angular_separations(lon=current_lon, lat=current_lat)
         features['ha'] = self.hpGrid.get_hour_angle(time=timestamp)
         features['airmass'] = self.hpGrid.get_airmass(timestamp)
         features['moon_distance'] = self.hpGrid.get_source_angular_separations('moon', time=timestamp)
         
         if self._has_historical_features:
+            # Setup active masks depending on coordinate space
             if not self.hpGrid.is_azel:
-                max_s_visits_arr = np.maximum(self._max_n_visits_arr, self._max_s_visits_arr)
-                nfields_n = np.bincount(self._bins_membership_arr, weights=self._in_n_plan, minlength=self.nbins)
-                active_bins_n = nfields_n > 0
-
-                # Get number of unvisited fields in each bin - bins below horizon have 0 fields unvisited
-                s_unvisited = np.bincount(self._bins_membership_arr, weights=(self._s_visits_cur == 0) & self._in_s_plan, minlength=self.nbins)
-                n_unvisited = np.bincount(self._bins_membership_arr, weights=(self._n_visits_cur == 0) & self._in_n_plan, minlength=self.nbins)
-
-                # Get number of incomplete fields in each bin
-                s_incomplete_mask = (self._s_visits_cur < max_s_visits_arr) & self._in_s_plan
-                n_incomplete_mask = (self._n_visits_cur < self._max_n_visits_arr) & self._in_n_plan
-                s_incomplete = np.bincount(self._bins_membership_arr, weights=s_incomplete_mask, minlength=self.nbins)
-                n_incomplete = np.bincount(self._bins_membership_arr, weights=n_incomplete_mask, minlength=self.nbins)
-        
-                # Create a zero-filled array for the results
-                for key in ['survey_num_unvisited_fields', 'night_num_unvisited_fields', 
-                            'survey_num_incomplete_fields', 'night_num_incomplete_fields']:
-                    features[key] = np.zeros(self.nbins, dtype=np.float32) # bins with no viable fields get sentinel value 0
-                
-                # Do division in-place (bypasses runtimewarning error )
-                np.divide(s_unvisited, self._nfields_s, out=features['survey_num_unvisited_fields'], where=self._active_bins_s)
-                np.divide(n_unvisited, nfields_n, out=features['night_num_unvisited_fields'], where=active_bins_n)
-                np.divide(s_incomplete, self._nfields_s, out=features['survey_num_incomplete_fields'], where=self._active_bins_s)
-                np.divide(n_incomplete, nfields_n, out=features['night_num_incomplete_fields'], where=active_bins_n)
-        
-                # Min tiling
-                s_tiling_all = np.full_like(self._s_visits_cur, 2.0, dtype=np.float32)
-                n_tiling_all = np.full_like(self._n_visits_cur, 2.0, dtype=np.float32)
-                # current_num_visits_field / max_num_visits_field only where max_num_visits_field > 0 ie, in the plan
-                np.divide(self._s_visits_cur, max_s_visits_arr, out=s_tiling_all, where=self._in_s_plan)
-                np.divide(self._n_visits_cur, self._max_n_visits_arr, out=n_tiling_all, where=self._in_n_plan)
-                
-                s_mins = np.full(self.nbins, 2.0, dtype=np.float32)
-                n_mins = np.full(self.nbins, 2.0, dtype=np.float32)
-                np.minimum.at(s_mins, self._bins_membership_arr, s_tiling_all)
-                np.minimum.at(n_mins, self._bins_membership_arr, n_tiling_all)
-                
-                # Reset bins with no fields back to -0.1
-                s_mins[s_mins > 1.0] = -1.0
-                n_mins[n_mins > 1.0] = -1.0
-                features['survey_min_tiling'] = s_mins
-                features['night_min_tiling'] = n_mins
+                bins_mem = self._bins_membership_arr
+                v_mask = slice(None) # select everything - assume all input fields are in survey plan
+                act_s = self._active_bins_s
+                act_n = (np.bincount(bins_mem, weights=self._in_n_plan, minlength=self.nbins) > 0) 
+                if self.do_filt:
+                    act_s_filter = np.zeros((self.nbins, self.nfilters), dtype=bool)
+                    act_n_filter = np.zeros((self.nbins, self.nfilters), dtype=bool)
+                    for f in range(self.nfilters):
+                        act_s_filter[:, f] = np.bincount(bins_mem, weights=(self._max_s_filter_visits_arr[:, f] > 0), minlength=self.nbins) > 0
+                        act_n_filter[:, f] = np.bincount(bins_mem, weights=(self._max_n_filter_visits_arr[:, f] > 0), minlength=self.nbins) > 0
             else:
-                # Reset at each timestep since fields' bin memberships change over time
                 az, el = ephemerides.equatorial_to_topographic(ra=self._ra_arr, dec=self._dec_arr, time=timestamp)
-                bins = self.hpGrid.ang2idx(lon=az, lat=el) # Bin membership of each field
+                bins = self.hpGrid.ang2idx(lon=az, lat=el)
                 bins = np.array([b if b is not None else -1 for b in bins], dtype=np.int32)
-                valid_mask = (el > 0) & (bins != -1)
-                valid_bins = bins[valid_mask].astype(np.int32)
-
-                in_s_plan = self._max_s_visits_arr[valid_mask] > 0
-                in_n_plan = self._max_n_visits_arr[valid_mask] > 0
-
-                bin_count_s = np.bincount(valid_bins, weights=in_s_plan, minlength=self.nbins)
-                bin_count_n = np.bincount(valid_bins, weights=in_n_plan, minlength=self.nbins)
                 
-                active_bins_s = bin_count_s > 0
-                active_bins_n = bin_count_n > 0
+                v_mask = (el > 0) & (bins != -1)
+                bins_mem = bins[v_mask].astype(np.int32) # bins_mem acts as valid_bins
 
-                # Get field counts and max field counts over 
-                v_survey_counts = self._s_visits_cur[valid_mask].astype(np.int32)
-                v_night_counts = self._n_visits_cur[valid_mask].astype(np.int32)
-                v_max_visits_survey = self._max_s_visits_arr[valid_mask]
-                v_max_visits_night = self._max_n_visits_arr[valid_mask]
+                in_s_plan = self._max_s_visits_arr[v_mask] > 0
+                in_n_plan = self._max_n_visits_arr[v_mask] > 0
                 
-                # Re-create the plan masks
-                in_s_plan = v_max_visits_survey > 0
-                in_n_plan = v_max_visits_night > 0
+                act_s = np.bincount(bins_mem, weights=in_s_plan, minlength=self.nbins) > 0
+                act_n = np.bincount(bins_mem, weights=in_n_plan, minlength=self.nbins) > 0
 
-                for key_n, key_s, mask_n, mask_s in [
-                    # Must be unvisited AND in the respective plan
-                    ('night_num_unvisited_fields', 'survey_num_unvisited_fields', 
-                    (v_night_counts == 0) & in_n_plan, 
-                    (v_survey_counts == 0) & in_s_plan),
-                    
-                    # Must be incomplete AND in the respective plan
-                    ('night_num_incomplete_fields', 'survey_num_incomplete_fields', 
-                    (v_night_counts < v_max_visits_night) & in_n_plan, 
-                    (v_survey_counts < v_max_visits_survey) & in_s_plan)
-                    ]:
-                    res_n, res_s = np.zeros(self.nbins, dtype=np.float32), np.zeros(self.nbins, dtype=np.float32)
-                    
-                    # Use the correct denominators and active masks!
-                    np.divide(np.bincount(valid_bins, weights=mask_n, minlength=self.nbins), bin_count_n, out=res_n, where=active_bins_n)
-                    np.divide(np.bincount(valid_bins, weights=mask_s, minlength=self.nbins), bin_count_s, out=res_s, where=active_bins_s)
-                    
-                    res_n[~active_bins_n] = 0.
-                    res_s[~active_bins_s] = 0.
-                    
-                    features[key_n] = res_n
-                    features[key_s] = res_s
+                if self.do_filt:
+                    act_s_filter = np.zeros((self.nbins, self.nfilters), dtype=bool)
+                    act_n_filter = np.zeros((self.nbins, self.nfilters), dtype=bool)
+                    for f in range(self.nfilters):
+                        act_s_filter[:, f] = np.bincount(bins_mem, weights=(self._max_s_filter_visits_arr[v_mask, f] > 0), minlength=self.nbins) > 0
+                        act_n_filter[:, f] = np.bincount(bins_mem, weights=(self._max_n_filter_visits_arr[v_mask, f] > 0), minlength=self.nbins) > 0
+            
+            # Field counts
+            v_s_vis, v_n_vis = self._s_visits_cur[v_mask], self._n_visits_cur[v_mask]
+            v_max_s, v_max_n = self._max_s_visits_arr[v_mask], self._max_n_visits_arr[v_mask]
+            in_s_plan, in_n_plan = v_max_s > 0, v_max_n > 0
+            max_s_vis_adj = np.maximum(v_max_n, v_max_s)
 
-                # Min Tiling 
-                s_tiling_all = np.full_like(v_survey_counts, 2.0, dtype=np.float32)
-                n_tiling_all = np.full_like(v_night_counts, 2.0, dtype=np.float32)
+            # True denominators
+            bc_n = np.bincount(bins_mem, weights=in_n_plan, minlength=self.nbins)
+            bc_s = np.bincount(bins_mem, weights=in_s_plan, minlength=self.nbins)
+
+            def assign_state(m_n, m_s, count_n, count_s, act_n_msk, act_s_msk, key_n, key_s):
+                res_n, res_s = np.zeros(self.nbins, dtype=np.float32), np.zeros(self.nbins, dtype=np.float32)
                 
-                np.divide(v_survey_counts, v_max_visits_survey, out=s_tiling_all, where=in_s_plan)
-                np.divide(v_night_counts, v_max_visits_night, out=n_tiling_all, where=in_n_plan)
+                num_n = np.bincount(bins_mem, weights=m_n, minlength=self.nbins)
+                num_s = np.bincount(bins_mem, weights=m_s, minlength=self.nbins)
+                
+                np.divide(num_n, count_n, out=res_n, where=act_n_msk)
+                np.divide(num_s, count_s, out=res_s, where=act_s_msk)
+                
+                res_n[~act_n_msk] = 0.0 # Using 0.0 as your default sentinel
+                res_s[~act_s_msk] = 0.0
+                features[key_n] = res_n
+                features[key_s] = res_s
+
+            # Execute 1D
+            assign_state((v_n_vis == 0) & in_n_plan, (v_s_vis == 0) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_unvisited_fields', 'survey_num_unvisited_fields')
+            assign_state((v_n_vis < v_max_n) & in_n_plan, (v_s_vis < max_s_vis_adj) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_incomplete_fields', 'survey_num_incomplete_fields')
+
+            s_til, n_til = np.full_like(v_s_vis, 2.0, dtype=np.float32), np.full_like(v_n_vis, 2.0, dtype=np.float32)
+            np.divide(v_s_vis, max_s_vis_adj, out=s_til, where=in_s_plan)
+            np.divide(v_n_vis, v_max_n, out=n_til, where=in_n_plan)
+            s_mins, n_mins = np.full(self.nbins, 2.0, dtype=np.float32), np.full(self.nbins, 2.0, dtype=np.float32)
+            np.minimum.at(s_mins, bins_mem, s_til); np.minimum.at(n_mins, bins_mem, n_til)
+            s_mins[~act_s | (s_mins > 1.0)] = -1.0; n_mins[~act_n | (n_mins > 1.0)] = -1.0
+            
+            features['survey_min_tiling'] = s_mins
+            features['night_min_tiling'] = n_mins
+
+            # Filter counts
+            if self.do_filt:
+                v_s_f_vis, v_n_f_vis = self._s_filter_visits_cur[v_mask], self._n_filter_visits_cur[v_mask]
+                v_max_s_f, v_max_n_f = self._max_s_filter_visits_arr[v_mask], self._max_n_filter_visits_arr[v_mask]
+                in_s_f_plan, in_n_f_plan = v_max_s_f > 0, v_max_n_f > 0
+                max_s_f_vis_adj = np.maximum(v_max_n_f, v_max_s_f)
+                
+                s_f_mins, n_f_mins = np.full((self.nbins, self.nfilters), 2.0, dtype=np.float32), np.full((self.nbins, self.nfilters), 2.0, dtype=np.float32)
+                s_f_til, n_f_til = np.full_like(v_s_f_vis, 2.0, dtype=np.float32), np.full_like(v_n_f_vis, 2.0, dtype=np.float32)
+                np.divide(v_s_f_vis, max_s_f_vis_adj, out=s_f_til, where=in_s_f_plan)
+                np.divide(v_n_f_vis, v_max_n_f, out=n_f_til, where=in_n_f_plan)
+
+                for f, filt_name in self.idx2filter.items():
+                    bc_n_f = np.bincount(bins_mem, weights=in_n_f_plan[:, f], minlength=self.nbins)
+                    bc_s_f = np.bincount(bins_mem, weights=in_s_f_plan[:, f], minlength=self.nbins)
+
+                    assign_state((v_n_f_vis[:, f] == 0) & in_n_f_plan[:, f], (v_s_f_vis[:, f] == 0) & in_s_f_plan[:, f], 
+                                 bc_n_f, bc_s_f, act_n_filter[:, f], act_s_filter[:, f], f'night_num_unvisited_fields_{filt_name}', f'survey_num_unvisited_fields_{filt_name}')
+                    assign_state((v_n_f_vis[:, f] < v_max_n_f[:, f]) & in_n_f_plan[:, f], (v_s_f_vis[:, f] < max_s_f_vis_adj[:, f]) & in_s_f_plan[:, f],
+                                 bc_n_f, bc_s_f, act_n_filter[:, f], act_s_filter[:, f], f'night_num_incomplete_fields_{filt_name}', f'survey_num_incomplete_fields_{filt_name}')
                     
-                s_mins, n_mins = np.full(self.nbins, 2.0, dtype=np.float32), np.full(self.nbins, 2.0, dtype=np.float32)
-                np.minimum.at(s_mins, valid_bins, s_tiling_all)
-                np.minimum.at(n_mins, valid_bins, n_tiling_all)
+                    np.minimum.at(s_f_mins[:, f], bins_mem, s_f_til[:, f])
+                    np.minimum.at(n_f_mins[:, f], bins_mem, n_f_til[:, f])
+                    s_f_mins[~act_s_filter[:, f] | (s_f_mins[:, f] > 1.0), f] = -1.0
+                    n_f_mins[~act_n_filter[:, f] | (n_f_mins[:, f] > 1.0), f] = -1.0
                     
-                s_mins[~active_bins_s] = -0.1
-                n_mins[~active_bins_n] = -0.1
-                    
-                features['survey_min_tiling'] = s_mins
-                features['night_min_tiling'] = n_mins
+                    features[f'survey_min_tiling_{filt_name}'] = s_f_mins[:, f]
+                    features[f'night_min_tiling_{filt_name}'] = n_f_mins[:, f]
+        
+        # FEATURE VALIDATION CHECK
+        self._validate_bin_features(features)
 
         # Normalize periodic features here and add as df cols
         if self.do_cyclical_norm:
@@ -571,9 +552,11 @@ class OfflineDECamTestingEnv(BaseTelescope):
                         raise ValueError(f"{feat_name} was not calculated in _calculate_bin_features. Is this feature implemented?")
         
         expanded_feat_names = expand_feature_names_for_cyclic_norm(self.base_bin_feature_names, cyclical_feature_names=self.cyclical_feature_names)
-        bin_state = np.vstack([features.get(feat_name, np.nan) for feat_name in expanded_feat_names]).T
+        
+        # Uses the np.nan safe fallback we added previously
+        bin_state = np.vstack([features.get(feat_name, np.full(self.nbins, np.nan, dtype=np.float32)) for feat_name in expanded_feat_names]).T
         return bin_state
-
+    
     def _get_state(self):
         global_state, bin_state = self._global_state, self._bin_state
         global_state_copy = global_state.copy()
@@ -634,6 +617,7 @@ class OfflineDECamTestingEnv(BaseTelescope):
                 'field_id': int(self._field_id),
                 'valid_fields_per_bin': self._valid_fields_per_bin 
         }
+
     def _get_termination_status(self):
         """
         Checks if the episode has reached its termination condition.
@@ -687,6 +671,7 @@ class OfflineDECamTestingEnv(BaseTelescope):
 
     def _get_filter_mask(self, ):
         pass
+
     def _get_slew_time(self, slew_time=None):
         if slew_time is not None:
             return slew_time
@@ -698,6 +683,52 @@ class OfflineDECamTestingEnv(BaseTelescope):
             return exp_time
         else:
             raise NotImplementedError
+
+    def _validate_bin_features(self, features):
+        if self.do_filt and self._has_historical_features:
+            for f, filt_name in self.idx2filter.items():
+                
+                # Fetch features for the current filter
+                unvisited = features.get(f'survey_num_unvisited_fields_{filt_name}')
+                incomplete = features.get(f'survey_num_incomplete_fields_{filt_name}')
+                min_tiling = features.get(f'survey_min_tiling_{filt_name}')
+
+                if unvisited is not None and incomplete is not None and min_tiling is not None:
+                    
+                    # 1. Bounds Check
+                    if np.any((unvisited < 0.0) | (unvisited > 1.0)):
+                        bad_bins = np.where((unvisited < 0.0) | (unvisited > 1.0))[0]
+                        raise RuntimeError(f"FATAL: 'survey_num_unvisited_fields_{filt_name}' out of bounds in bins {bad_bins}. Max: {np.max(unvisited)}, Min: {np.min(unvisited)}")
+                    
+                    if np.any((incomplete < 0.0) | (incomplete > 1.0)):
+                        bad_bins = np.where((incomplete < 0.0) | (incomplete > 1.0))[0]
+                        raise RuntimeError(f"FATAL: 'survey_num_incomplete_fields_{filt_name}' out of bounds in bins {bad_bins}. Max: {np.max(incomplete)}, Min: {np.min(incomplete)}")
+
+                    # 2. Subset Rule: Unvisited MUST be <= Incomplete
+                    subset_violation = unvisited > (incomplete + 1e-5)
+                    if np.any(subset_violation):
+                        bad_bins = np.where(subset_violation)[0]
+                        raise RuntimeError(
+                            f"FATAL LOGIC LEAK: In filter '{filt_name}', unvisited fraction strictly exceeds incomplete fraction in bins {bad_bins}.\n"
+                            f"Unvisited vals: {unvisited[bad_bins]}\n"
+                            f"Incomplete vals: {incomplete[bad_bins]}"
+                        )
+
+                    # 3. Tiling Floor: If unvisited > 0, min_tiling MUST be 0.0 
+                    # Note: We ignore inactive bins where min_tiling is explicitly set to -1.0
+                    active_bins = min_tiling != -1.0
+                    has_unvisited_fields = unvisited > 1e-5
+                    
+                    # Intersect: Active bins that have unvisited fields
+                    tiling_check_mask = active_bins & has_unvisited_fields
+                    
+                    if np.any(min_tiling[tiling_check_mask] > 1e-5):
+                        bad_bins = np.where(tiling_check_mask & (min_tiling > 1e-5))[0]
+                        raise RuntimeError(
+                            f"FATAL LOGIC LEAK: In filter '{filt_name}', bins {bad_bins} have unvisited fields, "
+                            f"but 'survey_min_tiling' is > 0.0 ({min_tiling[bad_bins]}). "
+                            f"Min tiling MUST be 0 if unvisited fields exist."
+                        )
 
 class OnlineDECamEnv(BaseTelescope):
     """

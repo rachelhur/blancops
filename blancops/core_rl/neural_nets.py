@@ -9,15 +9,15 @@ logger = logging.getLogger(__name__)
 class MLP(nn.Module):
     """Deep Q-Network mapping observations to action-values.
     """
-    def __init__(self, observation_dim, action_dim, hidden_dim=128, activation=None):
+    def __init__(self, input_dim, output_dim, hidden_dim=128, activation=None):
         super(MLP, self).__init__()
         self.activation = nn.ReLU if activation is None else activation 
         self.net = nn.Sequential(
-            nn.Linear(observation_dim, hidden_dim),
+            nn.Linear(input_dim, hidden_dim),
             self.activation(),
             nn.Linear(hidden_dim, hidden_dim),
             self.activation(),
-            nn.Linear(hidden_dim, action_dim)
+            nn.Linear(hidden_dim, output_dim)
         )
     def forward(self, x_glob, x_bin=None, y_data=None):
         return self.net(x_glob)
@@ -78,6 +78,13 @@ class MultiScoreMLP(nn.Module):
         joint_action_scores = scores.view(batch_size, -1) # flattens last dim (filter) first --> [bin0filter0, bin0filter1, ... bin1filter0, bin1filter1, ... binNfilterM]
         return joint_action_scores 
     
+class MultiHeadNetwork(nn.Module):
+    def __init__(self, global_dim, global_enc_dim, output_dim, num_heads, hidden_dim=128, activation=None):
+        super(MultiHeadNetwork, self).__init__()
+        self.activation = nn.ReuLu if activation is None else activation
+        self.global_enc = MLP(global_dim, global_enc_dim)
+        self.spatial_enc = MLP()
+
 class BinEmbeddingDQN(nn.Module):
     """Deep Q-Network mapping observations to action-values.
     """
@@ -124,6 +131,7 @@ class SpatialEncoder(nn.Module):
     def forward(self, x):
         # x shape: (Batch, Features, Lat, Lon)
         return self.cnn(x)
+
 
 # def linear_schedule(eps_start: float, eps_end: float, duration: int, t: int):
 #     """
