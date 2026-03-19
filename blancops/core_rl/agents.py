@@ -347,6 +347,7 @@ class Agent:
                                 'filter': [filter_idx]
                             }
 
+
                         # pbar update
                         i += 1
                         pbar.update(1)
