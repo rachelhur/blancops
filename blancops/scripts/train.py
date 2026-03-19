@@ -196,6 +196,7 @@ def main():
     results_outdir.mkdir(parents=True, exist_ok=True)
     fig_outdir = results_outdir / 'figures'
     fig_outdir.mkdir(parents=True, exist_ok=True)
+    cfg['metadata']['outdir'] = str(results_outdir)
 
     # Set up logging
     logger = setup_logger(save_dir=results_outdir, logging_filename='training.log')
@@ -307,7 +308,6 @@ def main():
     cfg['data']['state_dim'] = train_dataset.state_dim
     cfg['data']['bin_state_dim'] = 0 if train_dataset._grid_network is None else train_dataset.bin_state_dim
     cfg['data']['num_actions'] = train_dataset.num_actions
-    cfg['metadata']['outdir'] = str(results_outdir)
     cfg['train']['lr_scheduler_kwargs'] = {key: float(val) for key, val in lr_scheduler_kwargs.items()}
     
     def check_cfg_dtypes(d):
