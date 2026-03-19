@@ -129,9 +129,11 @@ def load_raw_data_to_dataframe(fits_path):
     df = df[df['datetime'].dt.year > 2010] # There are some 1970 rows even after selecting propid
 
     # Add timestamp col
-    utc = pd.to_datetime(df['datetime'], utc=True)
-    timestamps = (utc.astype('int64') // 10**9).values
-    df['timestamp'] = timestamps.copy()
+    # utc = pd.to_datetime(df['datetime'], utc=True)
+    # timestamps = (utc.astype('int64') // 10**9).values
+    # timestamps = [int(t.timestamp()) for t in pd.to_datetime(df['datetime'], utc=True)]
+    timestamps = (df['datetime'] - pd.Timestamp("1970-01-01", tz='utc')) // pd.Timedelta("1s")
+    df['timestamp'] = timestamps
     df = df.sort_values(by='timestamp').reset_index(drop=True)
     return df
 
