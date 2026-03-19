@@ -18,7 +18,7 @@ import warnings
 import logging
 logger = logging.getLogger(__name__)
 
-from blancops.data_processing.features import FILTER2IDX
+from blancops.data_processing.constants import FILTER2IDX
 
 import json
 import pickle

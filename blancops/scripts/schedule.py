@@ -18,7 +18,7 @@ from blancops.utils.sys_utils import seed_everything, load_global_config, load_m
 from blancops.algorithms.factory import setup_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe, expand_feature_names_for_cyclic_norm
-from blancops.data_processing.features import NUM_FILTERS
+from blancops.data_processing.constants import NUM_FILTERS
 from blancops.core_rl.environments import OnlineBlancoEnv
 from blancops.data_processing.features import get_nautical_twilight
 from datetime import datetime, timedelta
