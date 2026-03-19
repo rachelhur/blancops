@@ -26,7 +26,7 @@ class BehaviorCloning(AlgorithmBase):
         self.num_filters = num_filters
         if grid_network is None:
             obs_dim = n_global_features + n_bin_features
-            self.policy_net = MLP(observation_dim=obs_dim, action_dim=num_actions, hidden_dim=hidden_dim, activation=activation).to(device)
+            self.policy_net = MLP(input_dim=obs_dim, output_dim=num_actions, hidden_dim=hidden_dim, activation=activation).to(device)
         elif grid_network == 'single_bin_scorer':
             self.policy_net = SingleScoreMLP(input_dim=n_global_features + n_bin_features, hidden_dim=hidden_dim, activation=activation).to(device)
         elif grid_network == 'multi_dim_scorer':
