@@ -144,7 +144,7 @@ def drop_rows_in_DECam_data(df, objects_to_remove, specific_years=None, specific
     # Remove specific nights according to object name
     # df = remove_specific_objects(objects_to_remove=objects_to_remove, df=df)
     pattern = '|'.join(objects_to_remove)
-    mask = ~df['object'].str.contains(pattern, case=False, na=False)
+    mask = ~df['object'].str.contains(pattern, case=False, na=False, regex=True)
 
     # Filter the DataFrame
     df = df[mask]

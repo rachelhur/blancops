@@ -18,7 +18,7 @@ from blancops.utils.sys_utils import seed_everything, load_global_config, load_m
 from blancops.algorithms.factory import setup_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe, expand_feature_names_for_cyclic_norm
-from blancops.core_rl.environments import OfflineDECamTestingEnv
+from blancops.core_rl.environments import OfflineBlancoTestingEnv
 from blancops.data_processing.offline_dataset import OfflineDataset
 
 from blancops.data_processing.features import get_nautical_twilight
@@ -325,7 +325,7 @@ def main():
     env_name = 'OfflineDECamTestingEnv-v0'
     gym.register(
         id=f"gymnasium_env/{env_name}",
-        entry_point=OfflineDECamTestingEnv,
+        entry_point=OfflineBlancoTestingEnv,
     )
 
     # Creat env
