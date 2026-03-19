@@ -33,6 +33,7 @@
       "moon_el",
       "filter_wave",
       "lst",
+      "sky_brightness",
       "time_fraction_since_start"
     ],
     "BIN_FEATURES": [
