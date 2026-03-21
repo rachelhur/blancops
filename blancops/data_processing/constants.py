@@ -53,3 +53,12 @@ WAIT_SIGNAL = -2
 NO_FILTER_SIGNAL = -1 # if action space is just bins, not filters
 AZEL_BIN_FEAT_SENTINEL = 0.0 # no fields now, might be later
 RADEC_BIN_FEAT_SENTINEL = -1.0
+
+"""
+
+NORMALIZATION CONSTANTS
+
+"""
+
+SKYBRIGHT_MAX = 23
+SKYBRIGHT_MIN = 17

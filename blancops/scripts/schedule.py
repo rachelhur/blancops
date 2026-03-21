@@ -18,7 +18,7 @@ from blancops.utils.sys_utils import seed_everything, load_global_config, load_m
 from blancops.algorithms.factory import setup_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe, expand_feature_names_for_cyclic_norm
-from blancops.data_processing.constants import NUM_FILTERS
+from blancops.data_processing.constants import *
 from blancops.core_rl.environments import OnlineBlancoEnv
 from blancops.data_processing.features import get_nautical_twilight
 from datetime import datetime, timedelta
@@ -42,7 +42,7 @@ def save_schedule(night_metrics, save_dir, make_gifs=True, nside=None, is_azel=F
     if len(timestamps) > 1:
         return
 
-    real_obs_mask = (bins != -1) & (bins != -2)
+    real_obs_mask = (bins != ZENITH_BIN_NUM) & (bins != WAIT_SIGNAL)
     
     schedule_full = {
         'agent_timestamp': timestamps[real_obs_mask],
@@ -191,11 +191,6 @@ def main():
 
     logger.info(f"Saving results in {schedule_outdir}")
 
-    # Print args
-    logger.warning("Experiment parameters:")
-    for key, value in args_dict.items():
-        logger.info(f"{key}: {value}")
-
     # Seed and get device
     seed_everything(args.seed)
     device = get_device()
@@ -210,10 +205,7 @@ def main():
         filepath = lookup_dirpath / f
         assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
 
-    logger.debug((lookup_dirpath / 'field_lookup.json'))
-
     with open(lookup_dirpath / "field_lookup.json", 'r') as f:
-        print(f)
         field_lookup = json.load(f)
         
     with open(lookup_dirpath / "field2radec.json") as f:
@@ -241,7 +233,6 @@ def main():
                                 tau=cfg['model']['tau'],
                                 activation=cfg['model']['activation']
                                 )
-    logger.debug('policy net structure: \n algorithm.policy_net')
     
     agent = Agent(
         algorithm=algorithm,
@@ -288,8 +279,8 @@ def main():
             continue
 
         # Mask zenith observations in plotting
-        real_obs_mask = np.array(metrics['field_id']) != -1
-        real_obs_mask &= np.array(metrics['field_id']) != -2
+        real_obs_mask = np.array(metrics['field_id']) != ZENITH_FIELD_ID
+        real_obs_mask &= np.array(metrics['field_id']) != WAIT_SIGNAL
         
         timestamps = metrics['timestamp']
         field_ids = metrics['field_id']
@@ -363,7 +354,6 @@ def main():
         if len(eval_bin_radecs) == 0:
             current_night += timedelta(days=1)
 
-            print(eval_bin_radecs)
             continue
         fig, axs = plt.subplots(1, 2, figsize=(10,5), sharex=True, sharey=True)
         axs[1].scatter(eval_bin_radecs[:, 0], eval_bin_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(eval_bin_radecs)))

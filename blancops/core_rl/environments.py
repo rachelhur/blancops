@@ -6,11 +6,11 @@ import pandas as pd
 import math
 
 from blancops.data_processing.data_processing import expand_feature_names_for_cyclic_norm
-from blancops.data_processing.data_processing import normalize_noncyclic_features
+from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data_processing.offline_dataset import setup_feature_names
-from blancops.data_processing.features import normalize_timestamp, get_nautical_twilight
+from blancops.data_processing.features import normalize_timestamp, get_nautical_twilight, normalize_noncyclic_features
 from blancops.data_processing.constants import *
 from blancops.math import geometry
 
@@ -34,6 +34,15 @@ class BaseTelescopeEnv(gym.Env, ABC):
         self._init_to_first_state()
         state = self._get_state()
         info = self._get_info()
+        # if not self.observation_space.contains(state):
+        #     for (s_name, s), feat_names in zip(state.items(), [self.global_feature_names, self.bin_feature_names]):
+        #         logger.warning(s_name)
+        #         if s.max() > 2 or s.min() < -2:
+        #             for i, col in enumerate(state['bin_state'].T):
+        #                 logger.warning(f"Feature `{feat_names[i]}` is out of bounds vals {col[col < -2]}")
+        #                 logger.warning(f"Feature `{feat_names[i]}` is out of bounds vals {col[col > 2]}")
+        #                 # logger.warning(f"Feature `{feat_names[i]}` array: {col.max(), col.min(), col}")
+        #     raise ValueError
         return state, info
     
     @abstractmethod
@@ -76,6 +85,7 @@ class BaseTelescopeEnv(gym.Env, ABC):
     def _get_exposure_time(self):
         """Get exposure time"""
         pass
+
     def _get_rewards(self, last_field, next_field):
         '''
         Calculates the reward for a single state transition.
@@ -101,11 +111,6 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
     """
     def __init__(self):
         super().__init__()
-        # 
-
-    def _get_state(self):
-        # Insert your shared normalizations and state formatting here
-        pass
 
     def _get_slew_time(self, last_fid, current_fid):
         if last_fid == ZENITH_FIELD_ID:

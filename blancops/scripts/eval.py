@@ -20,6 +20,7 @@ from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe, expand_feature_names_for_cyclic_norm
 from blancops.core_rl.environments import OfflineBlancoTestingEnv
 from blancops.data_processing.offline_dataset import OfflineDataset
+from blancops.data_processing.constants import *
 
 from blancops.data_processing.features import get_nautical_twilight
 import logging
@@ -265,10 +266,6 @@ def main():
 
     logger.info("Saving results in " + eval_outdir)
 
-    # Print args
-    # for key, value in args_dict.items():
-    #     logger.info(f"{key}: {value}")
-
     # Seed everything
     seed_everything(args.seed)
 
@@ -288,15 +285,7 @@ def main():
         specific_days=args.specific_days,
         specific_filters=args.specific_filters
         ) 
-        
-    # # Plot State x action space via cornerplot
-    # corner_plot = sns.pairplot(test_dataset._df,
-    #          vars=test_dataset.global_feature_names + ['bin'],
-    #          kind='hist',
-    #          corner=True
-    #         )
-    # corner_plot.figure.savefig(results_outdir + 'state_times_action_space_corner_plot.png')
-
+    
     logger.info("Setting up agent...")
     algorithm = setup_algorithm(algorithm_name=cfg['model']['algorithm'], 
                                 num_actions=test_dataset.num_actions,
@@ -312,7 +301,6 @@ def main():
                                 tau=cfg['model']['tau'],
                                 activation=cfg['model']['activation']
                                 )
-    logger.debug(algorithm.policy_net)
     
     agent = Agent(
         algorithm=algorithm,
@@ -331,10 +319,11 @@ def main():
     # Creat env
     global_pd_nightgroup = test_dataset._df.groupby('night')
     if len(cfg['data']['bin_features']) > 0:
-        bin_pd_nightgroup = test_dataset._bin_df.groupby('night')
+        zenith_idxs = test_dataset._df.iloc[test_dataset.next_state_idxs-1][test_dataset._df.iloc[test_dataset.next_state_idxs-1]['object'] == 'zenith'].index.values
+        zenith_bin_states = test_dataset._prenorm_bin_states[zenith_idxs].detach().numpy()
     else:
-        bin_pd_nightgroup = None
-    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, bin_pd_nightgroup=bin_pd_nightgroup)
+        zenith_bin_states = None
+    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, zenith_bin_states=zenith_bin_states)
     
     # Plot predicted action for each state
     with torch.no_grad():
@@ -343,8 +332,8 @@ def main():
     
     # Sequence of actions from target (original schedule) and policy
     target_sequence = test_dataset.bin_actions.detach().numpy()
-    target_sequence = target_sequence[target_sequence != -1]
-    eval_sequence = eval_actions[eval_actions != -1]
+    target_sequence = target_sequence[target_sequence != ZENITH_BIN_NUM]
+    eval_sequence = eval_actions[eval_actions != ZENITH_BIN_NUM]
     time_idx = np.where(np.array(test_dataset.global_feature_names) == 'time_fraction_since_start')[0]
     first_night_indices = np.where(test_dataset.states[:, time_idx] == 0)[0]
     fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
@@ -359,8 +348,8 @@ def main():
     fig.savefig(eval_outdir + 'eval_and_target_bin_sequences.png')
 
     target_sequence = test_dataset.bin_actions.detach().numpy()
-    target_sequence = target_sequence[target_sequence != -1]
-    eval_sequence = eval_actions[eval_actions != -1]
+    target_sequence = target_sequence[target_sequence != ZENITH_BIN_NUM]
+    eval_sequence = eval_actions[eval_actions != ZENITH_BIN_NUM]
     time_idx = np.where(np.array(test_dataset.global_feature_names) == 'time_fraction_since_start')[0]
     first_night_indices = np.where(test_dataset.states[:, time_idx] == 0)[0]
     fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
@@ -388,21 +377,24 @@ def main():
         FIELD2RADEC = json.load(f)
 
     ep_num = 0
-    
-    for night_idx,((night_name, night_group), (_, bin_night_group)) in enumerate(zip(test_dataset._df.groupby('night'), test_dataset._bin_df.groupby('night'))):
+    eval_metrics = eval_metrics[f'ep-{ep_num}']
+    bin_states = test_dataset._prenorm_bin_states.detach().numpy()
+    for night_idx,(night_name, night_group) in enumerate(test_dataset._df.groupby('night')):
         # Get date in string form for plots
         date = night_name.date()
         date_str = f"{date.year}-{date.month}-{date.day}"
         logger.info(f'Drawing plots for night {date_str}')
-        subdir_path = eval_outdir + date_str + '/'
-        if not os.path.exists(subdir_path):
-            os.makedirs(subdir_path)
-        
-        # Get ep-night metrics dict
-        metrics = eval_metrics['ep-0'][f'night-{night_idx}']
+        night_dir = eval_outdir + date_str + '/'
+        if not os.path.exists(night_dir):
+            os.makedirs(night_dir)
+        metrics = eval_metrics[f'night-{night_idx}']
+        if len(metrics['timestamp']) < 2:
+            logger.info(f"Night {night_idx} had no viable observations")
+            continue
+    
         # Mask zenith observations in plotting
-        eval_zenith_mask = metrics['field_id'] != -1
-        data_zenith_mask = night_group['field_id'] != -1
+        eval_zenith_mask = metrics['field_id'] != ZENITH_FIELD_ID
+        data_zenith_mask = night_group['field_id'] != ZENITH_FIELD_ID
         
         eval_timestamps = np.array(metrics['timestamp'])
         sunset = get_nautical_twilight(night_group['timestamp'].values[0], event_type='set')
@@ -422,7 +414,7 @@ def main():
         axb.set_ylabel('bin')
         fig_b.suptitle(date_str)
         fig_b.tight_layout()
-        fig_b.savefig(subdir_path + f'bin_vs_step.png')
+        fig_b.savefig(night_dir + f'bin_vs_step.png')
         plt.close()
 
         # Plot state features vs timestamp for first episode
@@ -432,10 +424,10 @@ def main():
             eval_data = feature_row.copy()
             if feat_name == 'airmass':
                 eval_data = 1 / feature_row
-            elif 'dec' in feat_name or 'el' in feat_name:
+            elif feat_name in global_cfg['features']['MAX_NORM_FEATURE_NAMES']:
                 eval_data = feature_row * (np.pi/2)
-            elif 'distance' in feat_name:
-                eval_data = feature_row * np.pi
+            elif feat_name in global_cfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']:
+                eval_data = feature_row * (2*np.pi)
             else:
                 eval_data = feature_row
 
@@ -445,7 +437,7 @@ def main():
             axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
             axs[i].legend()
         fig.tight_layout()
-        fig.savefig(subdir_path + f'state_features_vs_time.png')
+        fig.savefig(night_dir + f'state_features_vs_time.png')
         plt.close()
 
         # Plot most frequently visited bin features vs timestamp
@@ -453,37 +445,37 @@ def main():
             _bins_vis_tonight = metrics['bin'].astype(int)
             _bincounts = np.bincount(_bins_vis_tonight[eval_zenith_mask], minlength=test_dataset.num_actions)
             _most_common_bin = np.argmax(_bincounts)
-            normed_feature_names = expand_feature_names_for_cyclic_norm(test_dataset.base_bin_feature_names, test_dataset.cyclical_feature_names)
+            normed_feature_names = test_dataset.bin_feature_names
             fig, axs = plt.subplots(len(normed_feature_names), figsize=(10, len(normed_feature_names)* 5))
             for i, feat_row in enumerate(metrics['bin_observations'].T[:, _most_common_bin, :]):
                 feat_name = normed_feature_names[i]
                 # unnormalize observations to compare to expert values
                 if feat_name == 'airmass':
                     eval_data = 1 / feat_row
-                elif 'dec' in feat_name or 'el' in feat_name:
+                elif feat_name in global_cfg['features']['MAX_NORM_FEATURE_NAMES']:
                     eval_data = feat_row * (np.pi/2)
-                elif 'distance' in feat_name:
-                    eval_data = feat_row * np.pi
+                elif feat_name in global_cfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']:
+                    eval_data = feat_row * (2 * np.pi)
                 else:
                     eval_data = feat_row
                 axs[i].plot(eval_timestamps[eval_zenith_mask], eval_data[eval_zenith_mask], label='policy roll out', marker='o')
-                axs[i].plot(data_timestamps[data_zenith_mask], bin_night_group[f"bin_{_most_common_bin}_{feat_name}"].values[data_zenith_mask], label='original schedule', marker='o')
+                axs[i].plot(data_timestamps[data_zenith_mask], bin_states[:, _most_common_bin, i], label='original schedule', marker='o')
                 axs[i].set_title(feat_name)
                 axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
                 axs[i].legend()
+            fig.suptitle(f"Bin {_most_common_bin}: (az, el) = ({test_dataset.hpGrid.lon[_most_common_bin]:.2f}, {test_dataset.hpGrid.lon[_most_common_bin]:.2f}")
             fig.tight_layout()
-            fig.suptitle(f"Bin {_most_common_bin}: (az, el) = {test_dataset.hpGrid.lon[_most_common_bin], test_dataset.hpGrid.lon[_most_common_bin]}")
-            fig.savefig(subdir_path + f'bin_features_vs_time.png')
+            fig.savefig(night_dir + f'bin_features_vs_time.png')
 
 
         # Plot static bin and field radec scatter plots
         bin2coord = {int(i): (lon, lat) for i, (lon, lat) in enumerate(zip(test_dataset.hpGrid.lon, test_dataset.hpGrid.lat))}
 
-        eval_bin_radecs = np.array([bin2coord[bin_num] for bin_num in metrics['bin'].astype(int) if bin_num != -1])
-        orig_bin_radecs = np.array([bin2coord[bin_num] for bin_num in night_group['bin'].values if bin_num != -1])
+        eval_bin_radecs = np.array([bin2coord[bin_num] for bin_num in metrics['bin'].astype(int) if bin_num != ZENITH_BIN_NUM])
+        orig_bin_radecs = np.array([bin2coord[bin_num] for bin_num in night_group['bin'].values if bin_num != ZENITH_BIN_NUM])
         
-        eval_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in metrics['field_id'].astype(int) if field_id != -1])
-        orig_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in night_group['field_id'].values.astype(int) if field_id != -1])
+        eval_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in metrics['field_id'].astype(int) if field_id != ZENITH_FIELD_ID])
+        orig_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in night_group['field_id'].values.astype(int) if field_id != ZENITH_FIELD_ID])
         
         if len(orig_field_radecs) != 1:
             # Plot bins
@@ -495,7 +487,7 @@ def main():
                 ax.legend()
             axs[0].set_ylabel('y (dec or el)')
             fig.suptitle(f'Bins {night_name}')
-            fig.savefig(subdir_path + f'bins_ra_vs_dec.png')
+            fig.savefig(night_dir + f'bins_ra_vs_dec.png')
             plt.close()
             
             # Plot fields
@@ -507,11 +499,11 @@ def main():
                 ax.legend() 
             axs[0].set_ylabel('dec')
             fig.suptitle(f'Fields {night_name}')
-            fig.savefig(subdir_path + f'fields_ra_vs_dec.png')
+            fig.savefig(night_dir + f'fields_ra_vs_dec.png')
             plt.close()
 
         logger.info(f'Creating schedule gif for {night_idx}th night')
-        save_schedule(night_metrics=metrics, pd_group=night_group, save_dir=subdir_path, nside=nside, make_gifs=args.make_gifs, 
+        save_schedule(night_metrics=metrics, pd_group=night_group, save_dir=night_dir, nside=nside, make_gifs=args.make_gifs, 
                       is_azel=test_dataset.hpGrid.is_azel, bin2pos_filepath=bin2pos_filepath, field2radec_filepath=field2radec_filepath)
         
 if __name__ == "__main__":
