@@ -24,7 +24,6 @@ import json
 import pickle
 
 def save_DES_bin_and_field_mappings(fits_path, outdir):
-    
     if type(outdir) is not Path:
         outdir = Path(outdir).resolve()
     if type(fits_path) is not Path:
@@ -54,6 +53,17 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
     with open(outdir / gcfg['files']['FIELD2NAME'], "w") as f:
         json.dump(field2name, f)
 
+    # new_df = df.groupby(['field_id']).agg(
+    #     ra=('ra', 'mean'),
+    #     dec=('dec', 'mean'),
+    #     n_visits=('ra', 'count')           # Replaces your field2nvisits logic
+    # ).reset_index()
+
+    # ra_arr, dec_arr = new_df['ra'].values, new_df['dec'].values
+    # field2radec = {str(fid): (ra_arr[fid], dec_arr[fid]) for fid in new_df['field_id'].values}
+    # with open(outdir + 'field2radec.json', 'w') as f:
+    #     json.dump(field2radec, f, indent=2)
+
     # 4. field2radec: Save mapping from field id to its respective ra, dec, defined by mean of tilings
     field2radec = {int(fid): (g.loc[:, ['ra', 'dec']]).mean(axis=0).values.tolist() for fid, g in df.groupby('field_id')}
     with open(outdir / gcfg['files']['FIELD2RADEC'], "w") as f:
@@ -77,6 +87,8 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
     with open(outdir / gcfg['files']['FIELD2MAXVISITS_EVAL'], "w") as f:
         json.dump(field2nvisits_default0, f)
 
+    # new_df.to_json(outdir + 'field_lookup.json', indent=2, orient='index')
+
     # 7. field2filter: save viable filter visits per field -- #TODO will probably have to also do default0 and default1 like with field2nvisits
     field2filters = {fid: g['filter'].unique() for fid, g in df.groupby('field_id')}
     with open(outdir / gcfg['files']['FIELD2FILTERS'], "wb") as f:
@@ -85,7 +97,7 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
     # 7. night2filterhistory: filter visits per field each night
     night2filterhistory = {}
     night2fieldhistory = {}
-    df['filt_idx'] = df['filter'].map(FILTER2IDX).fillna(-1)
+    df['filt_idx'] = df['filter'].map(FILTER2IDX) #.fillna(-1)
 
     filt_running_counts = np.zeros(shape=(num_fields, len(FILTER2IDX)), dtype=np.int32)
     field_running_counts = np.zeros(shape=(num_fields), dtype=np.int32)
@@ -137,8 +149,11 @@ def load_raw_data_to_dataframe(fits_path):
     df = df.sort_values(by='timestamp').reset_index(drop=True)
     return df
 
-def drop_rows_in_DECam_data(df, objects_to_remove, specific_years=None, specific_months=None, specific_days=None, specific_filters=None):
+def drop_rows_in_DECam_data(df, objects_to_remove=None, specific_years=None, specific_months=None, specific_days=None, specific_filters=None):
     """Drops nights (1) in year 1970, and (2) with specific objects (ie, SN or GW followup which are observed for long stretches of time)"""
+    if objects_to_remove is None:
+        objects_to_remove = ["guide", "DES vvds","J0'","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "(outlier)"]
+
     df = remove_dates(df, specific_years, specific_months, specific_days, specific_filters)
     
     # Remove specific nights according to object name
@@ -226,6 +241,7 @@ def remove_dates(df, specific_years=None, specific_months=None, specific_days=No
         df = df[df['filter'].isin(specific_filters)]
         assert not df.empty, f"Filters {specific_filters} do not exist in days {specific_days}, months {specific_months}, and years {specific_years}"
     assert not df.empty, "No observations found for the specified year/month/day/filter selections."
+    
     return df
 
 def expand_feature_names_for_cyclic_norm(feature_names, cyclical_feature_names):

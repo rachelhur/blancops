@@ -70,7 +70,6 @@ class BehaviorCloning(AlgorithmBase):
                                 and epoch_num <= self.lr_scheduler_num_epochs + self.lr_scheduler_epoch_start
         )
         if do_lr_scheduler_step:
-            # logger.debug(f'---------------- Doing lr scheduler step at epoch {epoch_num} ----------------')
             self.lr_scheduler.step()
 
         return loss.item(), None
@@ -122,8 +121,6 @@ class BehaviorCloning(AlgorithmBase):
                 expert_bins = expert_actions // self.num_filters
                 predicted_filters = predicted_actions % self.num_filters
                 expert_filters = expert_actions % self.num_filters
-                # logger.debug(f'predicted filters = {predicted_filters} = {predicted_actions} % {self.num_filters}')
-                # logger.debug(f'expert filters = {expert_filters} = {expert_actions} % {self.num_filters}')
                 filter_accuracy = (predicted_filters == expert_filters).float().mean().item()
             else:
                 predicted_bins = predicted_actions
@@ -157,7 +154,6 @@ class BehaviorCloning(AlgorithmBase):
             action_logits = self.policy_net(x_glob=x_glob, x_bin=x_bin, y_data=None)
             
             # mask invalid actions
-            # logger.debug(f"agent select action mask.shape: {mask.shape}")
             mask = mask.view_as(action_logits)
             action_logits[~mask] = -1e9
             action = torch.argmax(action_logits, dim=1)

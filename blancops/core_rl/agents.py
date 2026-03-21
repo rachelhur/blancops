@@ -13,7 +13,7 @@ from pathlib import Path
 
 from blancops.math.interpolate import interpolate_on_sphere
 from blancops.ephemerides import ephemerides
-from blancops.data_processing.features import IDX2WAVE, FILTERWAVENORM
+from blancops.data_processing.constants import *
 import logging
 
 # Get the logger associated with this module's name (e.g., 'my_module')
@@ -171,7 +171,6 @@ class Agent:
                     train_metrics['train_qvals'].append(q_val)  
                     train_metrics['lr'].append(self.algorithm.optimizer.param_groups[0]["lr"])
                     train_metrics['epoch'].append(i_epoch)
-                    # logger.debug(f"current LR is {train_metrics['lr'][-1]}")
 
                 # At end of each epoch, do validation check
                 with torch.no_grad():
@@ -278,32 +277,30 @@ class Agent:
                     'bin_observations': [state['bin_state']],
                     'rewards': [reward],
                     'timestamp': [info.get('timestamp')],
-                    'field_id': [-1],
-                    'bin': [-1],
-                    'filter_idx': [-1]
+                    'field_id': [ZENITH_FIELD_ID],
+                    'bin': [ZENITH_BIN_NUM],
+                    'filter_idx': [ZENITH_FILTER_IDX]
                 }
 
                 i = 0
-                last_bin_idx = -1
+                last_bin_idx = ZENITH_BIN_NUM
                 pbar = tqdm(total=250*num_nights, dynamic_ncols=True, desc=f"Rolling out policy for night {night_idx} step {i}")
                 while not (terminated or truncated):
                     with torch.no_grad():
                         action_mask = info.get('action_mask', None)
-                        logger.debug(f'agent evaluate action_mask.shape {action_mask.shape}')
 
                         # Catch the edge case where no fields are above the horizon - tell agent to wait
                         if not action_mask.any():
                             logger.warning(f"No valid fields available at step {i} (mask is all zeros).")
-                            bin_idx, field_id, filter_idx = -2, -2, -2
+                            bin_idx, field_id, filter_idx = WAIT_SIGNAL, WAIT_SIGNAL, WAIT_SIGNAL
                         else:
                             action = self.choose_action(x_glob=state['global_state'], x_bin=state['bin_state'], action_mask=action_mask, epsilon=None)
                             if 'filter' in bin_space:
                                 bin_idx = int(action // self.algorithm.num_filters)
                                 filter_idx = int(action % self.algorithm.num_filters)
-                                logger.debug(f"agent evaluate bin_idx: {bin_idx}")
                             else:
                                 bin_idx = action
-                                filter_idx = None
+                                filter_idx = NO_FILTER_SIGNAL
 
                             valid_fields_per_bin = info.get('valid_fields_per_bin', {})
                             fields_in_bin = np.array(valid_fields_per_bin.get(int(bin_idx), []))
@@ -312,7 +309,7 @@ class Agent:
                             field_id = self.choose_field(obs=(state['global_state'], state['bin_state']), info=info, field2nvisits=field2nvisits, 
                                                         field2radec=field2radec, hpGrid=hpGrid, field_choice_method=field_choice_method, fields_in_bin=fields_in_bin,
                                                         filter_idx=filter_idx)#, num_filters=self.algorithm.num_filters)
-                        is_first_wait = (bin_idx == -2) and (last_bin_idx != -2)
+                        is_first_wait = (bin_idx == WAIT_SIGNAL) and (last_bin_idx != WAIT_SIGNAL)
                         is_real_obs = bin_idx >= 0
                         if is_first_wait or is_real_obs:
                             current_night_dict = episode_data[current_night_key]
@@ -346,7 +343,6 @@ class Agent:
                                 'bin': [bin_idx],
                                 'filter': [filter_idx]
                             }
-
 
                         # pbar update
                         i += 1

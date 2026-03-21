@@ -54,7 +54,6 @@ class DDQN(AlgorithmBase):
         self.lr_scheduler = self._initialize_scheduler(lr_scheduler=lr_scheduler, lr_scheduler_kwargs=lr_scheduler_kwargs, optimizer=self.optimizer)
 
         if lr_scheduler is not None:
-            logger.debug(f'lr_scheduler is {self.lr_scheduler}')
             self.lr_scheduler_epoch_start = lr_scheduler_epoch_start
             self.lr_scheduler_num_epochs = lr_scheduler_num_epochs
 
