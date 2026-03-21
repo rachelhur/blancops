@@ -36,7 +36,6 @@
         "do_cyclical_norm": true,
         "do_max_norm": true,
         "do_inverse_norm": true,
-        "remove_large_time_diffs": true,
         "bin_features": [
             "ha",
             "airmass",
