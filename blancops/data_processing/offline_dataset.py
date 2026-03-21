@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, RandomSampler, Subset
@@ -34,7 +35,8 @@ class OfflineDataset(torch.utils.data.Dataset):
     def __init__(self, df=None, cfg=None, gcfg=None,
                  specific_years=None, specific_months=None, specific_days=None, specific_filters=None,
                  field2maxvisits_path=None, field2radec_path=None, field2name_path=None,
-                 night2filtervisithistory_path=None, fieldfilter2maxvisits=None
+                 night2filtervisithistory_path=None, fieldfilter2maxvisits=None,
+                 debug_mode=False
                  ): 
         assert cfg is not None and gcfg is not None, "Must pass both cfg and gcfg"
 
@@ -57,7 +59,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         bin_space = cfg['data']['bin_space']
         binning_method = cfg['data']['bin_method']
         nside = cfg['data']['nside']
-        remove_large_time_diffs = cfg['data']['remove_large_time_diffs']
         logger.info(f'Including the following bin features: {cfg["data"]["bin_features"]}')
         logger.info(f'Including the following global features: {cfg["data"]["global_features"]}')
         include_bin_features = len(cfg['data']['bin_features']) > 0
@@ -105,17 +106,14 @@ class OfflineDataset(torch.utils.data.Dataset):
         # Save list of all feature names
         self.base_global_feature_names = cfg['data']['global_features'].copy()
         self.base_bin_feature_names = cfg['data']['bin_features'].copy()
-        self.global_feature_names, self.bin_feature_names, self.prenorm_expanded_bin_feature_names =\
-            setup_feature_names(base_global_feature_names=self.base_global_feature_names,
-                                base_bin_feature_names=self.base_bin_feature_names,
-                                cyclical_feature_names=self.cyclical_feature_names,
-                                nbins=self.num_bins,
-                                do_cyclical_norm=self.do_cyclical_norm,
-                                grid_network=self._grid_network
-                                )
+        self.global_feature_names, self.bin_feature_names = setup_feature_names(base_global_feature_names=self.base_global_feature_names,
+                                                                                base_bin_feature_names=self.base_bin_feature_names,
+                                                                                cyclical_feature_names=self.cyclical_feature_names,
+                                                                                do_cyclical_norm=self.do_cyclical_norm,
+                                                                                )
 
         # Process dataframe to add columns for global features
-        df = drop_rows_in_DECam_data(
+        self._df = drop_rows_in_DECam_data(
             df,
             specific_years=cfg['data']['specific_years'] if specific_years is None else specific_years, 
             specific_months=cfg['data']['specific_months'] if specific_months is None else specific_months, 
@@ -123,56 +121,49 @@ class OfflineDataset(torch.utils.data.Dataset):
             specific_filters=cfg['data']['specific_filters'] if specific_filters is None else specific_filters,
             objects_to_remove=self.objects_to_remove
             )
-
-        df = calculate_and_add_global_features(
-            df=df, 
+        self._df = calculate_global_features(
+            df=self._df, 
             field2name=field2name, 
             hpGrid=self.hpGrid, 
             base_global_feature_names=self.base_global_feature_names,
             cyclical_feature_names=self.cyclical_feature_names, 
             do_cyclical_norm=self.do_cyclical_norm
-            )
-        
-        bin_df = calculate_and_add_bin_features(
-            pt_df=df,
-            datetimes=df['datetime'],
-            hpGrid=self.hpGrid, 
-            base_bin_feature_names=self.base_bin_feature_names, 
-            prenorm_bin_feature_names=self.prenorm_expanded_bin_feature_names, 
-            bin_feature_names=self.bin_feature_names, 
-            cyclical_feature_names=self.cyclical_feature_names, 
-            do_cyclical_norm=self.do_cyclical_norm, 
-            field2radec=field2radec,
-            night2fieldvisits=night2fieldvisits,
-            fieldfilter2maxvisits=fieldfilter2maxvisits,
-            night2filtervisithistory=night2filtervisithistory,
-            field2maxvisits=field2maxvisits,
-            bin_space=bin_space
         )
+        if len(self.bin_feature_names) > 0:
+            bin_states = calculate_bin_features(
+                pt_df=self._df,
+                hpGrid=self.hpGrid, 
+                base_bin_feature_names=self.base_bin_feature_names, 
+                bin_feature_names=self.bin_feature_names, 
+                cyclical_feature_names=self.cyclical_feature_names, 
+                do_cyclical_norm=self.do_cyclical_norm, 
+                field2radec=field2radec,
+                night2fieldvisits=night2fieldvisits,
+                fieldfilter2maxvisits=fieldfilter2maxvisits,
+                night2filtervisithistory=night2filtervisithistory,
+                field2maxvisits=field2maxvisits,
+                bin_space=bin_space
+            )
+        else:
+            bin_states = None
 
-        self._df = df # Save for diagnostics
-        self._bin_df = bin_df # Save for diagnostics
-        del df, bin_df
-        gc.collect()
-                    
         # Save night dates, total number of nights in dataset, and number of obs per night
-        groups_by_night = self._df.groupby('night')
         self.unique_nights = self._df['night'].unique()
-        self.n_nights = groups_by_night.ngroups
-        self.n_obs_per_night = groups_by_night.size() # nights have different numbers of observations
+        self.n_nights = self._df.groupby('night').ngroups
 
         # Construct Transitions
         states, next_states, bin_states, next_bin_states, self.bin_actions, self.rewards, self.dones, self.action_masks, self.num_transitions \
             = self._construct_transitions(
             df=self._df, 
-            bin_df=self._bin_df,  
+            bin_states=bin_states,  
             include_bin_features=include_bin_features, 
             num_bins_1d=num_bins_1d, 
             binning_method=binning_method, 
             bin_space=bin_space,
-            remove_large_time_diffs=remove_large_time_diffs
             )
-
+        
+        self._prenorm_bin_states = bin_states
+        
         logger.info(f"States shape: {states.shape}, Actions shape: {self.bin_actions.shape}, Rewards shape: {self.rewards.shape}, Next states shape: {next_states.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
         logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}, Next bin states shape: {next_bin_states.shape if next_bin_states is not None else None}")
 
@@ -209,45 +200,43 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         if self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
             self.bin_states = normalize_noncyclic_features(
-                state=bin_states,
+                state=torch.tensor(self.bin_states),
                 state_feature_names=self.bin_feature_names,
                 max_norm_feature_names=self.max_norm_feature_names,
                 ang_distance_norm_feature_names=self.ang_distance_feature_names,
                 do_inverse_norm=self.do_inverse_norm,
                 do_max_norm=self.do_max_norm,
                 do_ang_distance_norm=self.do_ang_distance_norm,
-                fix_nans=True
+                fix_nans=True,
             )
             self.next_bin_states = normalize_noncyclic_features(
-                state=next_bin_states,
+                state=torch.tensor(self.next_bin_states),
                 state_feature_names=self.bin_feature_names,
                 max_norm_feature_names=self.max_norm_feature_names,
                 ang_distance_norm_feature_names=self.ang_distance_feature_names,
                 do_inverse_norm=self.do_inverse_norm,
                 do_max_norm=self.do_max_norm,
                 do_ang_distance_norm=self.do_ang_distance_norm,
-                fix_nans=True
+                fix_nans=True,
             )
+        else:
+            self.bin_states = None
+            self.next_bin_states = None
         if include_bin_features:
             assert self.states.shape[0] == self.bin_actions.shape[0] == self.rewards.shape[0] == self.next_states.shape[0] == self.dones.shape[0] == self.action_masks.shape[0] == self.bin_states.shape[0] == self.next_bin_states.shape[0], f"Shape mismatch: states {self.states.shape}, actions {self.bin_actions.shape}, rewards {self.rewards.shape}, next_states {self.next_states.shape}, dones {self.dones.shape}, action_masks {self.action_masks.shape}, bin_states {self.bin_states.shape}, next_bin_states {self.next_bin_states.shape}"
         else:
             assert self.states.shape[0] == self.bin_actions.shape[0] == self.rewards.shape[0] == self.next_states.shape[0] == self.dones.shape[0] == self.action_masks.shape[0], f"Shape mismatch: states {self.states.shape}, actions {self.bin_actions.shape}, rewards {self.rewards.shape}, next_states {self.next_states.shape}, dones {self.dones.shape}, action_masks {self.action_masks.shape}"
-        # self._do_noncyclic_normalizations()
 
-    def _construct_transitions(self, df, bin_df, include_bin_features, num_bins_1d, binning_method, bin_space, remove_large_time_diffs):
-        if remove_large_time_diffs:
-            next_state_idxs = self._get_next_state_indices(df)
-        else:
-            next_state_idxs = None
-        states, next_states, bin_features, next_bin_features = self._construct_states(df=df, bin_df=bin_df, include_bin_features=include_bin_features, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs)
+    def _construct_transitions(self, df, bin_states, include_bin_features, num_bins_1d, binning_method, bin_space):
+        next_state_idxs = self._get_next_state_indices(df)
+        states, next_states, bin_features, next_bin_features = self._construct_states(df=df, bin_states=bin_states, include_bin_features=include_bin_features, next_state_idxs=next_state_idxs)
         num_transitions = states.shape[0]
-        bin_actions = self._construct_actions(df, next_states=next_states, bin_space=bin_space, binning_method=binning_method, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs, num_bins_1d=num_bins_1d)
-        rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, remove_large_time_diffs=remove_large_time_diffs, reward_choice=self.reward_choice)
+
+        bin_actions = self._construct_actions(df, next_states=next_states, bin_space=bin_space, binning_method=binning_method, next_state_idxs=next_state_idxs, num_bins_1d=num_bins_1d)
+        rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, reward_choice=self.reward_choice)
         dones = np.zeros(num_transitions, dtype=bool) # False unless last observation of the night
         dones[-1] = True
-        # dones = df.groupby('night').apply(lambda x: [False]*(len(x)-1) + [True]).explode().values.astype(bool)
-        # dones = df.groupby('night').apply(lambda x: [False]*(len(x)-1) + [True]).explode().values
-        action_masks = self._construct_action_masks(df=df, bin_space=bin_space, num_transitions=num_transitions, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs)
+        action_masks = self._construct_action_masks(df=df, bin_space=bin_space, num_transitions=num_transitions, next_state_idxs=next_state_idxs)
         
         states = torch.as_tensor(states, dtype=torch.float32)
         next_states = torch.as_tensor(next_states, dtype=torch.float32)
@@ -265,34 +254,24 @@ class OfflineDataset(torch.utils.data.Dataset):
             
         return states, next_states, bin_features, next_bin_features, bin_actions, rewards, dones, action_masks, num_transitions
 
-    def _construct_states(self, df, bin_df, include_bin_features, remove_large_time_diffs, next_state_idxs):
-        if remove_large_time_diffs:
-            global_features, next_global_features = self._construct_global_features(df=df, remove_large_time_diffs=True, next_state_idxs=next_state_idxs)
-            if include_bin_features:
-                bin_states, next_bin_states = self._construct_bin_features(bin_df=bin_df, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs)
-                if self._grid_network is None:
-                    self.bin_states = np.array([])
-                    self.next_bin_states = np.array([])
-                    states = np.concatenate((global_features, bin_states), axis=1)
-                    next_states = np.concatenate((next_global_features, next_bin_states), axis=1)
-                    return states, next_states, bin_states, next_bin_states
-                elif self._grid_network  in ['single_bin_scorer', 'multi_dim_scorer']:
-                    self.bin_states = bin_states
-                    self.next_bin_states = next_bin_states
-                    return global_features, next_global_features, bin_states, next_bin_states
-                else:
-                    raise NotImplementedError(f"Grid network type {self._grid_network} not implemented for state construction.")
-            return global_features, next_global_features, None, None
-        else:
-            global_features, next_global_features = self._construct_global_features(df=df, remove_large_time_diffs=remove_large_time_diffs)
-            if include_bin_features:
-                bin_states, next_bin_states = self._construct_bin_features(bin_df=bin_df, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=None)
-                self.bin_states = bin_states
-                self.next_bin_states = next_bin_states
+    def _construct_states(self, df, bin_states, include_bin_features, next_state_idxs):
+        global_features, next_global_features = self._construct_global_features(df=df, next_state_idxs=next_state_idxs)
+        if include_bin_features:
+            bin_states, next_bin_states = self._construct_bin_states(bin_states=bin_states, next_state_idxs=next_state_idxs)
+            if self._grid_network is None:
+                self.bin_states = np.array([])
+                self.next_bin_states = np.array([])
                 states = np.concatenate((global_features, bin_states), axis=1)
                 next_states = np.concatenate((next_global_features, next_bin_states), axis=1)
-                return states, next_states
-            return global_features, next_global_features
+                return states, next_states, bin_states, next_bin_states
+            elif self._grid_network  in ['single_bin_scorer', 'multi_dim_scorer']:
+                self.bin_states = bin_states
+                self.next_bin_states = next_bin_states
+
+                return global_features, next_global_features, bin_states, next_bin_states
+            else:
+                raise NotImplementedError(f"Grid network type {self._grid_network} not implemented for state construction.")
+        return global_features, next_global_features, None, None
     
     def _get_next_state_indices(self, df, max_time_diff_min=10):
         time_diffs = df['timestamp'].diff().values
@@ -302,7 +281,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         logger.debug(f'Removing {np.sum(~keep)} transitions with large time diffs > {max_time_diff_min} min. Total transitions: {len(keep)}')
         return next_state_idxs
 
-    def _construct_global_features(self, df, remove_large_time_diffs, next_state_idxs=None):
+    def _construct_global_features(self, df, next_state_idxs=None):
         """
         Constructs state and next_states for all transitions.
         Inserts a "null" observation before the first observation each night.
@@ -311,95 +290,58 @@ class OfflineDataset(torch.utils.data.Dataset):
         # global features already in DECam data
         missing_cols = set(self.global_feature_names) - set(df.columns) == 0
         assert missing_cols == 0, f'Features {missing_cols} do not exist in dataframe. Must be implemented in method self._process_dataframe()'
-        if remove_large_time_diffs:
-            next_state_df = df.iloc[next_state_idxs]
-            current_state_df = df.iloc[next_state_idxs - 1]
-            global_features = current_state_df[self.global_feature_names].to_numpy()
-            next_global_features = next_state_df[self.global_feature_names].to_numpy()
-        else:
-            global_features = df.groupby('night')[self.global_feature_names].apply(lambda group: group.iloc[:-1, :]).to_numpy()
-            next_global_features = df.groupby('night')[self.global_feature_names].apply(lambda group: group.iloc[1:, :]).to_numpy()
+
+        next_state_df = df.iloc[next_state_idxs]
+        current_state_df = df.iloc[next_state_idxs - 1]
+        global_features = current_state_df[self.global_feature_names].to_numpy()
+        next_global_features = next_state_df[self.global_feature_names].to_numpy()
         return global_features, next_global_features
         
-    def _construct_bin_features(self, bin_df, remove_large_time_diffs, next_state_idxs):
+    def _construct_bin_states(self, bin_states, next_state_idxs):
         # Get bin_features and next_bin_features
-        if remove_large_time_diffs:
-            next_bindf = bin_df.iloc[next_state_idxs][self.bin_feature_names]
-            bindf = bin_df.iloc[next_state_idxs - 1][self.bin_feature_names]
-            if self._grid_network is None:
-                bin_states = bindf.to_numpy()
-                next_bin_states = next_bindf.to_numpy()
-            elif self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
-                nrows, ncols = bindf.shape
-                num_feats_per_bin = int(ncols / self.num_bins)
-                bin_states = bindf.to_numpy().reshape((nrows, self.num_bins, num_feats_per_bin))
-                next_bin_states = next_bindf.to_numpy().reshape((nrows, self.num_bins, num_feats_per_bin))
-            else:
-                raise NotImplementedError(f"Grid network type {self._grid_network} not implemented for bin feature construction.")
-        else:
-            if self._grid_network is None:
-                bin_states = bin_df.groupby('night')[self.bin_feature_names].apply(lambda group: group.iloc[:-1, :]).to_numpy()
-                next_bin_states = bin_df.groupby('night')[self.bin_feature_names].apply(lambda group: group.iloc[1:, :]).to_numpy()
-            elif self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
-                bindf = bin_df.groupby('night')[self.bin_feature_names].apply(lambda group: group.iloc[:-1, :])
-                next_bindf = bin_df.groupby('night')[self.bin_feature_names].apply(lambda group: group.iloc[1:, :])
-                A, B = bindf.shape
-                num_feats_per_bin = int(B / self.num_bins)
-                bin_states = bindf.to_numpy().reshape((A, self.num_bins, num_feats_per_bin))
-                next_bin_states = next_bindf.to_numpy().reshape((A, self.num_bins, num_feats_per_bin))
-            else:
-                raise NotImplementedError(f"Grid network type {self._grid_network} not implemented for bin feature construction.")
-        return bin_states, next_bin_states
+        next_bin_states = bin_states[next_state_idxs]
+        current_bin_states = bin_states[next_state_idxs - 1]
+        return current_bin_states, next_bin_states
     
-    def _construct_actions(self, df, next_states, bin_space, binning_method, remove_large_time_diffs, next_state_idxs, num_bins_1d=None):
+    def _construct_actions(self, df, next_states, bin_space, binning_method, next_state_idxs, num_bins_1d=None):
         assert bin_space in ['radec', 'azel', 'radec_filter', 'azel_filter'], 'bin_space must be radec or azel'
         assert binning_method in ['uniform', 'healpix'], 'bining_method must be uniform or healpix'
 
         if binning_method == 'healpix':
-            if remove_large_time_diffs:
-                next_state_df = df.iloc[next_state_idxs]
-                if self.hpGrid.is_azel:
-                    lonlat = next_state_df[['az', 'el']].values
-                else:
-                    lonlat = next_state_df[['ra', 'dec']].values
-                bin_indices = self.hpGrid.ang2idx(lon=lonlat[:, 0], lat=lonlat[:, 1])
-                indices = bin_indices
-
-                if 'filter' in bin_space:
-                    filter_indices = next_state_df['filter'].map(FILTER2IDX).fillna(0).values.astype(np.int32)
-                    indices = (bin_indices * NUM_FILTERS) + filter_indices
+            next_state_df = df.iloc[next_state_idxs]
+            if self.hpGrid.is_azel:
+                lonlat = next_state_df[['az', 'el']].values
             else:
-                if self.hpGrid.is_azel:
-                    lonlat_no_zen = df.groupby('night').tail(-1)[['az', 'el']].values
-                else:
-                    # lon, lat = df.ra.values, df.dec.values
-                    lonlat_no_zen = df.groupby('night').tail(-1)[['ra', 'dec']].values
-                indices = self.hpGrid.ang2idx(lon=lonlat_no_zen[:, 0], lat=lonlat_no_zen[:, 1])
+                lonlat = next_state_df[['ra', 'dec']].values
+            bin_indices = self.hpGrid.ang2idx(lon=lonlat[:, 0], lat=lonlat[:, 1])
+            indices = bin_indices
+
+            if 'filter' in bin_space:
+                filter_indices = next_state_df['filter'].map(FILTER2IDX).fillna(0).values.astype(np.int32)
+                indices = (bin_indices * NUM_FILTERS) + filter_indices
             return indices
         elif binning_method == 'uniform' and bin_space == 'azel':
             raise NotImplementedError
         else:
             raise NotImplementedError
 
-    def _construct_rewards(self, df, remove_large_time_diffs, next_state_idxs, reward_choice='teff_rate'):
+    def _construct_rewards(self, df, next_state_idxs, reward_choice='teff_rate'):
         assert reward_choice in ['teff_rate', 'expert_actions'], 'reward_choice must be teff_rate or expert_actions'
         """Constructs rewards for all transitions. Reward is defined as teff, normalized to [0, 1]."""
         if reward_choice == 'teff_rate':
-            rewards = get_inst_teff_rate(df=df, remove_large_time_diffs=remove_large_time_diffs, next_state_idxs=next_state_idxs)
+            rewards = get_inst_teff_rate(df=df, next_state_idxs=next_state_idxs)
         elif reward_choice == 'expert_actions':
-            if remove_large_time_diffs:
-                next_state_df = df.iloc[next_state_idxs]
-                rewards = np.ones(len(next_state_df), dtype=np.float32)
+            next_state_df = df.iloc[next_state_idxs]
+            rewards = np.ones(len(next_state_df), dtype=np.float32)
         return rewards
 
-    def _construct_action_masks(self, df, bin_space, num_transitions, remove_large_time_diffs, next_state_idxs):
+    def _construct_action_masks(self, df, bin_space, num_transitions, next_state_idxs):
         """
         Constructs action masks only with the condition that bins outside of horizon are masked
         """
-        if remove_large_time_diffs:
-            df = df.iloc[next_state_idxs-1]
+        df = df.iloc[next_state_idxs-1]
         # given timestamp, determine bins which are outside of observable range
-        els = np.empty((num_transitions, self.num_actions))
+        els = np.empty((num_transitions, self.num_actions), dtype=np.float32)
         if self._calculate_action_mask:
             logger.info("Calculating action masks based on horizon. This may take a few minutes...")
             if not self.hpGrid.is_azel:

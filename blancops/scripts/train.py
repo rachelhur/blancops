@@ -147,7 +147,6 @@ def get_args():
     parser.add_argument('--data.do_cyclical_norm', action='store_true', help='Whether to apply cyclical normalization to the features')
     parser.add_argument('--data.do_max_norm', action='store_true', help='Whether to apply max normalization to the features')
     parser.add_argument('--data.do_inverse_norm', action='store_true', help='Whether to include inverse normalizations to features')
-    parser.add_argument('--data.remove_large_time_diffs', action='store_true', help='New method of calculating transitions which removes any transitions with time difference greater than 10 min')
     parser.add_argument('--data.bin_features', type=str, nargs='*', default=[], help='Bin feautures to include')
     parser.add_argument('--data.pointing_features', type=str, nargs='*', default=[], help='Pointing feautures to include')
 
@@ -174,7 +173,6 @@ def get_args():
         assert Path(args.cfg).exists(), f"Config file at {args.cfg} does not exist."
             
         with open(args.cfg, 'r') as f:
-            print(args.cfg)
             file_conf = json.load(f)
             for section, values in file_conf.items():
                 if isinstance(values, dict):
