@@ -376,31 +376,8 @@ class OfflineDataset(torch.utils.data.Dataset):
                     lonlat_no_zen = df.groupby('night').tail(-1)[['ra', 'dec']].values
                 indices = self.hpGrid.ang2idx(lon=lonlat_no_zen[:, 0], lat=lonlat_no_zen[:, 1])
             return indices
-        
         elif binning_method == 'uniform' and bin_space == 'azel':
             raise NotImplementedError
-            az_edges = np.linspace(0, 360, num_bins_1d + 1, dtype=np.float32)
-            # az_centers = az_edges[:-1] + (az_edges[1] - az_edges[0])/2
-            el_edges = np.linspace(0, 90, num_bins_1d + 1, dtype=np.float32)
-            # az_centers = el_edges[:-1] + (el_edges[1] - el_edges[0])/2
-
-            i_x = np.digitize(next_states[:, az_idx], az_edges).astype(np.int32) - 1
-            i_y = np.digitize(next_states[:, el_idx], el_edges).astype(np.int32) - 1
-            bin_ids = i_x + i_y * (num_bins_1d)
-            self.az_edges = az_edges
-            self.el_edges = el_edges
-            
-            id2azel = defaultdict(list)
-            for az, el, bin_id in zip(next_states[:, az_idx], next_states[:, el_idx], bin_ids):
-                id2azel[bin_id].append((az, el))            
-            self.id2azel = dict(sorted(id2azel.items()))
-
-            id2radec = defaultdict(list)
-            for ra, dec, bin_id in zip(df['ra'].values, df['dec'].values, bin_ids):
-                id2radec[bin_id].append((ra, dec))
-            self.id2radec = dict(sorted(id2radec.items()))
-
-            return bin_ids
         else:
             raise NotImplementedError
 
@@ -478,16 +455,9 @@ class OfflineDataset(torch.utils.data.Dataset):
         logger.info(f'Choosing {num_val_nights} nights for validation out of {self.n_nights} nights. Specifically, {val_nights}')
         
         # 2. Track which night each transition belongs to
-        # We must handle the two different ways states are constructed
-        if hasattr(self, 'next_state_idxs') and self.next_state_idxs is not None:
-            # When remove_large_time_diffs is True
-            transition_nights = self._df.iloc[self.next_state_idxs - 1]['night']
-        else:
-            # When remove_large_time_diffs is False
-            transition_nights = self._df.groupby('night')['night'].apply(lambda x: x.iloc[:-1])
+        transition_nights = self._df.iloc[self.next_state_idxs - 1]['night']
             
         # 3. Create boolean mask mapping transitions to the selected val nights
-        # print(transition_nights, val_nights)
         val_mask = np.isin(transition_nights, val_nights)
         
         # 4. Extract the exact indices for train and val subsets

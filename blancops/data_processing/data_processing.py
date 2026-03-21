@@ -255,74 +255,37 @@ def expand_feature_names_for_cyclic_norm(feature_names, cyclical_feature_names):
         ]
     return feature_names
 
-def setup_feature_names(base_global_feature_names, base_bin_feature_names, cyclical_feature_names, nbins, do_cyclical_norm, grid_network):
-    """
-    Returns
-    -------
-    global_feature_names (list): feature names after circular normalization. If grid_network is None, returns [global_feature_names] + [bin_feature_names]
-    bin_feature_names (list): feature names after circular normalization but before adding 'bin_{i}_{feat}' prefixes
-    expanded_global_feature_names
-    """
-    if len(base_bin_feature_names) > 0:
-        prenorm_expanded_bin_feature_names = np.array([ [f'bin_{bin_num}_{bin_feat}'
-                                        for bin_feat in base_bin_feature_names]
-                                        for bin_num in range(nbins) ])
-        prenorm_expanded_bin_feature_names = prenorm_expanded_bin_feature_names.flatten().tolist()
-    else:
-        prenorm_expanded_bin_feature_names = []
+# def setup_feature_names(base_global_feature_names, base_bin_feature_names, cyclical_feature_names, nbins, do_cyclical_norm, grid_network):
+#     """
+#     Returns
+#     -------
+#     global_feature_names (list): feature names after circular normalization. If grid_network is None, returns [global_feature_names] + [bin_feature_names]
+#     bin_feature_names (list): feature names after circular normalization but before adding 'bin_{i}_{feat}' prefixes
+#     expanded_global_feature_names
+#     """
+#     if len(base_bin_feature_names) > 0:
+#         prenorm_expanded_bin_feature_names = np.array([ [f'bin_{bin_num}_{bin_feat}'
+#                                         for bin_feat in base_bin_feature_names]
+#                                         for bin_num in range(nbins) ])
+#         prenorm_expanded_bin_feature_names = prenorm_expanded_bin_feature_names.flatten().tolist()
+#     else:
+#         prenorm_expanded_bin_feature_names = []
 
+#     # Replace cyclical features with their cyclical transforms/normalizations if on  
+#     if do_cyclical_norm:
+#         global_feature_names = expand_feature_names_for_cyclic_norm(base_global_feature_names.copy(), cyclical_feature_names)
+#         bin_feature_names = expand_feature_names_for_cyclic_norm(prenorm_expanded_bin_feature_names.copy(), cyclical_feature_names)
+#     else:
+#         global_feature_names = base_global_feature_names
+#         bin_feature_names = prenorm_expanded_bin_feature_names
+#     return global_feature_names, bin_feature_names, prenorm_expanded_bin_feature_names
+
+def setup_feature_names(base_global_feature_names, base_bin_feature_names, cyclical_feature_names, do_cyclical_norm):
     # Replace cyclical features with their cyclical transforms/normalizations if on  
     if do_cyclical_norm:
         global_feature_names = expand_feature_names_for_cyclic_norm(base_global_feature_names.copy(), cyclical_feature_names)
-        bin_feature_names = expand_feature_names_for_cyclic_norm(prenorm_expanded_bin_feature_names.copy(), cyclical_feature_names)
+        bin_feature_names = expand_feature_names_for_cyclic_norm(base_bin_feature_names.copy(), cyclical_feature_names)
     else:
         global_feature_names = base_global_feature_names
-        bin_feature_names = prenorm_expanded_bin_feature_names
-    return global_feature_names, bin_feature_names, prenorm_expanded_bin_feature_names
-
-def normalize_noncyclic_features(state, 
-                                state_feature_names,
-                                max_norm_feature_names,
-                                ang_distance_norm_feature_names,
-                                do_inverse_norm, do_max_norm, do_ang_distance_norm,
-                                bin_space=None,
-                                fix_nans=True):
-    is_torch = torch.is_tensor(state)
-    # build masks (numpy boolean array)
-    airmass_mask = np.array(['airmass' in feat for feat in state_feature_names], dtype=bool)
-    max_norm_mask = np.array([any(max_feat in feat for max_feat in max_norm_feature_names) for feat in state_feature_names], dtype=bool)
-    ang_distance_mask = np.array([any(dist_feat in feat for dist_feat in ang_distance_norm_feature_names) for feat in state_feature_names], dtype=bool)
-
-    if is_torch:
-        airmass_mask = torch.tensor(airmass_mask, dtype=torch.bool, device=state.device)
-        max_norm_mask = torch.tensor(max_norm_mask, dtype=torch.bool, device=state.device)
-        ang_distance_mask = torch.tensor(ang_distance_mask, dtype=torch.bool, device=state.device)
-
-    do_reshape = False
-
-    if state.ndim == 3: # ie, if is bin states
-        do_reshape = True
-        nrows, nbins, nfeats_per_bin = state.shape
-        if is_torch:
-            state = state.flatten(start_dim=1)
-        else:
-            state = state.reshape(state.shape[0], -1) 
-    # logger.debug(f"airmass mask shape {airmass_mask.shape}")
-    # logger.debug(f"state shape {state.shape}")  
-    if do_inverse_norm:
-        # logger.debug(f"state shape {state.shape}, airmass mask shape {airmass_mask.shape}")
-        state[..., airmass_mask] = 1.0 / state[..., airmass_mask]
-    if do_max_norm:
-        state[..., max_norm_mask] = state[..., max_norm_mask] / (np.pi / 2)
-    if do_ang_distance_norm:
-        # logger.debug(f"DOING ANG DISTANCE NORM for {ang_distance_mask.sum()} number of elements")
-        state[..., ang_distance_mask] = state[..., ang_distance_mask] / np.pi
-    if fix_nans:
-        if is_torch:
-            state[torch.isnan(state)] = 1.2
-        else:
-            state[np.isnan(state)] = 1.2
-    if do_reshape:
-        state = state.reshape(nrows, nbins, nfeats_per_bin)
-
-    return state
+        bin_feature_names = base_bin_feature_names
+    return global_feature_names, bin_feature_names

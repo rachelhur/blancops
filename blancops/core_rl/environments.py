@@ -185,37 +185,38 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
 
     def _get_state(self):
         global_state, bin_state = self._global_state, self._bin_state
-        global_state_copy = global_state.copy()
-        bin_state_copy = bin_state.copy()
-        # state_normed = self._do_noncyclic_normalizations(state=state_copy)
         global_state_normed = normalize_noncyclic_features(
-                            state=np.array(global_state_copy),
+                            state=np.array(global_state),
                             state_feature_names=self.state_feature_names,
                             max_norm_feature_names=self.max_norm_feature_names,
                             ang_distance_norm_feature_names=self.ang_distance_feature_names,
                             do_inverse_norm=self.do_inverse_norm,
                             do_max_norm=self.do_max_norm,
                             do_ang_distance_norm=self.do_ang_distance_norm,
-                            bin_space=self.bin_space,
-                            fix_nans=True
+                            fix_nans=True,
+                            do_debug=False
                         )
         if self.include_bin_features:
             bin_state_normed = normalize_noncyclic_features(
-                state=np.array(bin_state_copy)[np.newaxis, ...], # add axis for function
+                state=np.array(bin_state), # add axis for function
                 state_feature_names=self.bin_feature_names,
                 max_norm_feature_names=self.max_norm_feature_names,
                 ang_distance_norm_feature_names=self.ang_distance_feature_names,
                 do_inverse_norm=self.do_inverse_norm,
                 do_max_norm=self.do_max_norm,
                 do_ang_distance_norm=self.do_ang_distance_norm,
-                bin_space=self.bin_space,
-                fix_nans=True
+                fix_nans=True,
+                do_debug=True
             )
-            bin_state_normed = bin_state_normed[0] # remove axis
+            bin_state_normed = bin_state_normed
         else:
             bin_state_normed = np.array([])
         self._global_state = global_state_normed.astype(np.float32)
         self._bin_state = bin_state_normed.astype(np.float32)
+        # for feat_name, row in zip(self.global_feature_names, self._global_state):
+        #     print(feat_name, row.max(), row.min())
+        # for feat_name, row in zip(self.bin_feature_names, self._bin_state.T):
+        #     print(feat_name, row.max(), row.min())
 
         # logger.debug(f"Global state max, min {self._global_state.max()}, {self._global_state.min()}")
         # logger.debug(f"State above max: {np.where(self._global_state > 2)}")            
@@ -251,11 +252,12 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         new_features['lst'] = lst.radian
         
         # --- OnlineEnv Logic --- #
-        if field_id == ZENITH_FIELD_ID or field_id == WAIT_SIGNAL:
+        if field_id == ZENITH_FIELD_ID:
             blanco = ephemerides.blanco_observer(time=timestamp)
-            new_features['ra'], new_features['dec'] = new_features['lst'], blanco.lon
+            ra, dec = new_features['lst'], blanco.lon
+            new_features['ra'], new_features['dec'] = ra, dec 
             new_features['filter_wave'] = 0.
-        else:
+        else: # if field_id is real field or is wait signal
             ra = self._ra_arr[field_id]
             dec = self._dec_arr[field_id]
             new_features['ra'], new_features['dec'] = ra, dec
@@ -273,6 +275,9 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         new_features['sun_az'], new_features['sun_el'] = ephemerides.equatorial_to_topographic(ra=new_features['sun_ra'], dec=new_features['sun_dec'], time=timestamp)
         new_features['moon_ra'], new_features['moon_dec'] = ephemerides.get_source_ra_dec(source='moon', time=timestamp)
         new_features['moon_az'], new_features['moon_el'] = ephemerides.equatorial_to_topographic(ra=new_features['moon_ra'], dec=new_features['moon_dec'], time=timestamp)
+        for filt in FILTER2WAVE.keys():
+            if filt != ZENITH_FILTER:
+                new_features[f'sky_brightness_{filt}'] = estimate_sky_brightness(time=self._timestamp, ra=ra, dec=dec, band=filt)
 
         if sunrise_time == sunset_time:
             raise AssertionError("Sunrise and sunset time is equal. Check night_str argument - it should be a time between sunset and sunrise")
@@ -282,7 +287,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
 
 
         for feat_name in self.base_global_feature_names:
-            if any(string in feat_name and 'bin' not in feat_name and 'frac' not in feat_name for string in self.cyclical_feature_names):
+            if any(string in feat_name and 'frac' not in feat_name for string in self.cyclical_feature_names):
                 new_features.update({f'{feat_name}_cos': np.cos(new_features[feat_name])})
                 new_features.update({f'{feat_name}_sin': np.sin(new_features[feat_name])})
 
@@ -430,8 +435,8 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                     features[f'survey_min_tiling_{filt_name}'] = s_f_mins[:, f]
                     features[f'night_min_tiling_{filt_name}'] = n_f_mins[:, f]
         
-        # FEATURE VALIDATION CHECK
-        self._validate_bin_features(features, sentinel_val)
+            # FEATURE VALIDATION CHECK
+            self._validate_bin_features(features, sentinel_val)
 
         # Normalize periodic features here and add as df cols
         if self.do_cyclical_norm:
@@ -443,11 +448,14 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                     else:
                         raise ValueError(f"{feat_name} was not calculated in _calculate_bin_features. Is this feature implemented?")
         
-        expanded_feat_names = expand_feature_names_for_cyclic_norm(self.base_bin_feature_names, cyclical_feature_names=self.cyclical_feature_names)
-        
-        # Uses the np.nan safe fallback we added previously
-        bin_state = np.vstack([features.get(feat_name, np.full(self.nbins, np.nan, dtype=np.float32)) for feat_name in expanded_feat_names]).T
-        return bin_state
+        bin_states = np.array([features.get(key, None) for key in self.bin_feature_names if key in features.keys()])
+        from einops import rearrange
+        bin_states = rearrange(bin_states, 'nfeats nbins -> nbins nfeats')
+        # bin_state = np.vstack([features.get(feat_name, np.full(self.nbins, np.nan, dtype=np.float32)) for feat_name in self.bin_feature_names]).T
+        # assert (bin_state != np.nan).all()
+        # assert (bin_state != np.inf).all()
+
+        return bin_states
 
     def _validate_bin_features(self, features, sentinel_value):
         if self.do_filt and self._has_historical_features:
@@ -505,7 +513,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         self.observation_space = gym.spaces.Dict(
             {
                 "global_state": gym.spaces.Box(-2, 2, shape=(self.state_dim,), dtype=np.float32),
-                "bin_state": gym.spaces.Box(-2, 2, shape=self.bin_state_shape, dtype=np.float32),
+                "bin_state": gym.spaces.Box(-2, 2, shape=bin_state_shape, dtype=np.float32),
             }
         )
 
@@ -518,11 +526,12 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                 "filter_idx": gym.spaces.Discrete(NUM_FILTERS - ZENITH_FILTER_IDX, start=ZENITH_FILTER_IDX)
             }
         )       
+
 class OfflineBlancoTestingEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
     """
-    def __init__(self, gcfg, cfg, max_nights=None, exp_time=90., global_pd_nightgroup=None, bin_pd_nightgroup=None):
+    def __init__(self, gcfg, cfg, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None):
         """
         Args
         ----
@@ -592,13 +601,11 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
 
         self.base_global_feature_names = cfg['data']['global_features'].copy()
         self.base_bin_feature_names = cfg['data']['bin_features'].copy()
-        self.global_feature_names, self.bin_feature_names, self.prenorm_expanded_bin_feature_names =\
+        self.global_feature_names, self.bin_feature_names =\
             setup_feature_names(base_global_feature_names=cfg['data']['global_features'],
                                 base_bin_feature_names=cfg['data']['bin_features'],
                                 cyclical_feature_names=self.cyclical_feature_names,
-                                nbins=self.nbins,
                                 do_cyclical_norm=self.do_cyclical_norm,
-                                grid_network=self._grid_network
                                 )
         
         if self._grid_network is None:
@@ -607,37 +614,16 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
             self.state_feature_names = self.global_feature_names
         
         self.global_pd_nightgroup = global_pd_nightgroup
-        self.bin_pd_nightgroup = bin_pd_nightgroup
+        self.zenith_bin_states = zenith_bin_states
 
         self.max_nights = max_nights
         if max_nights is None:
             self.max_nights = self.global_pd_nightgroup.ngroups
-            print(f'MAX NIGHTS = {self.max_nights}')
 
         self.state_dim = cfg['data']['state_dim']
         self.bin_state_dim = cfg['data']['bin_state_dim']
 
         self._setup_action_and_obs_spaces()
-
-        # self.observation_space = gym.spaces.Dict(
-        #     {
-        #         "global_state": gym.spaces.Box(-2, 2, shape=(self.state_dim,), dtype=np.float32),
-        #         "bin_state": gym.spaces.Box(-2, 2, shape=bin_state_shape, dtype=np.float32),
-        #     }
-        # )
-
-        # # Define action space 
-        # self.action_space = gym.spaces.Dict(
-        #     {
-        #         "bin": gym.spaces.Discrete(self.nbins, start=-2),
-        #         "field_id": gym.spaces.Discrete(len(self._fids), start=-2),
-        #         "filter_idx": gym.spaces.Discrete(len(FILTER2IDX), start=-2)
-        #     }
-        # )       
-        # self.action_space = gym.spaces.Box(low=np.array([0, 0, 0.]), high=np.array([self.nbins, len(self.field2radec), 1.]), dtype=np.int32)
-
-        self._global_state = np.zeros(self.state_dim, dtype=np.float32)
-        self._bin_state = np.zeros(self.bin_state_dim, dtype=np.float32)
         super().__init__()
     
     def _get_exposure_time(self, field_id=None):
@@ -706,7 +692,6 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
 
         # global features
         global_first_row = self.global_pd_nightgroup.head(1).iloc[self._night_idx]
-        logger.debug(f"environment start new night filter wave {global_first_row['filter_wave']}")
         night = global_first_row['night']
         self._timestamp = global_first_row['timestamp']
         self._sunset_time = get_nautical_twilight(self._timestamp+10, 'set') # add 10 seconds just in case timestamp is exactly at twilight
@@ -727,10 +712,9 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
             self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
 
         if self.include_bin_features:
-            # bin_feature_names = expand_feature_names_for_cyclic_norm(self.base_global_feature_names.copy(), self.cyclical_feature_names)
             global_night_df = self.global_pd_nightgroup.get_group(night)
-            first_row_in_night_bin = self.bin_pd_nightgroup.head(1).iloc[self._night_idx]
-            self._bin_state = np.array([first_row_in_night_bin[feat_name] for feat_name in self.bin_feature_names])
+            zenith_bin_state_tonight = self.zenith_bin_states[self._night_idx] # shape (nbins, nfeats)
+            self._bin_state = zenith_bin_state_tonight
 
             nonzenith_night_mask = global_night_df['object'] != 'zenith'
             night_fids = global_night_df['field_id'][nonzenith_night_mask].to_numpy().astype(np.int32)
@@ -743,10 +727,6 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
                 n_filts = global_night_df['filt_idx'][nonzenith_night_mask].to_numpy(dtype=np.int32)
                 self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
                 np.add.at(self._max_n_filter_visits_arr, (night_fids, n_filts), 1)
-
-            if self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
-                A, B = self.nbins, self.bin_state_dim
-                self._bin_state = np.array(self._bin_state).reshape((A, B))
         else:
             self._bin_state = np.array([])
         self._update_action_masks(self._timestamp, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
@@ -776,7 +756,6 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         if 'filter' in self.bin_space:
             action_mask = np.repeat(action_mask[:, np.newaxis], NUM_FILTERS, axis=1).flatten() #TODO 2. in todoist
         self._action_mask = action_mask
-        logger.debug(f'environment action_mask action_mask.shape: {action_mask.shape}')
         return action_mask
     
 class OnlineBlancoEnv(BaseBlancoEnv):
@@ -854,13 +833,11 @@ class OnlineBlancoEnv(BaseBlancoEnv):
 
         self.base_global_feature_names = cfg['data']['global_features'].copy()
         self.base_bin_feature_names = cfg['data']['bin_features'].copy()
-        self.global_feature_names, self.bin_feature_names, self.prenorm_expanded_bin_feature_names =\
+        self.global_feature_names, self.bin_feature_names =\
             setup_feature_names(base_global_feature_names=cfg['data']['global_features'],
                                 base_bin_feature_names=cfg['data']['bin_features'],
                                 cyclical_feature_names=self.cyclical_feature_names,
-                                nbins=self.nbins,
                                 do_cyclical_norm=self.do_cyclical_norm,
-                                grid_network=self._grid_network
                                 )
         if self._grid_network is None:
             self.state_feature_names = self.global_feature_names + self.bin_feature_names
@@ -943,7 +920,6 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         night_ts = self._night_dt.timestamp()
         self._sunset_time = math.ceil(get_nautical_twilight(night_ts, 'set', self.horizon))
         self._sunrise_time = math.ceil(get_nautical_twilight(night_ts, 'rise', self.horizon))
-        logger.debug(f'HOURS IN NIGHT FROM SUNSET to SUNRISE= : {(self._sunrise_time - self._sunset_time)/3600:.2f}')
         self._field_id = ZENITH_FIELD_ID
         self._bin_num = ZENITH_BIN_NUM
         self._timestamp = self._sunset_time
@@ -976,234 +952,6 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         self._update_action_masks(self._timestamp, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
                                                   hpGrid=self.hpGrid, visited=self._s_visits_cur)
 
-    # def _update_state(self, action):
-    #     """
-    #     Updates the internal state variables based on the action taken.
-
-    #     Args
-    #     ----
-    #         action (int): The chosen field ID to observe next.
-    #     """
-    #     bin_num, field_id, filter_idx = int(action['bin']), int(action['field_id']), float(action['filter_idx'])
-        
-    #     if bin_num == -2:
-    #         self._timestamp = self._fast_forward_to_timestamp(
-    #             timestamp=self._timestamp,
-    #             ras=self._ra_arr,
-    #             decs=self._dec_arr,
-    #             visited=self._s_visits_cur,
-    #             max_visits=self._max_s_visits_arr
-    #         )
-    #     else:
-    #         last_field_id = self._field_id
-    #         exptime = self._get_exposure_time(field_id=str(field_id))
-    #         slew_time = self._get_slew_time(last_field_id, field_id)
-    #         self._timestamp += exptime + slew_time
-    #         self._n_visits_cur[field_id] += 1
-    #         self._s_visits_cur[field_id] += 1
-    #         self._bin_num = bin_num
-    #         self._field_id = field_id
-
-    #     self._global_state = self._calculate_global_features(filter_idx=filter_idx, timestamp=self._timestamp,
-    #                                                     sunset_time=self._sunset_time, sunrise_time=self._sunrise_time
-    #                                                     )
-    #     self._bin_state = self._calculate_bin_features(timestamp=self._timestamp) if self.include_bin_features else np.array([])
-    #     self._update_action_masks(timestamp=self._timestamp, field_lookup=self.field_lookup, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
-    #                                               hpGrid=self.hpGrid, visited=self._s_visits_cur)
-
-    # def _calculate_global_features(self, filter_wave, timestamp, sunset_time, sunrise_time):
-    #     new_features = {}
-    #     astro_time = Time(timestamp, format='unix', scale='utc')
-    #     lst = astro_time.sidereal_time('apparent', longitude="-70:48:23.49")  # Blanco longitude
-    #     new_features['lst'] = lst.radian
-    #     if self._field_id == -1:
-    #         blanco = ephemerides.blanco_observer(time=timestamp)
-    #         new_features['ra'], new_features['dec'] = new_features['lst'], blanco.lon
-    #     else:
-    #         ra = self.field_lookup['ra'][str(self._field_id)]
-    #         dec = self.field_lookup['dec'][str(self._field_id)]
-    #         new_features['ra'], new_features['dec'] = ra, dec
-    #     new_features['az'], new_features['el'] = ephemerides.equatorial_to_topographic(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
-    #     new_features['ha'] = ephemerides.equatorial_to_hour_angle(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
-        
-    #     cos_zenith = np.cos(np.pi / 2 - new_features['el'])
-    #     new_features['airmass'] = 1.0 / cos_zenith #if cos_zenith > 0 else 99.0
-
-    #     new_features['sun_ra'], new_features['sun_dec'] = ephemerides.get_source_ra_dec(source='sun', time=timestamp)
-    #     new_features['sun_az'], new_features['sun_el'] = ephemerides.equatorial_to_topographic(ra=new_features['sun_ra'], dec=new_features['sun_dec'], time=timestamp)
-    #     new_features['moon_ra'], new_features['moon_dec'] = ephemerides.get_source_ra_dec(source='moon', time=timestamp)
-    #     new_features['moon_az'], new_features['moon_el'] = ephemerides.equatorial_to_topographic(ra=new_features['moon_ra'], dec=new_features['moon_dec'], time=timestamp)
-
-    #     if sunrise_time == sunset_time:
-    #         raise AssertionError("Sunrise and sunset time is equal. Check night_str argument - it should be a time between sunset and sunrise")
-    #     else:
-    #         new_features['time_fraction_since_start'] = normalize_timestamp(timestamp, sunset_timestamp=sunset_time, sunrise_timestamp=sunrise_time)
-
-    #     new_features['filter_wave'] = IDX2WAVE[filter_idx] / FILTERWAVENORM
-
-    #     for feat_name in self.base_global_feature_names:
-    #         if any(string in feat_name and 'bin' not in feat_name and 'frac' not in feat_name for string in self.cyclical_feature_names):
-    #             new_features.update({f'{feat_name}_cos': np.cos(new_features[feat_name])})
-    #             new_features.update({f'{feat_name}_sin': np.sin(new_features[feat_name])})
-
-    #     global_state_features = [new_features.get(feat, np.nan) for feat in self.global_feature_names]
-    #     nan_feats = np.isnan(global_state_features)
-    #     if any(nan_feats):
-    #         nan_idxs = np.where(nan_feats == True)[0]
-    #         for idx in nan_idxs:
-    #             raise ValueError(f"Calculated nan value for global feature {self.global_feature_names[idx]}")
-    #     return global_state_features
-    
-    # def _calculate_bin_features(self, timestamp):
-    #     features = {}
-    #     if self._field_id == -1:
-    #         blanco = ephemerides.blanco_observer(time=timestamp)
-    #         features['ra'], features['dec'] = blanco.lat, blanco.lon
-    #     else:
-    #         features['ra'], features['dec'] = self._ra_arr[self._field_id], self._dec_arr[self._field_id]
-    #     current_ra, current_dec = features['ra'], features['dec']
-        
-    #     if self.hpGrid.is_azel:
-    #         lons, lats = ephemerides.topographic_to_equatorial(az=self.hpGrid.lon, el=self.hpGrid.lat, time=timestamp)
-    #         features['az'], features['el'] = self.hpGrid.lon, self.hpGrid.lat
-    #         features['ra'], features['dec'] = lons, lats
-    #         current_lon, current_lat = ephemerides.equatorial_to_topographic(ra=current_ra, dec=current_dec, time=timestamp)
-    #     else:
-    #         lons, lats = ephemerides.equatorial_to_topographic(ra=self.hpGrid.lon, dec=self.hpGrid.lat, time=timestamp)
-    #         features['ra'], features['dec'] = self.hpGrid.lon, self.hpGrid.lat
-    #         features['az'], features['el'] = lons, lats
-    #         current_lon, current_lat = current_ra, current_dec
-            
-    #     features['angular_distance_to_pointing'] = self.hpGrid.get_angular_separations(lon=current_lon, lat=current_lat)
-    #     features['ha'] = self.hpGrid.get_hour_angle(time=timestamp)
-    #     features['airmass'] = self.hpGrid.get_airmass(timestamp)
-    #     features['moon_distance'] = self.hpGrid.get_source_angular_separations('moon', time=timestamp)
-        
-    #     if self._has_historical_features:
-    #         if not self.hpGrid.is_azel:
-    #             max_s_visits_arr = np.maximum(self._max_n_visits_arr, self._max_s_visits_arr)
-    #             nfields_n = np.bincount(self._bins_membership_arr, weights=self._in_n_plan, minlength=self.nbins)
-    #             active_bins_n = nfields_n > 0
-
-    #             # Get number of unvisited fields in each bin - bins below horizon have 0 fields unvisited
-    #             s_unvisited = np.bincount(self._bins_membership_arr, weights=(self._s_visits_cur == 0) & self._in_s_plan, minlength=self.nbins)
-    #             n_unvisited = np.bincount(self._bins_membership_arr, weights=(self._n_visits_cur == 0) & self._in_n_plan, minlength=self.nbins)
-
-    #             # Get number of incomplete fields in each bin
-    #             s_incomplete_mask = (self._s_visits_cur < max_s_visits_arr) & self._in_s_plan
-    #             n_incomplete_mask = (self._n_visits_cur < self._max_n_visits_arr) & self._in_n_plan
-    #             s_incomplete = np.bincount(self._bins_membership_arr, weights=s_incomplete_mask, minlength=self.nbins)
-    #             n_incomplete = np.bincount(self._bins_membership_arr, weights=n_incomplete_mask, minlength=self.nbins)
-        
-    #             # Create a zero-filled array for the results
-    #             for key in ['survey_num_unvisited_fields', 'night_num_unvisited_fields', 
-    #                         'survey_num_incomplete_fields', 'night_num_incomplete_fields']:
-    #                 features[key] = np.zeros(self.nbins, dtype=np.float32) # bins with no viable fields get sentinel value 0
-                
-    #             # Do division in-place (bypasses runtimewarning error )
-    #             np.divide(s_unvisited, self._nfields_s, out=features['survey_num_unvisited_fields'], where=self._active_bins_s)
-    #             np.divide(n_unvisited, nfields_n, out=features['night_num_unvisited_fields'], where=active_bins_n)
-    #             np.divide(s_incomplete, self._nfields_s, out=features['survey_num_incomplete_fields'], where=self._active_bins_s)
-    #             np.divide(n_incomplete, nfields_n, out=features['night_num_incomplete_fields'], where=active_bins_n)
-        
-    #             # Min tiling
-    #             s_tiling_all = np.full_like(self._s_visits_cur, 2.0, dtype=np.float32)
-    #             n_tiling_all = np.full_like(self._n_visits_cur, 2.0, dtype=np.float32)
-    #             # current_num_visits_field / max_num_visits_field only where max_num_visits_field > 0 ie, in the plan
-    #             np.divide(self._s_visits_cur, max_s_visits_arr, out=s_tiling_all, where=self._in_s_plan)
-    #             np.divide(self._n_visits_cur, self._max_n_visits_arr, out=n_tiling_all, where=self._in_n_plan)
-                
-    #             s_mins = np.full(self.nbins, 2.0, dtype=np.float32)
-    #             n_mins = np.full(self.nbins, 2.0, dtype=np.float32)
-    #             np.minimum.at(s_mins, self._bins_membership_arr, s_tiling_all)
-    #             np.minimum.at(n_mins, self._bins_membership_arr, n_tiling_all)
-                
-    #             # Reset bins with no fields back to -0.1
-    #             s_mins[s_mins > 1.0] = -1.0
-    #             n_mins[n_mins > 1.0] = -1.0
-    #             features['survey_min_tiling'] = s_mins
-    #             features['night_min_tiling'] = n_mins
-    #         else:
-    #             # Reset at each timestep since fields' bin memberships change over time
-    #             az, el = ephemerides.equatorial_to_topographic(ra=self._ra_arr, dec=self._dec_arr, time=timestamp)
-    #             bins = self.hpGrid.ang2idx(lon=az, lat=el) # Bin membership of each field
-    #             bins = np.array([b if b is not None else -1 for b in bins], dtype=np.int32)
-    #             valid_mask = (el > 0) & (bins != -1)
-    #             valid_bins = bins[valid_mask].astype(np.int32)
-
-    #             in_s_plan = self._max_s_visits_arr[valid_mask] > 0
-    #             # in_n_plan = self._max_n_visits_arr[valid_mask] > 0
-
-    #             bin_count_s = np.bincount(valid_bins, weights=in_s_plan, minlength=self.nbins)
-    #             # bin_count_n = np.bincount(valid_bins, weights=in_n_plan, minlength=self.nbins)
-                
-    #             active_bins_s = bin_count_s > 0
-    #             # active_bins_n = bin_count_n > 0
-
-    #             # Get field counts and max field counts over 
-    #             v_survey_counts = self._s_visits_cur[valid_mask].astype(np.int32)
-    #             # v_night_counts = self._n_visits_cur[valid_mask].astype(np.int32)
-    #             v_max_visits_survey = self._max_s_visits_arr[valid_mask]
-    #             # v_max_visits_night = self._max_n_visits_arr[valid_mask]
-                
-    #             # Re-create the plan masks
-    #             in_s_plan = v_max_visits_survey > 0
-    #             # in_n_plan = v_max_visits_night > 0
-
-    #             for key_n, key_s, mask_n, mask_s in [
-    #                 # Must be unvisited AND in the respective plan
-    #                 ('night_num_unvisited_fields', 'survey_num_unvisited_fields', 
-    #                 # (v_night_counts == 0) & in_n_plan, 
-    #                 (v_survey_counts == 0) & in_s_plan),
-                    
-    #                 # Must be incomplete AND in the respective plan
-    #                 ('night_num_incomplete_fields', 'survey_num_incomplete_fields', 
-    #                 # (v_night_counts < v_max_visits_night) & in_n_plan, 
-    #                 (v_survey_counts < v_max_visits_survey) & in_s_plan)
-    #                 ]:
-    #                 res_n, res_s = np.zeros(self.nbins, dtype=np.float32), np.zeros(self.nbins, dtype=np.float32)
-                    
-    #                 # Use the correct denominators and active masks!
-    #                 # np.divide(np.bincount(valid_bins, weights=mask_n, minlength=self.nbins), bin_count_n, out=res_n, where=active_bins_n)
-    #                 np.divide(np.bincount(valid_bins, weights=mask_s, minlength=self.nbins), bin_count_s, out=res_s, where=active_bins_s)
-                    
-    #                 res_n[~active_bins_n] = 0.
-    #                 res_s[~active_bins_s] = 0.
-                    
-    #                 features[key_n] = res_n
-    #                 features[key_s] = res_s
-
-    #             # Min Tiling 
-    #             s_tiling_all = np.full_like(v_survey_counts, 2.0, dtype=np.float32)
-    #             # n_tiling_all = np.full_like(v_night_counts, 2.0, dtype=np.float32)
-                
-    #             np.divide(v_survey_counts, v_max_visits_survey, out=s_tiling_all, where=in_s_plan)
-    #             # np.divide(v_night_counts, v_max_visits_night, out=n_tiling_all, where=in_n_plan)
-                    
-    #             s_mins, n_mins = np.full(self.nbins, 2.0, dtype=np.float32), np.full(self.nbins, 2.0, dtype=np.float32)
-    #             np.minimum.at(s_mins, valid_bins, s_tiling_all)
-    #             # np.minimum.at(n_mins, valid_bins, n_tiling_all)
-                    
-    #             s_mins[~active_bins_s] = -0.1
-    #             # n_mins[~active_bins_n] = -0.1
-                    
-    #             features['survey_min_tiling'] = s_mins
-    #             # features['night_min_tiling'] = n_mins
-
-    #     # Normalize periodic features here and add as df cols
-    #     if self.do_cyclical_norm:
-    #         for feat_name in self.base_bin_feature_names:
-    #             if any(string in feat_name and 'frac' not in feat_name for string in self.cyclical_feature_names):
-    #                 if feat_name in features.keys():
-    #                     features[f'{feat_name}_cos'] = np.cos(features[feat_name])
-    #                     features[f'{feat_name}_sin'] = np.sin(features[feat_name])
-    #                 else:
-    #                     raise ValueError(f"{feat_name} was not calculated in _calculate_bin_features. Is this feature implemented?")
-        
-    #     expanded_feat_names = expand_feature_names_for_cyclic_norm(self.base_bin_feature_names, cyclical_feature_names=self.cyclical_feature_names)
-    #     bin_state = np.vstack([features.get(feat_name, np.nan) for feat_name in expanded_feat_names]).T
-    #     return bin_state
-
     def _update_action_masks(self, timestamp, field2maxvisits, field_ids, ras, decs, hpGrid, visited):
         # Mask fields which are completed 
         mask_completed_fields = np.array([visited[fid] < field2maxvisits[fid] for fid in field_ids], dtype=bool) #TODO can probably track visits without repeating this operation
@@ -1232,7 +980,6 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         if 'filter' in self.bin_space:
             action_mask = np.repeat(action_mask[:, np.newaxis], NUM_FILTERS, axis=1).flatten() #TODO 2. in todoist
         self._action_mask = action_mask
-        logger.debug(f'environment action_mask action_mask.shape: {action_mask.shape}')
         return action_mask
     
     def _fast_forward_to_timestamp(self, timestamp, ras, decs, visited, max_visits):
@@ -1259,82 +1006,3 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         if int(field_id) < 0:
             return 0.0
         return self.field_lookup['exptime'][str(field_id)]
-
-
-    # def _get_state(self):
-        # global_state, bin_state = self._global_state, self._bin_state
-        # global_state_copy = global_state.copy()
-        # bin_state_copy = bin_state.copy()
-        # # state_normed = self._do_noncyclic_normalizations(state=state_copy)
-        # global_state_normed = normalize_noncyclic_features(
-        #                     state=np.array(global_state_copy),
-        #                     state_feature_names=self.state_feature_names,
-        #                     max_norm_feature_names=self.max_norm_feature_names,
-        #                     ang_distance_norm_feature_names=self.ang_distance_feature_names,
-        #                     do_inverse_norm=self.do_inverse_norm,
-        #                     do_max_norm=self.do_max_norm,
-        #                     do_ang_distance_norm=self.do_ang_distance_norm,
-        #                     bin_space=self.bin_space,
-        #                     fix_nans=True
-        #                 )
-        # if self.include_bin_features:
-        #     bin_state_normed = normalize_noncyclic_features(
-        #         state=np.array(bin_state_copy)[np.newaxis, ...], # add axis for function
-        #         state_feature_names=self.bin_feature_names,
-        #         max_norm_feature_names=self.max_norm_feature_names,
-        #         ang_distance_norm_feature_names=self.ang_distance_feature_names,
-        #         do_inverse_norm=self.do_inverse_norm,
-        #         do_max_norm=self.do_max_norm,
-        #         do_ang_distance_norm=self.do_ang_distance_norm,
-        #         bin_space=self.bin_space,
-        #         fix_nans=True
-        #     )
-        #     bin_state_normed = bin_state_normed[0] # remove axis
-        # else:
-        #     bin_state_normed = np.array([])
-        # self._global_state = global_state_normed.astype(np.float32)
-        # self._bin_state = bin_state_normed.astype(np.float32)
-
-        # # logger.debug(f"Global state max, min {self._global_state.max()}, {self._global_state.min()}")
-        # # logger.debug(f"State above max: {np.where(self._global_state > 2)}")            
-        # # logger.debug(f"State below min: {np.where(self._global_state <-2)}")
-        # # if self.include_bin_features:
-        # #     logger.debug(f"Bins state max, min {self._bin_state.max()}, {self._bin_state.min()}")
-        # #     logger.debug(f"State above max: {np.where(self._bin_state > 2)}")            
-        # #     logger.debug(f"State below min: {np.where(self._bin_state <-2)}")
-        # return {"global_state": self._global_state, "bin_state": self._bin_state}
-
-    # def _get_info(self):
-    #     """
-    #     Compute auxiliary information for debugging and constrained action spaces.
-
-    #     Returns
-    #     -------
-    #         dict: A dictionary containing the current action mask.
-    #     """
-    #     return {'action_mask': self._action_mask.copy(), 
-    #             'visited': self._s_visits_cur.copy(),
-    #             'timestamp': self._timestamp,
-    #             'is_new_night': bool(self._is_new_night),
-    #             'night_idx': int(self._night_idx),
-    #             'bin': int(self._bin_num),
-    #             'field_id': int(self._field_id),
-    #             'valid_fields_per_bin': self._valid_fields_per_bin,
-    #     }
-    
-    # def _get_termination_status(self):
-    #     """
-    #     Checks if the episode has reached its termination condition.
-
-    #     Termination occurs when the total number of observations for the night
-    #     (based on the dataset) has been met, or, when all fields have been completely
-    #     visited.
-
-    #     Returns
-    #     -------
-    #         bool: True if the episode is terminated, False otherwise.
-    #     """
-    #     all_nights_completed = self._night_idx >= self.max_nights
-    #     all_fields_visited = all(np.array([self._s_visits_cur[fid] >= self.field_lookup['n_visits'][str(fid)] for fid in self._fids]))
-    #     terminated = all_nights_completed or all_fields_visited
-    #     return terminated
