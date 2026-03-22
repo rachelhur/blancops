@@ -22,12 +22,6 @@ from blancops.data_processing.data_processing import *
 import logging
 logger = logging.getLogger(__name__)
 
-
-# def get_lst(timestamp):
-#     t = astropy.time.Time(timestamp, format='unix', scale='utc')
-#     lst = t.sidereal_time('apparent', longitude=-1.2358069931456779) # blanco dec
-#     return lst.to(astropy.units.rad).value
-
 def reward_func_v0():
     raise NotImplementedError
 
@@ -152,20 +146,19 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.n_nights = self._df.groupby('night').ngroups
 
         # Construct Transitions
-        states, next_states, bin_states, next_bin_states, self.bin_actions, self.rewards, self.dones, self.action_masks, self.num_transitions \
+        states, bin_states, self.actions, self.rewards, self.dones, self.action_masks, self.num_transitions \
             = self._construct_transitions(
             df=self._df, 
             bin_states=bin_states,  
             include_bin_features=include_bin_features, 
-            num_bins_1d=num_bins_1d, 
             binning_method=binning_method, 
             bin_space=bin_space,
             )
         
         self._prenorm_bin_states = bin_states
         
-        logger.info(f"States shape: {states.shape}, Actions shape: {self.bin_actions.shape}, Rewards shape: {self.rewards.shape}, Next states shape: {next_states.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
-        logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}, Next bin states shape: {next_bin_states.shape if next_bin_states is not None else None}")
+        logger.info(f"States shape: {states.shape}, Actions shape: {self.actions.shape}, Rewards shape: {self.rewards.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
+        logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}")
 
         # Set dimension of observation
         self.state_dim = states.shape[-1]
@@ -187,17 +180,6 @@ class OfflineDataset(torch.utils.data.Dataset):
             do_ang_distance_norm=self.do_ang_distance_norm,
             fix_nans=True
         )
-        self.next_states = normalize_noncyclic_features(
-            state=next_states,
-            state_feature_names=state_feature_names,
-            max_norm_feature_names=self.max_norm_feature_names,
-            ang_distance_norm_feature_names=self.ang_distance_feature_names,
-            do_inverse_norm=self.do_inverse_norm,
-            do_max_norm=self.do_max_norm,
-            do_ang_distance_norm=self.do_ang_distance_norm,
-            fix_nans=True
-        )
-
         if self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
             self.bin_states = normalize_noncyclic_features(
                 state=torch.tensor(self.bin_states),
@@ -209,79 +191,91 @@ class OfflineDataset(torch.utils.data.Dataset):
                 do_ang_distance_norm=self.do_ang_distance_norm,
                 fix_nans=True,
             )
-            self.next_bin_states = normalize_noncyclic_features(
-                state=torch.tensor(self.next_bin_states),
-                state_feature_names=self.bin_feature_names,
-                max_norm_feature_names=self.max_norm_feature_names,
-                ang_distance_norm_feature_names=self.ang_distance_feature_names,
-                do_inverse_norm=self.do_inverse_norm,
-                do_max_norm=self.do_max_norm,
-                do_ang_distance_norm=self.do_ang_distance_norm,
-                fix_nans=True,
-            )
         else:
             self.bin_states = None
             self.next_bin_states = None
+        assert self.states.shape[0] == self.action_masks.shape[0], "States and masks must be 1:1"
+        assert self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.num_transitions, \
+                f"Transition arrays shape mismatch: num_transitions {self.num_transitions}, bin_actions {self.actions.shape[0]}, rewards {self.rewards.shape[0]}, dones {self.dones.shape[0]}"
         if include_bin_features:
-            assert self.states.shape[0] == self.bin_actions.shape[0] == self.rewards.shape[0] == self.next_states.shape[0] == self.dones.shape[0] == self.action_masks.shape[0] == self.bin_states.shape[0] == self.next_bin_states.shape[0], f"Shape mismatch: states {self.states.shape}, actions {self.bin_actions.shape}, rewards {self.rewards.shape}, next_states {self.next_states.shape}, dones {self.dones.shape}, action_masks {self.action_masks.shape}, bin_states {self.bin_states.shape}, next_bin_states {self.next_bin_states.shape}"
-        else:
-            assert self.states.shape[0] == self.bin_actions.shape[0] == self.rewards.shape[0] == self.next_states.shape[0] == self.dones.shape[0] == self.action_masks.shape[0], f"Shape mismatch: states {self.states.shape}, actions {self.bin_actions.shape}, rewards {self.rewards.shape}, next_states {self.next_states.shape}, dones {self.dones.shape}, action_masks {self.action_masks.shape}"
+            assert self.states.shape[0] == self.bin_states.shape[0],\
+            f"State arrays shape mismatch: global state shape {self.states.shape[0]}, bin state shape {self.bin_states.shape[0]}"
 
-    def _construct_transitions(self, df, bin_states, include_bin_features, num_bins_1d, binning_method, bin_space):
-        next_state_idxs = self._get_next_state_indices(df)
-        states, next_states, bin_features, next_bin_features = self._construct_states(df=df, bin_states=bin_states, include_bin_features=include_bin_features, next_state_idxs=next_state_idxs)
-        num_transitions = states.shape[0]
+        # if include_bin_features:
+        #     assert self.states.shape[0] - 1 == self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.action_masks.shape[0] == self.bin_states.shape[0] - 1, \
+        # else:
+        #     assert self.states.shape[0] - 1 == self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.action_masks.shape[0], \
+        #         f"Shape mismatch: states {self.shape}, actions {self.actions.shape}, rewards {self.rewards.shape}, dones {self.dones.shape}, action_masks {self.action_masks.shape}"
 
-        bin_actions = self._construct_actions(df, next_states=next_states, bin_space=bin_space, binning_method=binning_method, next_state_idxs=next_state_idxs, num_bins_1d=num_bins_1d)
+    def _construct_transitions(self, df, bin_states, include_bin_features, binning_method, bin_space):
+        state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact = self._get_state_indices(df)
+        self.df_idx_to_compact = df_idx_to_compact
+        self.curr_compact_idxs = np.array([df_idx_to_compact[i] for i in current_state_idxs])
+        self.next_compact_idxs = np.array([df_idx_to_compact[i] for i in next_state_idxs])
+        # save for diagnostics
+        self.state_idxs, self.current_state_idxs, self.next_state_idxs = state_idxs, current_state_idxs, next_state_idxs
+        states, bin_states = self._construct_states(df=df, bin_states=bin_states, include_bin_features=include_bin_features, state_idxs=state_idxs)
+        num_transitions = len(next_state_idxs)
+
+        bin_actions = self._construct_actions(df, bin_space=bin_space, binning_method=binning_method, next_state_idxs=next_state_idxs)
         rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, reward_choice=self.reward_choice)
-        dones = np.zeros(num_transitions, dtype=bool) # False unless last observation of the night
-        dones[-1] = True
-        action_masks = self._construct_action_masks(df=df, bin_space=bin_space, num_transitions=num_transitions, next_state_idxs=next_state_idxs)
+        # dones = np.zeros(num_transitions, dtype=bool) # False unless last observation of the night
+        # dones[-1] = True
+        dones = self.construct_dones(num_transitions=num_transitions, next_state_idxs=next_state_idxs, current_state_idxs=current_state_idxs)
+        # action_masks = self._construct_action_masks(state_df=df, bin_space=bin_space, num_transitions=num_transitions, state_idxs=state_idxs)
+        action_masks = self._construct_action_masks(state_df=df, bin_space=bin_space, num_states=len(state_idxs), state_idxs=state_idxs)
         
         states = torch.as_tensor(states, dtype=torch.float32)
-        next_states = torch.as_tensor(next_states, dtype=torch.float32)
         bin_actions = torch.as_tensor(bin_actions, dtype=torch.int32)
         rewards = torch.as_tensor(rewards, dtype=torch.float32)
         dones = torch.as_tensor(dones, dtype=torch.bool)
         action_masks = torch.as_tensor(action_masks, dtype=torch.bool)
 
         if include_bin_features:
-            bin_features = torch.as_tensor(bin_features, dtype=torch.float32)
-            next_bin_features = torch.as_tensor(next_bin_features, dtype=torch.float32)
+            bin_states = torch.as_tensor(bin_states, dtype=torch.float32)
         else:
-            bin_features = None
-            next_bin_features = None
+            bin_states = None
             
-        return states, next_states, bin_features, next_bin_features, bin_actions, rewards, dones, action_masks, num_transitions
+        return states, bin_states, bin_actions, rewards, dones, action_masks, num_transitions
 
-    def _construct_states(self, df, bin_states, include_bin_features, next_state_idxs):
-        global_features, next_global_features = self._construct_global_features(df=df, next_state_idxs=next_state_idxs)
+    def construct_dones(self, num_transitions, next_state_idxs, current_state_idxs):
+        dones = np.zeros(num_transitions, dtype=bool)
+        # A transition is the last of the night if its 'next' state isn't a 'current' state for a subsequent transition
+        for i in range(num_transitions):
+            if next_state_idxs[i] not in current_state_idxs:
+                dones[i] = True
+        dones[-1] = True # Failsafe
+        return dones
+
+    def _construct_states(self, df, bin_states, include_bin_features, state_idxs):
+        global_states = self._construct_global_features(df=df, state_idxs=state_idxs)
         if include_bin_features:
-            bin_states, next_bin_states = self._construct_bin_states(bin_states=bin_states, next_state_idxs=next_state_idxs)
+            bin_states = self._construct_bin_states(bin_states=bin_states, state_idxs=state_idxs)
             if self._grid_network is None:
                 self.bin_states = np.array([])
                 self.next_bin_states = np.array([])
-                states = np.concatenate((global_features, bin_states), axis=1)
-                next_states = np.concatenate((next_global_features, next_bin_states), axis=1)
-                return states, next_states, bin_states, next_bin_states
+                states = np.concatenate((global_states, bin_states), axis=1)
+                return states, bin_states
             elif self._grid_network  in ['single_bin_scorer', 'multi_dim_scorer']:
                 self.bin_states = bin_states
-                self.next_bin_states = next_bin_states
 
-                return global_features, next_global_features, bin_states, next_bin_states
+                return global_states, bin_states
             else:
                 raise NotImplementedError(f"Grid network type {self._grid_network} not implemented for state construction.")
-        return global_features, next_global_features, None, None
+        return global_states, None
     
-    def _get_next_state_indices(self, df, max_time_diff_min=10):
+    def _get_state_indices(self, df, max_time_diff_min=10):
         time_diffs = df['timestamp'].diff().values
         keep = time_diffs < max_time_diff_min * 60 + 90
         next_state_idxs = np.where(keep)[0]
-        self.next_state_idxs = next_state_idxs  # Save for diagnostics
-        logger.debug(f'Removing {np.sum(~keep)} transitions with large time diffs > {max_time_diff_min} min. Total transitions: {len(keep)}')
-        return next_state_idxs
+        current_state_idxs = next_state_idxs - 1
+        state_idxs = np.unique(np.concat([current_state_idxs, next_state_idxs])) # dataframe indices to extract
+        df_idx_to_compact = {df_idx: compact_idx for compact_idx, df_idx in enumerate(state_idxs)}
+        state_idxs = state_idxs
+        logger.info(f'Removing {np.sum(~keep)} transitions with large time diffs > {max_time_diff_min} min. Total transitions: {len(keep)}')
+        return state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact
 
-    def _construct_global_features(self, df, next_state_idxs=None):
+    def _construct_global_features(self, df, state_idxs):
         """
         Constructs state and next_states for all transitions.
         Inserts a "null" observation before the first observation each night.
@@ -291,19 +285,15 @@ class OfflineDataset(torch.utils.data.Dataset):
         missing_cols = set(self.global_feature_names) - set(df.columns) == 0
         assert missing_cols == 0, f'Features {missing_cols} do not exist in dataframe. Must be implemented in method self._process_dataframe()'
 
-        next_state_df = df.iloc[next_state_idxs]
-        current_state_df = df.iloc[next_state_idxs - 1]
-        global_features = current_state_df[self.global_feature_names].to_numpy()
-        next_global_features = next_state_df[self.global_feature_names].to_numpy()
-        return global_features, next_global_features
+        state_df = df.iloc[state_idxs]
+        global_features = state_df[self.global_feature_names].to_numpy()
+        return global_features
         
-    def _construct_bin_states(self, bin_states, next_state_idxs):
+    def _construct_bin_states(self, bin_states, state_idxs=None):
         # Get bin_features and next_bin_features
-        next_bin_states = bin_states[next_state_idxs]
-        current_bin_states = bin_states[next_state_idxs - 1]
-        return current_bin_states, next_bin_states
+        return bin_states[state_idxs]
     
-    def _construct_actions(self, df, next_states, bin_space, binning_method, next_state_idxs, num_bins_1d=None):
+    def _construct_actions(self, df, bin_space, binning_method, next_state_idxs):
         assert bin_space in ['radec', 'azel', 'radec_filter', 'azel_filter'], 'bin_space must be radec or azel'
         assert binning_method in ['uniform', 'healpix'], 'bining_method must be uniform or healpix'
 
@@ -314,14 +304,13 @@ class OfflineDataset(torch.utils.data.Dataset):
             else:
                 lonlat = next_state_df[['ra', 'dec']].values
             bin_indices = self.hpGrid.ang2idx(lon=lonlat[:, 0], lat=lonlat[:, 1])
-            indices = bin_indices
 
             if 'filter' in bin_space:
                 filter_indices = next_state_df['filter'].map(FILTER2IDX).fillna(0).values.astype(np.int32)
-                indices = (bin_indices * NUM_FILTERS) + filter_indices
-            return indices
-        elif binning_method == 'uniform' and bin_space == 'azel':
-            raise NotImplementedError
+                actions = (bin_indices * NUM_FILTERS) + filter_indices
+                return actions
+
+            return bin_indices
         else:
             raise NotImplementedError
 
@@ -335,55 +324,70 @@ class OfflineDataset(torch.utils.data.Dataset):
             rewards = np.ones(len(next_state_df), dtype=np.float32)
         return rewards
 
-    def _construct_action_masks(self, df, bin_space, num_transitions, next_state_idxs):
+    def _construct_action_masks(self, state_df, bin_space, num_states, state_idxs):
         """
         Constructs action masks only with the condition that bins outside of horizon are masked
         """
-        df = df.iloc[next_state_idxs-1]
+        state_df = state_df.iloc[state_idxs]
         # given timestamp, determine bins which are outside of observable range
-        els = np.empty((num_transitions, self.num_actions), dtype=np.float32)
+        els = np.empty((num_states, self.num_actions), dtype=np.float32)
         if self._calculate_action_mask:
             logger.info("Calculating action masks based on horizon. This may take a few minutes...")
             if not self.hpGrid.is_azel:
                 lon, lat = self.hpGrid.lon, self.hpGrid.lat
-                for i, time in tqdm(enumerate(df['timestamp'].values), total=len(df['timestamp'].values), desc="Calculating action mask"):
+                for i, time in tqdm(enumerate(state_df['timestamp'].values), total=len(state_df['timestamp'].values), desc="Calculating action mask"):
                     _, els[i] = ephemerides.equatorial_to_topographic(ra=lon, dec=lat, time=time)
                 self._els = els
                 action_mask = els > 0
             else:
-                els = np.tile(self.hpGrid.lat[:, np.newaxis], reps=len(df['timestamp'].values)).T
+                els = np.tile(self.hpGrid.lat[:, np.newaxis], reps=len(state_df['timestamp'].values)).T
                 action_mask = els > 0
             if 'filter' in bin_space:
                 action_mask = np.repeat(action_mask, NUM_FILTERS, axis=1)
         else:
-            action_mask = np.ones((num_transitions, self.num_actions))
+            action_mask = np.ones((num_states, self.num_actions))
         return action_mask
         
     def __len__(self):
-        return self.states.shape[0]
+        return self.num_transitions
 
     def __getitem__(self, idx):
+        """
+        Returns
+        -------
+        transition (tuple): (global_state, bin action, reward, next_state, done, action_mask, next_action_mask, bin_state, next_bin_state)
+        """
+        # Get compact indices for arrays constructed per state (ie, states, action_masks)
+            # as opposed to arrays constructed per transition (ie, action, rewards, dones)
+        c_idx = self.curr_compact_idxs[idx] 
+        n_idx = self.next_compact_idxs[idx]
+
+        # If done, these will get masked out during forward pass anyways (1-dones mask). Need dummy values here.
+        is_done = self.dones[idx] # transition-level data takes idx
+
         if self._grid_network is None:
             transition = (
-                self.states[idx],
-                self.bin_actions[idx],
+                self.states[c_idx],
+                self.actions[idx],
                 self.rewards[idx],
-                self.next_states[idx],
+                self.states[n_idx] if not is_done else torch.zeros_like(self.states[0]),
                 self.dones[idx],
-                self.action_masks[idx],
+                self.action_masks[c_idx],
+                self.action_masks[n_idx] if not is_done else torch.zeros_like(self.action_masks[0]),
                 torch.as_tensor(0), # placeholder for bin state since not used in this case
                 torch.as_tensor(0)
             )
         elif self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
             transition = (
-                self.states[idx],
-                self.bin_actions[idx],
+                self.states[c_idx],
+                self.actions[idx],
                 self.rewards[idx],
-                self.next_states[idx],
+                self.states[n_idx] if not is_done else torch.zeros_like(self.states[0]),
                 self.dones[idx],
-                self.action_masks[idx],
-                self.bin_states[idx], # shape (ntransitions, nbins, nfeatures)
-                self.next_bin_states[idx]
+                self.action_masks[c_idx],
+                self.action_masks[n_idx] if not is_done else torch.zeros_like(self.action_masks[0]),
+                self.bin_states[c_idx], # shape (nstates, nbins, nfeatures)
+                self.bin_states[n_idx] if not is_done else torch.zeros_like(self.bin_states[0])
             )
         return transition
     
@@ -461,146 +465,3 @@ class OfflineDataset(torch.utils.data.Dataset):
             )
             return train_loader, val_loader
         return train_loader
-
-class ToyDatasetv0:
-    """
-    A dataset wrapper converting a nightly telescope schedule into a structured transition dataset.
-    First version of dataset class for telescope data. Designed for behavior cloning where the original
-     schedule is mimicked exactly (no generalization).
-    
-    Attributes
-    ----------
-        obs (ndarray): The full set of observations; has shape (obs_dim, n_nights, n_transitions) and dtype float32
-            to be input into the q-network.
-        actions (ndarray): The array of field ids of shape (n_nights, n_transitions) which indicate the
-            next field id to be observed
-        next_obs (ndarray): The next observations given obs and action; shape (obs_dim, n_nights, n_transitions)
-        rewards (ndarray): The reward of doing next_obs given obs and action; shape (n_nights, n_transitions)
-        dones (ndarray): Boolean array indicating whether or not this action terminates the episode; 
-            shape (n_nights, n_transitions)
-        action_masks (ndarray): Boolean array indicating valid possible actions
-
-        device (str): The device to place tensors on ('cpu' or 'cuda')
-        normalize_obs (bool): Whether to normalize observations.
-        norm (ndarray): Normalization constants applied to observations
-        obs_dim (int): Size of observations for a single transition
-        num_actions (int): Size of action space
-        reward_func (Callable | None): User-provided reward_function
-
-        _radec (ndarray): RA/Dec positions for each scheduled field
-        _obs_indices (ndarray): A time index for each observation made in a single night (starts at 0)
-        _schedule_field_id (ndarray): The actual, time-ordered schedule; has shape (n_nights, n_obs_in_night) where
-            n_obs_in_night = n_transitions + 1
-        _unique_field_ids (ndarray): An array of the unique field ids in increasing order
-        _n_obs_per_night (int): Number of observations in each night
-        _n_transitions (int): Number of transitions in dataset
-        _id2pos (dict): A dictionary of field_id as keys and values as coordinates
-
-        _
-
-    """
-    def __init__(self, schedule, id2pos, reward_func=None, normalize_obs=True, device='cpu'):
-        """
-        Args
-        ---- 
-            schedule (pd.Dataframe): Pandas dataframe with columns 'field_id' and 'next_field_id'
-            id2pos (dict): Mapping from field ID to its (RA, Dec) coordinates
-            reward_func (Callable | None): Optional custom reward ufnction. Should have signature: ``reward_func(obs, action, next_obs) -> float or array``
-            normalize_obs (bool): Whether or not to normalize observations
-            device (str): Device where tensors will be moved ('cuda' or 'CPU')
-        """
-        self._schedule_field_ids = schedule.field_id.values.astype(np.float32)
-        if len(self._schedule_field_ids.shape) == 1:
-            self._schedule_field_ids = self._schedule_field_ids[np.newaxis, :]
-        assert len(self._schedule_field_ids.shape) == 2
-
-        # vars used internally to help calculate transition variables
-        self._radec = np.array([id2pos[field_id] for field_id in schedule.field_id.values], dtype=np.float32)
-        self._unique_field_ids, counts = np.unique(self._schedule_field_ids, return_counts=True)
-        self._max_visits = np.int32(np.max(counts))
-        self._nfields = np.int32(len(self._unique_field_ids))
-        self._n_obs_per_night = np.int32(self._schedule_field_ids.shape[-1])
-        self._n_transitions = np.int32(len(self._radec))
-        self._id2pos = id2pos
-        self.device = device
-        self.normalize_obs = normalize_obs
-        self.norm = 1
-        if self.normalize_obs:
-            self.norm = np.array([self._n_obs_per_night, self._nfields])[:, np.newaxis]
-
-        # 
-        self.reward_func = reward_func
-
-        self._obs_indices = schedule.index.to_numpy()[np.newaxis, np.newaxis, :-1]
-        self._field_ids = schedule.field_id.values[:-1][np.newaxis, np.newaxis, :]
-        self._next_obs_indices = schedule.index.to_numpy()[np.newaxis, np.newaxis, 1:]
-        self._next_field_ids = schedule.field_id.values[1:][np.newaxis, np.newaxis, :]
-
-        self.obs = np.concatenate((self._field_ids, self._obs_indices), axis=0)
-        self.next_obs = np.concatenate((self._next_field_ids, self._next_obs_indices), axis=0)
-
-        self.obs_dim = self.obs.shape[0]
-        self._n_nights = np.int32(self.obs.shape[1])
-        self.num_actions = self._nfields 
-
-        self.actions = schedule.field_id.values[1:][np.newaxis, :]
-        self.rewards = self._get_rewards()
-        self.dones = np.zeros_like(self.obs[0], dtype=np.bool_)
-        self.dones[:, -1] = True
-        self.action_masks = self._get_action_masks()
-
-    def _get_rewards(self):
-        """Compute rewards for each transition
-        
-        Returns
-        -------
-            Array of shape (n_nights, n_obs_per_night - 1) containing rewards. If ```reward_func``` is None, returns an array of ones
-        """
-        if self.reward_func is None:
-            return np.ones_like(self.obs[0])
-        return self._reward_func(self.obs, self.actions, self.next_obs)
-    
-    def _get_action_masks(self):
-        """Computes action masks based on per-field visit limits.
-
-        Tracks cumulative number of visits per field and disallows actions
-        (fields) that exceed the maximum visit count observed in the schedule.
-
-        Returns
-        --------
-            Boolean array of shape (n_nights, n_obs_per_night, n_fields) where ``True`` indicates the action is allowed.
-        """
-        nvisits_base = np.zeros(shape=(self._nfields), dtype=np.int32)
-        full_nvisits = np.zeros(shape=(self._n_nights, self._n_obs_per_night, self._nfields), dtype=np.int32)
-
-        for i, night_ids in enumerate(self._schedule_field_ids):
-            for j, field_id in enumerate(night_ids):
-                nvisits_base[np.int32(field_id)] += 1
-                full_nvisits[i, j] = nvisits_base.copy()
-        action_masks = full_nvisits != self._max_visits
-        return action_masks
-
-    def __len__(self):
-        """Number of nights available in the dataset.
-
-        Returns:
-            int: Number of nights.
-        """
-        return self._n_nights
-
-    def sample(self, batch_size):
-        """Randomly samples a batch of transitions. Sampling is performed by uniformly selecting a random night and a random observation step
-            within that night
-        """
-        #TODO should flatten transition dataset first, then sample uniformly
-        night_indices = np.random.choice(self._n_nights, batch_size, replace=True)
-        obs_indices = np.random.choice(self._n_obs_per_night - 1, batch_size)
-        return (
-            np.array(self.obs[:, night_indices, obs_indices]/self.norm, dtype=np.float32).T, # needs to be float for network
-            np.array(self.actions[night_indices, obs_indices], dtype=np.int32),
-            np.array(self.rewards[night_indices, obs_indices], dtype=np.float32),
-            np.array(self.next_obs[:, night_indices, obs_indices]/self.norm, dtype=np.float32).T,
-            np.array(self.dones[night_indices, obs_indices], dtype=np.bool_),
-            np.array(self.action_masks[night_indices, obs_indices], dtype=bool),
-        )
-    

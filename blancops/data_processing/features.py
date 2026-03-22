@@ -252,7 +252,8 @@ def calculate_global_features(df, field2name, hpGrid,
 
 def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names, 
                                    bin_feature_names, cyclical_feature_names, do_cyclical_norm, night2fieldvisits,
-                                   night2filtervisithistory, fieldfilter2maxvisits, field2radec, field2maxvisits, bin_space):
+                                   night2filtervisithistory, fieldfilter2maxvisits, field2radec, field2maxvisits, bin_space,
+                                   pt_az=None, pt_el=None, pt_ra=None, pt_dec=None, pt_filter=None, timestamps=None):
     """
     Calculate bin features dynamically based on requested feature names.
     
@@ -1512,3 +1513,13 @@ def old_calculate_historical_bin_features_azel(pt_df, hpGrid, field2radec, calcu
             
     return calculated_features
 
+from blancops.ephemerides.ephemerides import HealpixGrid
+
+def calculate_distance_matrix(nside, is_azel):
+    hpGrid = HealpixGrid(nside, is_azel)
+    lons = hpGrid.lon
+    lats = hpGrid.lat
+    distance_matrix = np.zeros( (len(hpGrid.lon), len(hpGrid.lon)) )
+    for i, (lon, lat) in enumerate(zip(lons, lats)):
+        distance_matrix[i] = hpGrid.get_angular_separations(lon, lat)
+    return distance_matrix

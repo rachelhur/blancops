@@ -13,14 +13,15 @@ import pandas as pd
 import logging
 
 from blancops.plotting.plotting import plot_schedule_from_file
-from blancops.core_rl.agents import Agent
+from blancops.core_rl.agent import Agent
 from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config, get_workspace_dir
 from blancops.algorithms.factory import setup_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
-from blancops.data_processing.data_processing import load_raw_data_to_dataframe, expand_feature_names_for_cyclic_norm
+from blancops.data_processing.data_processing import load_raw_data_to_dataframe
 from blancops.core_rl.environments import OfflineBlancoTestingEnv
 from blancops.data_processing.offline_dataset import OfflineDataset
 from blancops.data_processing.constants import *
+from blancops.math import units
 
 from blancops.data_processing.features import get_nautical_twilight
 import logging
@@ -271,8 +272,12 @@ def main():
 
     device = get_device()
     logger.info("Loading raw data...")
-    df = load_raw_data_to_dataframe(Path(global_cfg['paths']['TRAIN_DIR']) / Path(global_cfg['files']['DECFITS']))
     
+    df = load_raw_data_to_dataframe(Path(global_cfg['paths']['TRAIN_DIR']) / Path(global_cfg['files']['DECFITS']))
+    field2radec_filepath = global_cfg['paths']['TRAIN_DIR'] + global_cfg['files']['FIELD2RADEC']
+    with open(field2radec_filepath, 'r') as f:
+        FIELD2RADEC = json.load(f)
+
     nside = cfg['data']['nside']
 
     logger.info("Loading test dataset with same config as training dataset...")
@@ -299,7 +304,12 @@ def main():
                                 lr_scheduler_num_epochs=cfg['train']['lr_scheduler_num_epochs'],
                                 gamma=cfg['model']['gamma'], 
                                 tau=cfg['model']['tau'],
-                                activation=cfg['model']['activation']
+                                activation=cfg['model']['activation'],
+                                use_contextual_gating=cfg['model'].get('contextual_gating', None),
+                                use_cql=cfg['model'].get('use_cql', None),
+                                cql_alpha=cfg['model'].get('cql_alpha', None),
+                                nside=cfg['data']['nside'],
+                                bin_space=cfg['data']['bin_space']
                                 )
     
     agent = Agent(
@@ -319,49 +329,58 @@ def main():
     # Creat env
     global_pd_nightgroup = test_dataset._df.groupby('night')
     if len(cfg['data']['bin_features']) > 0:
-        zenith_idxs = test_dataset._df.iloc[test_dataset.next_state_idxs-1][test_dataset._df.iloc[test_dataset.next_state_idxs-1]['object'] == 'zenith'].index.values
+        zenith_idxs = (test_dataset._df.iloc[test_dataset.next_state_idxs-1].reset_index(drop=True)[test_dataset._df.iloc[test_dataset.next_state_idxs-1].reset_index(drop=True)['object'] == 'zenith']).index.values
         zenith_bin_states = test_dataset._prenorm_bin_states[zenith_idxs].detach().numpy()
     else:
         zenith_bin_states = None
     env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, zenith_bin_states=zenith_bin_states)
     
     # Plot predicted action for each state
+    cur_idxs = test_dataset.current_state_idxs
     with torch.no_grad():
-        q_vals = agent.algorithm.policy_net(test_dataset.states.to(device), test_dataset.bin_states.to(device) if test_dataset.bin_states is not None else None)
-        eval_actions = torch.argmax(q_vals, dim=1).to('cpu').detach().numpy()
+        q_vals = agent.algorithm.policy_net(test_dataset.states[cur_idxs].to(device), test_dataset.bin_states[cur_idxs].to(device) if test_dataset.bin_states is not None else None)
+        agent_actions = torch.argmax(q_vals, dim=1).to('cpu').detach().numpy()
     
-    # Sequence of actions from target (original schedule) and policy
-    target_sequence = test_dataset.bin_actions.detach().numpy()
-    target_sequence = target_sequence[target_sequence != ZENITH_BIN_NUM]
-    eval_sequence = eval_actions[eval_actions != ZENITH_BIN_NUM]
+    exp_actions = test_dataset.actions.detach().numpy()    
+    exp_mask = test_dataset.actions != ZENITH_BIN_NUM
+    ag_mask = agent_actions != ZENITH_BIN_NUM
+    # Get expert and agent actions (bin and filter)
+    if 'filter' in cfg['data']['bin_space']:
+        expert_filters = exp_actions[exp_mask] % NUM_FILTERS
+        agent_filters = agent_actions[ag_mask] % NUM_FILTERS
+        expert_bins = exp_actions[exp_mask] // NUM_FILTERS
+        agent_bins = agent_actions[ag_mask] // NUM_FILTERS
+        assert len(expert_filters) == len(agent_filters), f"Shape mismatch: expert filters {expert_filters.shape}, agent_filters {agent_filters.shape}"
+    else:
+        expert_bins = exp_actions[exp_mask]
+        agent_bins = agent_actions[ag_mask]
+    
+    # Get expert times
     time_idx = np.where(np.array(test_dataset.global_feature_names) == 'time_fraction_since_start')[0]
-    first_night_indices = np.where(test_dataset.states[:, time_idx] == 0)[0]
+    expert_times = test_dataset.states[test_dataset.next_state_idxs, time_idx].detach().numpy()
+    assert len(expert_bins) == len(agent_bins) == len(expert_times), f"Shape mismatch: expert bins {expert_bins.shape}, agent_bins {agent_bins.shape} expert_times {expert_times.shape}"
+    
+    # Plot expert vs agent actions
     fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
-    axs[0].plot(target_sequence, marker='*', alpha=.3, label='true')
-    axs[0].plot(eval_sequence, marker='o', alpha=.3, label='pred')
+    axs[0].plot(expert_times, expert_bins, marker='*', alpha=.3, label='true')
+    axs[0].plot(expert_times, agent_bins, marker='o', alpha=.3, label='pred')
     axs[0].legend()
     axs[0].set_ylabel('bin number')
-    axs[0].vlines(first_night_indices, ymin=0, ymax=len(test_dataset.hpGrid.lon), color='black', linestyle='--')
-    axs[1].plot(eval_sequence - target_sequence, marker='o', alpha=.5)
+    axs[1].plot(expert_times, agent_bins - expert_bins, marker='o', alpha=.5)
     axs[1].set_ylabel('Eval sequence - target sequence \n[bin number]')
-    axs[1].set_xlabel('observation index')
-    fig.savefig(eval_outdir + 'eval_and_target_bin_sequences.png')
+    axs[1].set_xlabel('Time since sunrise (normalized)')
+    fig.savefig(eval_outdir + 'eval_and_target_bins.png')
 
-    target_sequence = test_dataset.bin_actions.detach().numpy()
-    target_sequence = target_sequence[target_sequence != ZENITH_BIN_NUM]
-    eval_sequence = eval_actions[eval_actions != ZENITH_BIN_NUM]
-    time_idx = np.where(np.array(test_dataset.global_feature_names) == 'time_fraction_since_start')[0]
-    first_night_indices = np.where(test_dataset.states[:, time_idx] == 0)[0]
-    fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
-    axs[0].plot(target_sequence, marker='*', alpha=.3, label='true')
-    axs[0].plot(eval_sequence, marker='o', alpha=.3, label='pred')
-    axs[0].legend()
-    axs[0].set_ylabel('bin number')
-    axs[0].vlines(first_night_indices, ymin=0, ymax=len(test_dataset.hpGrid.lon), color='black', linestyle='--')
-    axs[1].plot(eval_sequence - target_sequence, marker='o', alpha=.5)
-    axs[1].set_ylabel('Eval sequence - target sequence \n[bin number]')
-    axs[1].set_xlabel('observation index')
-    fig.savefig(eval_outdir + 'eval_and_target_bin_sequences.png')
+    if 'filter' in cfg['data']['bin_space']:
+        fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
+        axs[0].plot(expert_times, expert_filters, marker='*', alpha=.3, label='true')
+        axs[0].plot(expert_times, agent_filters, marker='o', alpha=.3, label='pred')
+        axs[0].legend()
+        axs[0].set_ylabel('bin number')
+        axs[1].plot(expert_times, agent_filters - expert_filters, marker='o', alpha=.5)
+        axs[1].set_ylabel('Eval sequence - target sequence \n[bin number]')
+        axs[1].set_xlabel('Time since sunrise (normalized)')
+        fig.savefig(eval_outdir + 'eval_and_target_bins.png')
 
     # Roll out policy
     logger.info("Starting evaluation...")
@@ -369,17 +388,18 @@ def main():
     logger.info("Evaluation complete.")
     with open(eval_outdir + 'eval_metrics.pkl', 'rb') as handle:
         eval_metrics = pickle.load(handle)
-    logger.info("Generating evaluation plots...")
-    bin2pos_filepath = global_cfg['paths']['TRAIN_DIR'] + f"nside{nside}_bin2{cfg['data']['bin_space']}.json"
-    bin2pos_filepath = bin2pos_filepath.replace("_filter", "")
-    field2radec_filepath = global_cfg['paths']['TRAIN_DIR'] + global_cfg['files']['FIELD2RADEC']
-    with open(field2radec_filepath, 'r') as f:
-        FIELD2RADEC = json.load(f)
+    logger.info("Generating static plots...")
 
     ep_num = 0
     eval_metrics = eval_metrics[f'ep-{ep_num}']
-    bin_states = test_dataset._prenorm_bin_states.detach().numpy()
-    for night_idx,(night_name, night_group) in enumerate(test_dataset._df.groupby('night')):
+
+    # 1. Create a DataFrame of ONLY the valid "current" states.
+    # This perfectly aligns (1-to-1) with test_dataset.bin_actions and test_dataset.dones
+    valid_transitions_df = test_dataset._df.iloc[test_dataset.current_state_idxs].reset_index(drop=True)
+
+    # 2. Iterate cleanly over the unique nights
+    for night_idx, night_name in enumerate(test_dataset.unique_nights):
+        
         # Get date in string form for plots
         date = night_name.date()
         date_str = f"{date.year}-{date.month}-{date.day}"
@@ -387,27 +407,45 @@ def main():
         night_dir = eval_outdir + date_str + '/'
         if not os.path.exists(night_dir):
             os.makedirs(night_dir)
+
+        # 3. Get the DataLoader indices belonging strictly to this night
+        night_mask = (valid_transitions_df['night'] == night_name).values
+        night_dl_idxs = np.where(night_mask)[0]
+        
+        # 4. Extract Agent Metrics
         metrics = eval_metrics[f'night-{night_idx}']
-        if len(metrics['timestamp']) < 2:
+        
+        if len(night_dl_idxs) < 2 or len(metrics['timestamp']) < 2:
             logger.info(f"Night {night_idx} had no viable observations")
             continue
-    
-        # Mask zenith observations in plotting
-        eval_zenith_mask = metrics['field_id'] != ZENITH_FIELD_ID
-        data_zenith_mask = night_group['field_id'] != ZENITH_FIELD_ID
+            
+        # 5. The Magic: Slice the Ground Truth data instantly using our mappings
+        night_compact_idxs = test_dataset.curr_compact_idxs[night_dl_idxs]
         
-        eval_timestamps = np.array(metrics['timestamp'])
-        sunset = get_nautical_twilight(night_group['timestamp'].values[0], event_type='set')
-        eval_timestamps = (eval_timestamps - sunset) / 3600
-        data_timestamps = (night_group['timestamp'].values - sunset) / 3600 
+        # - True unnormalized DataFrame rows for this night
+        night_df = valid_transitions_df.iloc[night_dl_idxs]
+        
+        # - True pre-normalized bin states (no more zenith searching!)
+        if test_dataset._prenorm_bin_states is not None:
+            expert_bin_states = test_dataset._prenorm_bin_states[night_compact_idxs]
+    
+        # Get plot time axis as hours since sunset
+        sunset = get_nautical_twilight(metrics['timestamp'][0], event_type='set')
+        
+        agent_zenith_mask = metrics['field_id'] != ZENITH_FIELD_ID
+        expert_zenith_mask = night_df['field_id'].values != ZENITH_FIELD_ID
+        
+        agent_timestamps = np.array(metrics['timestamp'])
+        agent_timestamps = (agent_timestamps - sunset) / 3600
+        expert_timestamps = (night_df['timestamp'].values - sunset) / 3600
     
         # Plot bins vs timestamp        
         fig_b, axb = plt.subplots()
-        axb.plot(eval_timestamps[eval_zenith_mask],
-                      metrics['bin'][eval_zenith_mask],
+        axb.plot(agent_timestamps[agent_zenith_mask],
+                      metrics['bin'][agent_zenith_mask],
                       marker='o', label='pred', alpha=.5)
-        axb.plot(data_timestamps[data_zenith_mask],
-                      night_group['bin'].values.astype(int)[data_zenith_mask],
+        axb.plot(expert_timestamps[expert_zenith_mask],
+                      night_df['bin'].values.astype(int)[expert_zenith_mask],
                       marker='o', label='true', alpha=.5)
         axb.legend()
         axb.set_xlabel('Hours since sunset \n (-10 deg)')
@@ -421,18 +459,20 @@ def main():
         fig, axs = plt.subplots(len(test_dataset.global_feature_names), figsize=(10, len(test_dataset.global_feature_names)*5))
         for i, feature_row in enumerate(metrics['glob_observations'].T[:len(test_dataset.global_feature_names)]):
             feat_name = test_dataset.global_feature_names[i]
-            eval_data = feature_row.copy()
+            agent_data = feature_row.copy()
             if feat_name == 'airmass':
-                eval_data = 1 / feature_row
+                agent_data = 1 / feature_row
+            elif 'sky_brightness' in feat_name:
+                agent_data = (feature_row * SKYBRIGHT_MAX) + SKYBRIGHT_MIN
             elif feat_name in global_cfg['features']['MAX_NORM_FEATURE_NAMES']:
-                eval_data = feature_row * (np.pi/2)
+                agent_data = feature_row * (np.pi/2)
             elif feat_name in global_cfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']:
-                eval_data = feature_row * (2*np.pi)
+                agent_data = feature_row * (2*np.pi)
             else:
-                eval_data = feature_row
+                agent_data = feature_row
 
-            axs[i].plot(eval_timestamps[eval_zenith_mask], eval_data[eval_zenith_mask], label='policy roll out', marker='o')
-            axs[i].plot(data_timestamps[data_zenith_mask], night_group[feat_name].values[data_zenith_mask], label='original schedule', marker='o')
+            axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
+            axs[i].plot(expert_timestamps[expert_zenith_mask], night_df[feat_name].values[expert_zenith_mask], label='original schedule', marker='o')
             axs[i].set_title(feat_name)
             axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
             axs[i].legend()
@@ -443,7 +483,7 @@ def main():
         # Plot most frequently visited bin features vs timestamp
         if cfg['model']['grid_network'] is not None:
             _bins_vis_tonight = metrics['bin'].astype(int)
-            _bincounts = np.bincount(_bins_vis_tonight[eval_zenith_mask], minlength=test_dataset.num_actions)
+            _bincounts = np.bincount(_bins_vis_tonight[agent_zenith_mask], minlength=test_dataset.num_actions)
             _most_common_bin = np.argmax(_bincounts)
             normed_feature_names = test_dataset.bin_feature_names
             fig, axs = plt.subplots(len(normed_feature_names), figsize=(10, len(normed_feature_names)* 5))
@@ -451,37 +491,37 @@ def main():
                 feat_name = normed_feature_names[i]
                 # unnormalize observations to compare to expert values
                 if feat_name == 'airmass':
-                    eval_data = 1 / feat_row
+                    agent_data = 1 / feat_row
                 elif feat_name in global_cfg['features']['MAX_NORM_FEATURE_NAMES']:
-                    eval_data = feat_row * (np.pi/2)
+                    agent_data = feat_row * (np.pi/2)
                 elif feat_name in global_cfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']:
-                    eval_data = feat_row * (2 * np.pi)
+                    agent_data = feat_row * (2 * np.pi)
                 else:
-                    eval_data = feat_row
-                axs[i].plot(eval_timestamps[eval_zenith_mask], eval_data[eval_zenith_mask], label='policy roll out', marker='o')
-                axs[i].plot(data_timestamps[data_zenith_mask], bin_states[:, _most_common_bin, i], label='original schedule', marker='o')
+                    agent_data = feat_row
+                axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
+                axs[i].plot(expert_timestamps[expert_zenith_mask], expert_bin_states[expert_zenith_mask, _most_common_bin, i], label='original schedule', marker='o')
                 axs[i].set_title(feat_name)
                 axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
                 axs[i].legend()
-            fig.suptitle(f"Bin {_most_common_bin}: (az, el) = ({test_dataset.hpGrid.lon[_most_common_bin]:.2f}, {test_dataset.hpGrid.lon[_most_common_bin]:.2f}")
+            fig.suptitle(f"Bin {_most_common_bin}: (az, el) = ({test_dataset.hpGrid.lon[_most_common_bin]:.2f}, {test_dataset.hpGrid.lat[_most_common_bin]:.2f}")
             fig.tight_layout()
             fig.savefig(night_dir + f'bin_features_vs_time.png')
 
 
         # Plot static bin and field radec scatter plots
-        bin2coord = {int(i): (lon, lat) for i, (lon, lat) in enumerate(zip(test_dataset.hpGrid.lon, test_dataset.hpGrid.lat))}
+        bin2coord = {int(i): (lon, lat) for i, (lon, lat) in enumerate(zip(test_dataset.hpGrid.lon/units.deg, test_dataset.hpGrid.lat/units.deg))}
 
-        eval_bin_radecs = np.array([bin2coord[bin_num] for bin_num in metrics['bin'].astype(int) if bin_num != ZENITH_BIN_NUM])
-        orig_bin_radecs = np.array([bin2coord[bin_num] for bin_num in night_group['bin'].values if bin_num != ZENITH_BIN_NUM])
+        agent_bin_radecs = np.array([bin2coord[bin_num] for bin_num in metrics['bin'].astype(int) if bin_num != ZENITH_BIN_NUM])
+        orig_bin_radecs = np.array([bin2coord[bin_num] for bin_num in night_df['bin'].values if bin_num != ZENITH_BIN_NUM])
         
-        eval_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in metrics['field_id'].astype(int) if field_id != ZENITH_FIELD_ID])
-        orig_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in night_group['field_id'].values.astype(int) if field_id != ZENITH_FIELD_ID])
+        agent_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in metrics['field_id'].astype(int) if field_id != ZENITH_FIELD_ID])
+        orig_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in night_df['field_id'].values.astype(int) if field_id != ZENITH_FIELD_ID])
         
         if len(orig_field_radecs) != 1:
             # Plot bins
             fig, axs = plt.subplots(1, 2, figsize=(10,5), sharex=True, sharey=True)
             axs[0].scatter(orig_bin_radecs[:, 0], orig_bin_radecs[:, 1], label='expert', cmap='Reds', c=np.arange(len(orig_bin_radecs)))
-            axs[1].scatter(eval_bin_radecs[:, 0], eval_bin_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(eval_bin_radecs)))
+            axs[1].scatter(agent_bin_radecs[:, 0], agent_bin_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(agent_bin_radecs)))
             for ax in axs:
                 ax.set_xlabel('x (ra or az)')
                 ax.legend()
@@ -493,7 +533,7 @@ def main():
             # Plot fields
             fig, axs = plt.subplots(1, 2, figsize=(10,5), sharex=True, sharey=True)
             axs[0].scatter(orig_field_radecs[:, 0], orig_field_radecs[:, 1], label='expert', cmap='Reds', c=np.arange(len(orig_field_radecs)), s=10)
-            axs[1].scatter(eval_field_radecs[:, 0], eval_field_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(eval_field_radecs)), s=10)
+            axs[1].scatter(agent_field_radecs[:, 0], agent_field_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(agent_field_radecs)), s=10)
             for ax in axs:
                 ax.set_xlabel('ra')
                 ax.legend() 
@@ -503,7 +543,10 @@ def main():
             plt.close()
 
         logger.info(f'Creating schedule gif for {night_idx}th night')
-        save_schedule(night_metrics=metrics, pd_group=night_group, save_dir=night_dir, nside=nside, make_gifs=args.make_gifs, 
+        
+        bin2pos_filepath = global_cfg['paths']['TRAIN_DIR'] + f"nside{nside}_bin2{cfg['data']['bin_space']}.json"
+        bin2pos_filepath = bin2pos_filepath.replace("_filter", "")
+        save_schedule(night_metrics=metrics, pd_group=night_df, save_dir=night_dir, nside=nside, make_gifs=args.make_gifs, 
                       is_azel=test_dataset.hpGrid.is_azel, bin2pos_filepath=bin2pos_filepath, field2radec_filepath=field2radec_filepath)
         
 if __name__ == "__main__":

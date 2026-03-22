@@ -8,7 +8,7 @@ import torch
 import time
 import pickle
 
-from blancops.core_rl.agents import Agent
+from blancops.core_rl.agent import Agent
 from blancops.algorithms.factory import setup_algorithm
 from blancops.math import geometry
 from blancops.math import units
@@ -92,7 +92,7 @@ def plot_metrics(results_outdir, dataset):
 
     if 'unique_bins' in val_metrics:
         # Count bins with < 10 examples
-        bin_ids, _ = np.unique(dataset.bin_actions.detach().numpy(), return_counts=True)
+        bin_ids, _ = np.unique(dataset.actions.detach().numpy(), return_counts=True)
         total_bin_diversity = len(bin_ids)/dataset.num_actions
         fig, ax = plt.subplots()
         ax.plot(val_train_metrics['epoch'], val_train_metrics['unique_bins'], label='train', color='grey', alpha=.5, linestyle='dotted')
@@ -212,11 +212,11 @@ def main():
         assert np.isin(cfg['model']['grid_network'], ["single_bin_scorer", "multi_dim_scorer"]), "Must use a grid_network if using bin features. Options: single_bin_scorer, multi_dim_scorer"
 
     # Get training configs used more than once
-    batch_size = cfg['train']['batch_size'] #cfg.get('experiment.training.batch_size')
-    max_epochs = cfg['train']['max_epochs'] #cfg.get('experiment.training.max_epochs')
-    lr_scheduler = cfg['train']['lr_scheduler'] #cfg.get('experiment.training.lr_scheduler')
-    lr_scheduler_epoch_start = cfg['train']['lr_scheduler_epoch_start'] #cfg.get('experiment.training.lr_scheduler_epoch_start')
-    lr_scheduler_num_epochs = cfg['train']['lr_scheduler_num_epochs'] #cfg.get('experiment.training.lr_scheduler_num_epochs')
+    batch_size = cfg['train']['batch_size']
+    max_epochs = cfg['train']['max_epochs']
+    lr_scheduler = cfg['train']['lr_scheduler']
+    lr_scheduler_epoch_start = cfg['train']['lr_scheduler_epoch_start']
+    lr_scheduler_num_epochs = cfg['train']['lr_scheduler_num_epochs']
     for bin_feat in cfg['data']['bin_features']:
         assert bin_feat in gcfg['features']['BIN_FEATURES'], f"{bin_feat} has not yet been implemented. Check global config file for valid inputs."
     # assert errors dne before running rest of code
@@ -231,16 +231,8 @@ def main():
     device = get_device()
 
     logger.info("Loading raw data...")
-
     df = load_raw_data_to_dataframe(Path(gcfg['paths']['TRAIN_DIR']) / Path(gcfg['files']['DECFITS']))
-
     logger.info("Processing raw data into OfflineDataset()...")
-    # Need to include paths.lookup_dir in cfg before sending to offline dataset -- brittle
-    # train_dataset = OfflineDELVEDataset(
-    #     df=df,
-    #     cfg=cfg,
-    #     gcfg=gcfg,
-    # )
     train_dataset = OfflineDataset(
         df=df,
         cfg=cfg,
@@ -258,18 +250,8 @@ def main():
     plt.ylabel('dec')
     plt.savefig(fig_outdir / 'train_data_fields_dec_vs_ra.png')
 
-    # logger.info("Plotting S x A (state x action) space cornerplot (this will take some time...)")
-    # # Plot State x action space via cornerplot
-    # corner_plot = sns.pairplot(train_dataset._df,
-    #          vars=train_dataset.global_feature_names + ['bin'],
-    #          kind='hist',
-    #          corner=True
-    #         )
-    # corner_plot.figure.savefig(fig_outdir / 'state_times_action_space_corner_plot.png')
-    # logger.info("Corner plot saved")
-
     fig, axs = plt.subplots(len(train_dataset.global_feature_names), figsize=(4, len(train_dataset.global_feature_names)*3))
-    next_states = train_dataset.next_states.T
+    next_states = train_dataset.states[1:].T
     for i, feat_name in enumerate(train_dataset.global_feature_names):
         axs[i].hist(next_states[i])
         axs[i].set_title(f"Train distribution ({feat_name})")
@@ -277,10 +259,12 @@ def main():
     fig.savefig(fig_outdir / 'train_data_global_feature_distributions.png')
         
     if cfg['train']['use_train_as_val']:
-        trainloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, random_seed=cfg.get('experiment.metadata.seed'), return_train_and_val=False)
+        trainloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, \
+                                                   random_seed=cfg['metadata']['seed'], return_train_and_val=False)
         valloader = trainloader
     else:
-        trainloader, valloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, random_seed=cfg['metadata']['seed'], return_train_and_val=True)
+        trainloader, valloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, \
+                                                              random_seed=cfg['metadata']['seed'], return_train_and_val=True)
 
     # Initialize algorithm and agent
     logger.info("Initializing agent...")
@@ -289,13 +273,29 @@ def main():
     num_lr_scheduler_steps = np.int32(np.max([1, int(lr_scheduler_num_epochs * steps_per_epoch)]))
     lr_scheduler_kwargs = {'T_max': num_lr_scheduler_steps, 'eta_min': cfg['train']['eta_min']} if lr_scheduler == 'cosine_annealing' else {}
 
-    algorithm = setup_algorithm(algorithm_name=cfg['model']['algorithm'], n_global_features=train_dataset.states.shape[-1], n_bin_features=0 if train_dataset.bin_states is None else train_dataset.bin_states.shape[-1],
-                                num_actions=train_dataset.num_actions, num_filters=train_dataset.num_filters, loss_fxn=cfg['model']['loss_function'],
-                                hidden_dim=cfg['train']['hidden_dim'], lr=cfg['train']['lr'], lr_scheduler=lr_scheduler, 
-                                device=device, lr_scheduler_kwargs=lr_scheduler_kwargs, lr_scheduler_epoch_start=lr_scheduler_epoch_start, 
-                                lr_scheduler_num_epochs=lr_scheduler_num_epochs, gamma=cfg['model']['gamma'], 
-                                tau=cfg['model']['tau'], activation=cfg['model']['activation'], grid_network=cfg['model']['grid_network'],
-                                use_contextual_gating=cfg['model']['contextual_gating'])
+    algorithm = setup_algorithm(algorithm_name=cfg['model']['algorithm'], 
+                                n_global_features=train_dataset.states.shape[-1], 
+                                n_bin_features=0 if train_dataset.bin_states is None else train_dataset.bin_states.shape[-1],
+                                num_actions=train_dataset.num_actions, 
+                                num_filters=train_dataset.num_filters, 
+                                loss_fxn=cfg['model']['loss_function'],
+                                hidden_dim=cfg['train']['hidden_dim'], 
+                                lr=cfg['train']['lr'], 
+                                lr_scheduler=lr_scheduler, 
+                                device=device,
+                                lr_scheduler_kwargs=lr_scheduler_kwargs, 
+                                lr_scheduler_epoch_start=lr_scheduler_epoch_start, 
+                                lr_scheduler_num_epochs=lr_scheduler_num_epochs,
+                                gamma=cfg['model'].get('gamma', None), 
+                                tau=cfg['model'].get('tau', None), 
+                                activation=cfg['model']['activation'], 
+                                grid_network=cfg['model']['grid_network'],
+                                use_contextual_gating=cfg['model']['contextual_gating'],
+                                use_cql=cfg['model'].get('use_cql', None),
+                                cql_alpha=cfg['model'].get('cql_alpha', None),
+                                nside=cfg['data']['nside'],
+                                bin_space=cfg['data']['bin_space']
+                                )
 
     agent = Agent(
         algorithm=algorithm,
@@ -323,7 +323,7 @@ def main():
             else:
                 logger.debug(f"{k} has value {v} with dtype {type(v)}")
 
-    check_cfg_dtypes(cfg)
+    # check_cfg_dtypes(cfg)
     save_config(config_dict=cfg, outdir=results_outdir)
 
     logger.info("Starting training...")
@@ -357,8 +357,25 @@ def main():
 
     # Plot predicted action for each state in train dataset
     dataset = trainloader.dataset.dataset
-    val_states, val_actions, _, _, _, _, val_bin_states, _ = dataset[valloader.dataset.indices]
-    train_states, train_actions, _, _, _, _, train_bin_states, _ = dataset[trainloader.dataset.indices]
+    val_indices = valloader.dataset.indices
+    train_indices = trainloader.dataset.indices
+
+    val_compact_idxs = dataset.curr_compact_idxs[val_indices]
+    train_compact_idxs = dataset.curr_compact_idxs[train_indices]
+
+    val_states = dataset.states[val_compact_idxs]
+    val_actions = dataset.actions[val_indices]
+
+    train_states = dataset.states[train_compact_idxs]
+    train_actions = dataset.actions[train_indices]
+
+    # If you need bin_states:
+    if dataset._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
+        val_bin_states = dataset.bin_states[val_compact_idxs]
+        train_bin_states = dataset.bin_states[train_compact_idxs]
+
+    # val_states, val_actions, _, _, _, _, val_bin_states, _ = dataset[valloader.dataset.indices]
+    # train_states, train_actions, _, _, _, _, train_bin_states, _ = dataset[trainloader.dataset.indices]
 
     do_bin_states = dataset._grid_network is not None
     for prefix, (states, bin_states, actions) in zip(['val_', 'train_'], [ (val_states, val_bin_states, val_actions), (train_states, train_bin_states, train_actions) ]):

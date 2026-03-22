@@ -1,9 +1,4 @@
 """
-Sentinel and global constants
-"""
-
-
-"""
 
 ZENITH CONSTANTS
 

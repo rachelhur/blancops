@@ -13,7 +13,7 @@ import pickle
 import json
 
 from blancops.plotting.plotting import plot_schedule_from_file
-from blancops.core_rl.agents import Agent
+from blancops.core_rl.agent import Agent
 from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config, get_workspace_dir
 from blancops.algorithms.factory import setup_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
@@ -231,7 +231,11 @@ def main():
                                 lr_scheduler_num_epochs=cfg['train']['lr_scheduler_num_epochs'],
                                 gamma=cfg['model']['gamma'], 
                                 tau=cfg['model']['tau'],
-                                activation=cfg['model']['activation']
+                                activation=cfg['model']['activation'],
+                                use_cql=cfg['model']['use_cql'],
+                                cql_alpha=cfg['model']['cql_alpha'],
+                                nside=cfg['data']['nside'],
+                                bin_space=cfg['data']['bin_space']
                                 )
     
     agent = Agent(

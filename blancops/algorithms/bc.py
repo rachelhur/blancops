@@ -48,7 +48,7 @@ class BehaviorCloning(AlgorithmBase):
 
         self.optimizer.zero_grad(set_to_none=True)
 
-        state, expert_actions, rewards, next_state, dones, action_masks, bin_states, next_bin_states = batch
+        state, expert_actions, rewards, next_state, dones, action_masks, next_action_masks, bin_states, next_bin_states = batch
          
         # Assume batch is already tensor
         state_dtype = torch.float32
@@ -76,7 +76,7 @@ class BehaviorCloning(AlgorithmBase):
     
     def val_step(self, batch, hpGrid=None):
         
-        state, expert_actions, rewards, next_obs, dones, action_masks, bin_states, next_bin_states = batch
+        state, expert_actions, rewards, next_state, dones, action_masks, next_action_masks, bin_states, next_bin_states = batch
 
         # Assume batch is already tensor
         state_dtype = torch.float32
