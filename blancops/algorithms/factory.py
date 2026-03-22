@@ -1,16 +1,20 @@
 import logging
+
+from blancops.data_processing.features import calculate_distance_matrix
 logger = logging.getLogger(__name__)
 
-
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 from blancops.algorithms.ddqn import DDQN
 from blancops.algorithms.bc import BehaviorCloning
 
 def setup_algorithm(algorithm_name=None, num_actions=None, loss_fxn=None, hidden_dim=None, lr=None, lr_scheduler=None, device=None, 
                     lr_scheduler_kwargs=None, gamma=None, tau=None, lr_scheduler_epoch_start=None, lr_scheduler_num_epochs=None, activation=None, 
-                    grid_network=None, n_global_features=None, n_bin_features=0, num_filters=None, embedding_dim=None, use_contextual_gating=False):
+                    grid_network=None, n_global_features=None, n_bin_features=0, num_filters=None, embedding_dim=None, use_contextual_gating=False,
+                    use_cql=True, cql_alpha=1., nside=None, bin_space=None):
     assert loss_fxn is not None
 
     # Initialize activation functions
@@ -54,29 +58,40 @@ def setup_algorithm(algorithm_name=None, num_actions=None, loss_fxn=None, hidden
         'use_contextual_gating': use_contextual_gating
     }
         
-    if algorithm_name == 'DDQN' or algorithm_name == 'DQN':
-        assert gamma is not None, "Gamma (discount factor) must be specified for DDQN."
-        assert tau is not None, "Tau (target network update rate) must be specified for DDQN."
-        # assert loss_fxn in ['mse', 'huber'], "DDQN only supports mse or huber loss functions."
+    if algorithm_name == 'DDQN' or algorithm_name == 'DQN' or algorithm_name == 'CQL':
+        if algorithm_name == "DDQN":
+            assert gamma is not None, "Gamma (discount factor) must be specified for DDQN."
+            assert tau is not None, "Tau (target network update rate) must be specified for DDQN."
+        elif algorithm_name == "CQL":
+            assert cql_alpha is not None, "cql_alpha (penalty weight) must be specified for CQL"
         
-        if loss_fxn is not None and type(loss_fxn) != str:
+        elif loss_fxn is not None and type(loss_fxn) is not str:
             loss_fxn = loss_fxn
-
         else:
             raise NotImplementedError(f'Loss function {loss_fxn} not yet implemented for {algorithm_name}')
 
+        if use_cql:
+            dist_matrix = calculate_distance_matrix(nside=nside, is_azel='azel' in bin_space)
+            Q_max = 100
+            dist_scaling_factor = Q_max / np.pi
+        else:
+            dist_matrix=0
+            dist_scaling_factor = 0
         model_hyperparams.update( {
             'gamma': gamma,
             'tau': tau,
-            'use_double': algorithm_name == 'ddqn',
-            'loss_fxn': loss_fxn
+            'use_double': (algorithm_name == 'DDQN') or (algorithm_name == 'CQL'),
+            'loss_fxn': loss_fxn,
+            'use_cql': use_cql,
+            'cql_alpha': cql_alpha,
+            'dist_matrix': dist_matrix,
+            'dist_scaling_factor': dist_scaling_factor
         } )
 
         algorithm = DDQN(
             device=device,
             **model_hyperparams
         )
-
     elif algorithm_name == 'BC':
         if loss_fxn is not None and type(loss_fxn) != str:
             loss_fxn = loss_fxn
