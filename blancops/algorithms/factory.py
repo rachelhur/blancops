@@ -72,7 +72,7 @@ def setup_algorithm(algorithm_name=None, num_actions=None, loss_fxn=None, hidden
 
         if use_cql:
             dist_matrix = calculate_distance_matrix(nside=nside, is_azel='azel' in bin_space)
-            Q_max = 100
+            Q_max = 1 / (1 - gamma)
             dist_scaling_factor = Q_max / np.pi
         else:
             dist_matrix=0

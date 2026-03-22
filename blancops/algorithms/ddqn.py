@@ -49,7 +49,7 @@ class DDQN(AlgorithmBase):
         self.device = device
         self.use_cql = use_cql
         self.cql_alpha = cql_alpha
-        penalty_matrix = -1.0 * dist_matrix * dist_scaling_factor
+        penalty_matrix = 1.0 * dist_matrix * dist_scaling_factor
         self.cql_penalty_matrix = torch.tensor(
             penalty_matrix, 
             dtype=torch.float32, 
@@ -86,7 +86,8 @@ class DDQN(AlgorithmBase):
             self.lr_scheduler_epoch_start = lr_scheduler_epoch_start
             self.lr_scheduler_num_epochs = lr_scheduler_num_epochs
 
-        self.val_metrics = ['val_loss', 'td_error', 'q_std', 'q_policy', 'q_expert', 'accuracy', 'ang_sep', 'unique_bins', 'filter_accuracy']
+        self.val_metrics = ['val_loss', 'td_error', 'q_std', 'q_policy', 'q_expert', 'accuracy', 'ang_sep', 'unique_bins', \
+                            'filter_accuracy', 'cql_penalty', 'td_loss']
         
     def train_step(self, batch, epoch_num, step_num):
         
@@ -115,7 +116,7 @@ class DDQN(AlgorithmBase):
         # Loss = q_val - expected_q_val
 
         # 1. Get q_val
-        q_vals_all = self.policy_net(x_glob=state, x_bin=bin_states) # Do  I need these squeezes after gather?
+        q_vals_all = self.policy_net(x_glob=state, x_bin=bin_states)
         q_val = q_vals_all.gather(1, actions).squeeze(1) # Do  I need these squeezes after gather?
         
         if self.use_cql:
@@ -145,12 +146,12 @@ class DDQN(AlgorithmBase):
         loss = self.loss_fxn(q_val, expected_q)
 
         if self.use_cql:
-            bin_idxs = actions // NUM_FILTERS
+            bin_idxs = actions // self.num_filters
             base_penalty_weights = self.cql_penalty_matrix[bin_idxs.squeeze(1)]
             penalty_weights = torch.repeat_interleave(base_penalty_weights, self.num_filters, dim=1)
-            weighted_q_vals = q_vals_all_masked + penalty_weights # for angular distance
+            weighted_q_vals = q_vals_all_masked + penalty_weights # Q(s, a) + Penalty(a, a_exp)
             cql_logsumexp = torch.logsumexp(weighted_q_vals, dim=1)
-            cql_penalty = (cql_logsumexp - q_val).mean()
+            cql_penalty = (cql_logsumexp - q_val).mean() # log
             loss = loss + self.cql_alpha * cql_penalty
         # optimize w/ backprop
         self.optimizer.zero_grad()
@@ -222,7 +223,10 @@ class DDQN(AlgorithmBase):
 
             q_vals = self.policy_net(x_glob=state, x_bin=bin_states)
             q_current = q_vals.gather(1, actions).squeeze()
-            predicted_actions = q_vals.argmax(1)
+
+            q_vals_eval = q_vals.clone()
+            q_vals_eval[~action_masks] = -1e9
+            predicted_actions = q_vals_eval.argmax(1)
 
             if self.use_double:
                 pol_next_q = self.policy_net(x_glob=next_state, x_bin=next_bin_states)
@@ -238,6 +242,21 @@ class DDQN(AlgorithmBase):
             
             q_expected = rewards + self.gamma * next_q_vals * (1 - dones)
             loss = self.loss_fxn(q_current, q_expected)
+            td_loss = loss.item()
+
+            if self.use_cql:
+                q_vals_all_masked = q_vals.clone()
+                q_vals_all_masked[~action_masks] = -1e9
+                
+                bin_idxs = actions // self.num_filters
+                base_penalty_weights = self.cql_penalty_matrix[bin_idxs.squeeze(1)]
+                penalty_weights = torch.repeat_interleave(base_penalty_weights, self.num_filters, dim=1)
+                
+                weighted_q_vals = q_vals_all_masked + penalty_weights
+                cql_logsumexp = torch.logsumexp(weighted_q_vals, dim=1)
+                cql_penalty = (cql_logsumexp - q_current).mean()
+                cql_loss = cql_penalty.item()
+                loss = loss + self.cql_alpha * cql_penalty
 
             td_error_mean = (q_current - q_expected).abs().mean()
 
@@ -276,4 +295,5 @@ class DDQN(AlgorithmBase):
                 unique_bins = 0.0
                 filter_accuracy = 0.0
 
-            return loss.item(), td_error_mean.item(), q_std.item(), q_policy_mean.item(), q_dataset_mean.item(), mean_accuracy.item(), ang_sep, unique_bins, filter_accuracy
+            return loss.item(), td_error_mean.item(), q_std.item(), q_policy_mean.item(), q_dataset_mean.item(), mean_accuracy.item(), ang_sep, \
+                unique_bins, filter_accuracy, cql_loss, td_loss
