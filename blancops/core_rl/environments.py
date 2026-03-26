@@ -114,7 +114,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
 
     def _get_slew_time(self, last_fid, current_fid):
         if last_fid == ZENITH_FIELD_ID:
-            blanco = ephemerides.blanco_observer(time=self._timestamp)
+            blanco = ephemerides.blanco_observer(time=self._ts)
             last_pos = np.array(blanco.radec_of('0',  '90'))
         else:
             last_pos = self._ra_arr[last_fid], self._dec_arr[last_fid]
@@ -138,6 +138,8 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         all_nights_completed = self._night_idx >= self.max_nights
         all_fields_visited = all(np.array([self._s_visits_cur[fid] >= self.field2maxvisits[fid] for fid in self._fids]))
         terminated = all_nights_completed or all_fields_visited
+        if terminated:
+            logger.info(f"Did not visit all fields" if not all_fields_visited else "Visited all fields! :)")
         return terminated
 
     def _update_state(self, action):
@@ -152,8 +154,9 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
 
         # --- OnlineEnv Logic --- #
         if bin_num == WAIT_SIGNAL:
-            self._timestamp = self._fast_forward_to_timestamp(
-                timestamp=self._timestamp,
+            print('ENVIRONMENT RECEIVED A WAIT SIGNAL')
+            self._ts = self._fast_forward_to_timestamp(
+                timestamp=self._ts,
                 ras=self._ra_arr,
                 decs=self._dec_arr,
                 visited=self._s_visits_cur,
@@ -163,12 +166,12 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             last_field_id = self._field_id
             exptime = self._get_exposure_time(field_id=str(field_id))
             slew_time = self._get_slew_time(last_field_id, field_id)
-            self._timestamp += exptime + slew_time
+            self._ts += exptime + slew_time
             self._n_visits_cur[field_id] += 1
             self._s_visits_cur[field_id] += 1
         # --- OnlineEnv Logic --- #
 
-        if self.do_filt:
+        if self.do_filt and filter_idx != WAIT_SIGNAL:
             self._s_filter_visits_cur[field_id, filter_idx] += 1
             self._n_filter_visits_cur[field_id, filter_idx] += 1   
         
@@ -176,11 +179,11 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         self._field_id = field_id
         self._filter_idx = filter_idx
         
-        self._global_state = self._calculate_global_features(field_id=field_id, filter_idx=filter_idx, timestamp=self._timestamp,
-                                                          sunset_time=self._sunset_time, sunrise_time=self._sunrise_time
+        self._global_state = self._calculate_global_features(field_id=field_id, filter_idx=filter_idx, timestamp=self._ts,
+                                                          sunset_ts=self._sunset_ts, sunrise_ts=self._sunrise_ts
                                                           )
-        self._bin_state = self._calculate_bin_features(timestamp=self._timestamp) if self.include_bin_features else np.array([])
-        self._update_action_masks(timestamp=self._timestamp, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+        self._bin_state = self._calculate_bin_features(timestamp=self._ts) if self.include_bin_features else np.array([])
+        self._update_action_masks(timestamp=self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
                                                   hpGrid=self.hpGrid, visited=self._s_visits_cur)
 
     def _get_state(self):
@@ -237,7 +240,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         """
         return {'action_mask': self._action_mask.copy(), 
                 'visited': self._n_visits_cur.copy(),
-                'timestamp': self._timestamp,
+                'timestamp': self._ts,
                 'is_new_night': bool(self._is_new_night),
                 'night_idx': int(self._night_idx),
                 'bin': int(self._bin_num),
@@ -245,14 +248,14 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                 'valid_fields_per_bin': self._valid_fields_per_bin 
         }
 
-    def _calculate_global_features(self, field_id, filter_idx, timestamp, sunset_time, sunrise_time):
+    def _calculate_global_features(self, field_id, filter_idx, timestamp, sunset_ts, sunrise_ts):
         new_features = {}
         astro_time = Time(timestamp, format='unix', scale='utc')
         lst = astro_time.sidereal_time('apparent', longitude="-70:48:23.49")  # Blanco longitude
         new_features['lst'] = lst.radian
         
         # --- OnlineEnv Logic --- #
-        if field_id == ZENITH_FIELD_ID:
+        if field_id == ZENITH_FIELD_ID or field_id == WAIT_SIGNAL:
             blanco = ephemerides.blanco_observer(time=timestamp)
             ra, dec = new_features['lst'], blanco.lon
             new_features['ra'], new_features['dec'] = ra, dec 
@@ -277,13 +280,13 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         new_features['moon_az'], new_features['moon_el'] = ephemerides.equatorial_to_topographic(ra=new_features['moon_ra'], dec=new_features['moon_dec'], time=timestamp)
         for filt in FILTER2WAVE.keys():
             if filt != ZENITH_FILTER:
-                new_features[f'sky_brightness_{filt}'] = estimate_sky_brightness(time=self._timestamp, ra=ra, dec=dec, band=filt)
+                new_features[f'sky_brightness_{filt}'] = estimate_sky_brightness(time=self._ts, ra=ra, dec=dec, band=filt)
 
-        if sunrise_time == sunset_time:
+        if sunrise_ts == sunset_ts:
             raise AssertionError("Sunrise and sunset time is equal. Check night_str argument - it should be a time between sunset and sunrise")
             # new_features['time_fraction_since_start'] = 0
         else:
-            new_features['time_fraction_since_start'] = normalize_timestamp(timestamp, sunset_timestamp=sunset_time, sunrise_timestamp=sunrise_time)
+            new_features['time_fraction_since_start'] = normalize_timestamp(timestamp, sunset_timestamp=sunset_ts, sunrise_timestamp=sunrise_ts)
 
 
         for feat_name in self.base_global_feature_names:
@@ -303,7 +306,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         features = {}
 
         # --- OnlineEnv Logic --- #
-        if self._field_id == ZENITH_FIELD_ID:
+        if self._field_id == ZENITH_FIELD_ID or self._field_id == WAIT_SIGNAL:
             blanco = ephemerides.blanco_observer(time=timestamp)
             features['ra'], features['dec'] = blanco.lat, blanco.lon
         else:
@@ -523,7 +526,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             {
                 "bin": gym.spaces.Discrete(self.nbins - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_BIN_NUM])),
                 "field_id": gym.spaces.Discrete(len(self._fids) - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_FIELD_ID])),
-                "filter_idx": gym.spaces.Discrete(NUM_FILTERS - ZENITH_FILTER_IDX, start=ZENITH_FILTER_IDX)
+                "filter_idx": gym.spaces.Discrete(NUM_FILTERS - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_FIELD_ID]))
             }
         )       
 
@@ -658,7 +661,7 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
 
         # -------------------- Start new night if last transition -----------------------#
 
-        is_new_night = self._timestamp >= np.min([self._sunrise_time, self._night_final_timestamp])
+        is_new_night = self._ts >= np.min([self._sunrise_time, self._night_final_timestamp])
         self._is_new_night = is_new_night
         
         if is_new_night:
@@ -682,7 +685,7 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         self._night_idx = -1
         self._is_new_night = True
         self._start_new_night()
-        self._update_action_masks(timestamp=self._timestamp, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+        self._update_action_masks(timestamp=self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
                                                   hpGrid=self.hpGrid, visited=self._s_visits_cur)
     
     def _start_new_night(self):
@@ -693,9 +696,9 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         # global features
         global_first_row = self.global_pd_nightgroup.head(1).iloc[self._night_idx]
         night = global_first_row['night']
-        self._timestamp = global_first_row['timestamp']
-        self._sunset_time = get_nautical_twilight(self._timestamp+10, 'set') # add 10 seconds just in case timestamp is exactly at twilight
-        self._sunrise_time = get_nautical_twilight(self._timestamp+10, 'rise')
+        self._ts = global_first_row['timestamp']
+        self._sunset_ts = get_nautical_twilight(self._ts+10, 'set') # add 10 seconds just in case timestamp is exactly at twilight
+        self._sunrise_ts = get_nautical_twilight(self._ts+10, 'rise')
         self._night_final_timestamp = self.global_pd_nightgroup.tail(1).iloc[self._night_idx]['timestamp']
         self._night_first_timestamp = global_first_row['timestamp']
         self._field_id = global_first_row['field_id']
@@ -729,7 +732,7 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
                 np.add.at(self._max_n_filter_visits_arr, (night_fids, n_filts), 1)
         else:
             self._bin_state = np.array([])
-        self._update_action_masks(self._timestamp, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+        self._update_action_masks(self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
                                                   hpGrid=self.hpGrid, visited=self._s_visits_cur)
 
     def _update_action_masks(self, timestamp, field2maxvisits, field_ids, ras, decs, hpGrid, visited):
@@ -762,7 +765,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
     """
-    def __init__(self, gcfg, cfg, night_str, lookup_path=None, lookup_dict=None, horizon='-12', max_nights=None, airmass_limit=1.4):
+    def __init__(self, gcfg, cfg, observing_night_strs, lookup_path=None, lookup_dict=None, max_nights=0, horizon='-12', airmass_limit=1.4):
         """
         """
         # Assign static attributes
@@ -782,9 +785,17 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
         self.horizon = horizon
-        self.max_nights = max_nights if max_nights is not None else 1
-        night_dt = datetime.strptime(night_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        self._first_night = night_dt + (timedelta(days=1) - pd.Timedelta(nanoseconds=1))
+        self.max_nights = max(len(observing_night_strs), max_nights) 
+        
+        self._night_info = []
+        for obs_n_str in observing_night_strs:
+            str_split = obs_n_str.split('-', maxsplit=3)
+            night_str = '-'.join(str_split[:3])
+            night_portion = str_split[-1]
+            night_dt = datetime.strptime(night_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            midnight_dt = night_dt + (timedelta(days=1) - pd.Timedelta(nanoseconds=1))
+            self._night_info.append((midnight_dt, night_portion))
+
         self._airmass_limit = airmass_limit
         self.do_filt = 'filter' in self.bin_space
         self.nfilters = len(FILTER2IDX)
@@ -847,11 +858,6 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         self.state_dim = cfg['data']['state_dim']
         self.bin_state_dim = cfg['data']['bin_state_dim']
 
-        if self.include_bin_features:
-            bin_state_shape = (self.nbins, self.bin_state_dim,)
-        else:
-            bin_state_shape = (0,)
-
         self._global_state = np.zeros(self.state_dim, dtype=np.float32)
         self._bin_state = np.zeros(self.bin_state_dim, dtype=np.float32)
         self._setup_action_and_obs_spaces()
@@ -888,7 +894,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
 
         # -------------------- Start new night if is last transition -----------------------#
 
-        is_new_night = self._timestamp >= self._sunrise_time
+        is_new_night = self._ts >= self._night_end_ts
         self._is_new_night = is_new_night
         
         if is_new_night:
@@ -912,22 +918,35 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         self._night_idx = -1
         self._s_visits_cur = np.zeros(self.nfields, dtype=np.int32)
         self._is_new_night = True
-        self._night_dt = self._first_night
         self._start_new_night()
     
+    def get_half_night_duration(self, sunset_ts, sunrise_ts):
+        return (sunrise_ts - sunset_ts) // 2
+
     def _start_new_night(self):
         self._night_idx += 1
 
         # global features
-        night_ts = self._night_dt.timestamp()
-        self._sunset_time = math.ceil(get_nautical_twilight(night_ts, 'set', self.horizon))
-        self._sunrise_time = math.ceil(get_nautical_twilight(night_ts, 'rise', self.horizon))
+        night_dt, night_portion = self._night_info[self._night_idx]
+        night_ts = night_dt.timestamp()
+        self._sunset_ts = math.ceil(get_nautical_twilight(night_ts, 'set', self.horizon))
+        self._sunrise_ts = math.ceil(get_nautical_twilight(night_ts, 'rise', self.horizon))
         self._field_id = ZENITH_FIELD_ID
         self._bin_num = ZENITH_BIN_NUM
-        self._timestamp = self._sunset_time
-
+        self._ts = self._sunset_ts
+        self._night_end_ts = self._sunrise_ts
+        self._night_start_ts = self._sunset_ts
+        if night_portion != 'full':
+            half_night_duration = self.get_half_night_duration(self._sunset_ts, self._sunrise_ts)
+            if night_portion == 'half1':
+                self._night_end_ts -= half_night_duration
+            elif night_portion == 'half2':
+                self._night_start_ts += half_night_duration
+            else:
+                raise ValueError("Environment arg `observing_night_strs` must be of the form `YY-MM-dd-<night_portion> where night_portion in {'full', 'half1', 'half2'}")
+        print(self._night_end_ts - self._night_start_ts)
         self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-        self._global_state = self._calculate_global_features(field_id=self._field_id, filter_idx=ZENITH_FILTER_IDX, timestamp=self._timestamp, sunset_time=self._sunset_time, sunrise_time=self._sunrise_time)
+        self._global_state = self._calculate_global_features(field_id=self._field_id, filter_idx=ZENITH_FILTER_IDX, timestamp=self._ts, sunset_ts=self._sunset_ts, sunrise_ts=self._sunrise_ts)
 
         # Get field visit counts at start of night
         self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
@@ -937,12 +956,11 @@ class OnlineBlancoEnv(BaseBlancoEnv):
 
         if self.include_bin_features:
             self._max_n_visits_arr = np.zeros_like(self._n_visits_cur)
-            self._bin_state = self._calculate_bin_features(timestamp=self._timestamp)
+            self._bin_state = self._calculate_bin_features(timestamp=self._ts)
             #self._max_n_visits_arr = np.bincount(self._fids[night_fids], minlength=self.nfields)
             self._in_n_plan = self._max_n_visits_arr > 0
 
             if self.do_filt:
-                n_filts = np.array([0])
                 self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
                 # np.add.at(self._max_n_filter_visits_arr, (0, 0), 1)
 
@@ -951,7 +969,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                 self._bin_state = np.array(self._bin_state).reshape((A, B))
         else:
             self._bin_state = np.array([])
-        self._update_action_masks(self._timestamp, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+        self._update_action_masks(self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
                                                   hpGrid=self.hpGrid, visited=self._s_visits_cur)
 
     def _update_action_masks(self, timestamp, field2maxvisits, field_ids, ras, decs, hpGrid, visited):
@@ -995,14 +1013,15 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         test_timestamp = timestamp
         step_size = 60*5 # inspect visibility every 5 mins
 
-        while test_timestamp < self._sunrise_time:
+        while test_timestamp < self._night_end_ts:
             test_timestamp += step_size
             _, fields_el = ephemerides.equatorial_to_topographic(ra=incomplete_ras, dec=incomplete_decs, time=test_timestamp)
             airmass = 1 / np.cos(90 * units.deg - fields_el[fields_el > 0])
             if np.any(airmass < 1.2):
+                print(f"TIMESTAMP FAST FORWARDING {self._night_end_ts - test_timestamp}")
                 return test_timestamp
         # If fields never above horizon, return sunrise time
-        return self._sunrise_time
+        return self._night_end_ts
     
     def _get_exposure_time(self, field_id):
         if int(field_id) < 0:

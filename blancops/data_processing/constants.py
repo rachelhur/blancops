@@ -63,3 +63,19 @@ IMPLEMENTED GRID NETWORK NAMES
 """
 
 GRID_NETWORKS = ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer']
+
+"""
+
+TEST SUITES
+
+"""
+
+TEST_SUITE_NAMES = ['magic-spring', 'healpix-grid', 'delve', 'gw-followup']
+
+"""
+
+MAGIC-SPRING OBSERVING DATES
+
+"""
+
+MS_OBSERVING_DATES = ['2026-04-09-half1', '2026-04-10-half1', '2026-04-11-half1', '2026-04-12-half1', '2026-05-09-half1', '2026-05-10-half1', '2026-06-08-half1', '2026-06-09-half1']
