@@ -31,105 +31,6 @@ import re
 
 from pathlib import Path
 
-def save_schedule(night_metrics, save_dir, make_gifs=True, nside=None, is_azel=False, whole=False, field2radec_filepath=None):
-    # Save timestamps, field_ids, and bin numbers
-    bin_space = 'azel' if is_azel else 'radec'
-    assert os.path.exists(save_dir)
-
-    timestamps = np.array(night_metrics['timestamp']).astype(np.int32)
-    bins = np.array(night_metrics['bin']).astype(np.int32)
-    fids = np.array(night_metrics['field_id']).astype(np.int32)
-    if len(timestamps) > 1:
-        return
-
-    real_obs_mask = (bins != ZENITH_BIN_NUM) & (bins != WAIT_SIGNAL)
-    
-    schedule_full = {
-        'agent_timestamp': timestamps[real_obs_mask],
-        'agent_field_id': fids[real_obs_mask],
-        'agent_bin_id': bins[real_obs_mask],
-    }
-
-    df = pd.DataFrame(data={k: pd.Series(v) for k, v in schedule_full.items()}).fillna(0).astype(int)
-
-    output_filepath = save_dir / "schedule.csv"
-    df.to_csv(output_filepath, index=False)
-
-    # schedule = pd.read_csv(output_filepath)
-    logger.info("Creating fieldbin movies")
-    # Create binfield movies
-
-    plot_schedule_from_file(
-        outfile=save_dir / "agent_fieldbin_schedule.gif",
-        schedule_file=output_filepath,
-        plot_type='fieldbin',
-        nside=nside,
-        fields_file=field2radec_filepath,
-        whole=False,
-        compare=False,
-        expert=False,
-        is_azel=bin_space=='azel',
-        mollweide=False,
-    )
-
-    if make_gifs:
-        # Create fields movies
-        logger.info("Creating field movies")
-        if not is_azel:
-            plot_schedule_from_file(
-                outfile=save_dir / "expert_field_schedule.gif",
-                schedule_file=output_filepath,
-                plot_type='field',
-                nside=nside,
-                fields_file=field2radec_filepath,
-                whole=False,
-                compare=False,
-                expert=True,
-                is_azel=bin_space=='azel',
-                mollweide=False,
-            )
-
-        plot_schedule_from_file(
-            outfile=save_dir / "agent_bin_schedule.gif",
-            schedule_file=output_filepath,
-            plot_type='bin',
-            nside=nside,
-            fields_file=field2radec_filepath,
-            whole=False,
-            compare=False,
-            expert=False,
-            is_azel=bin_space=='azel',
-            mollweide=False,
-        ) 
-
-        if bin_space == 'radec':
-            # Mollefield
-            logger.info("Creating static plots")
-            plot_schedule_from_file(
-                outfile=save_dir / "mollweide.png",
-                schedule_file=output_filepath,
-                plot_type='bin',
-                nside=nside,
-                fields_file=field2radec_filepath,
-                whole=True,
-                compare=True,
-                expert=True,
-                is_azel=bin_space=='azel',
-                mollweide=True,
-            )  
-            plot_schedule_from_file(
-                outfile=save_dir / "ortho.png",
-                schedule_file=output_filepath,
-                plot_type='bin',
-                nside=nside,
-                fields_file=field2radec_filepath,
-                whole=True,
-                compare=True,
-                expert=True,
-                is_azel=bin_space=='azel',
-                mollweide=False,
-            )  
-
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', type=int, default=10, help='Random seed for reproducibility')
@@ -148,7 +49,6 @@ def main():
     parser.add_argument('--max_nights', type=int, default=5, help='Maximum number of nights')
     # Parse args
     args = parser.parse_args()
-    args_dict = vars(args)
 
     # Get configs
     gcfg = load_global_config()
@@ -232,9 +132,8 @@ def main():
                                 gamma=cfg['model']['gamma'], 
                                 tau=cfg['model']['tau'],
                                 activation=cfg['model']['activation'],
-                                use_cql=cfg['model']['use_cql'],
-                                cql_alpha=cfg['model']['cql_alpha'],
-                                nside=cfg['data']['nside'],
+                                cql_alpha=cfg['model'].get('cql_alpha', None),
+                                nside=cfg['data'].get('nside', None),
                                 bin_space=cfg['data']['bin_space']
                                 )
     
@@ -259,7 +158,7 @@ def main():
     field2radec = {int(fid): (field_lookup['ra'][fid], field_lookup['dec'][fid]) for fid in field_lookup['ra'].keys()}
 
     # Evaluate
-    agent.evaluate(env=env, cfg=cfg, num_episodes=1, field_choice_method='random', eval_outdir=schedule_outdir,
+    agent.evaluate(env=env, cfg=cfg, num_episodes=1, field_choice_method=args.field_choice_method, eval_outdir=schedule_outdir,
               field2nvisits=field2nvisits, field2radec=field2radec)
 
     # Load results

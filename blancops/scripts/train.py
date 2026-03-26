@@ -6,111 +6,23 @@ import seaborn as sns
 import torch
 
 import time
-import pickle
 
 from blancops.core_rl.agent import Agent
 from blancops.algorithms.factory import setup_algorithm
+from blancops.data_processing.constants import GRID_NETWORKS
 from blancops.math import geometry
 from blancops.math import units
 from blancops.utils.sys_utils import setup_logger, get_device, seed_everything
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe 
 from blancops.data_processing.offline_dataset import OfflineDataset
 from blancops.utils.sys_utils import save_config, load_global_config, dict_to_nested, get_workspace_dir
+from blancops.plotting.training_viz import plot_bin_membership, plot_global_feature_distributions, plot_metrics
 
 import argparse
 import logging
 import json
 
 from pathlib import Path
-
-def plot_metrics(results_outdir, dataset):
-    with open(results_outdir / 'train_metrics.pkl', 'rb') as f:
-        train_metrics = pickle.load(f)
-    with open(results_outdir / 'val_metrics.pkl', 'rb') as f:
-        val_metrics = pickle.load(f)
-    with open(results_outdir / 'val_train_metrics.pkl', 'rb') as f:
-        val_train_metrics = pickle.load(f)
-
-    # Plot Loss, Accuracy, and Angular separation
-    nrows = 3 if 'ang_sep' in val_metrics else 2
-    fig, axs = plt.subplots(nrows, sharex=True, figsize=(4, 7))
-
-    axs[0].plot(train_metrics['epoch'], train_metrics['train_loss'], label='train loss', color='black', linestyle='dotted')
-    axs[0].plot(val_metrics['epoch'], val_metrics['val_loss'], label='val loss')
-    axs[0].hlines(y=0, xmin=0, xmax=np.max(val_metrics['epoch']), color='red', linestyle='dashed')
-    axs[0].set_ylabel('Loss', fontsize=14)
-    axs[0].legend(fontsize=12)
-
-    axs[1].plot(val_train_metrics['epoch'], val_train_metrics['accuracy'], label='train accuracy', color='black', linestyle='dotted')
-    axs[1].plot(val_metrics['epoch'], val_metrics['accuracy'], label='val accuracy')
-    axs[1].hlines(y=1, xmin=0, xmax=np.max(train_metrics['epoch']), color='red', linestyle='dotted')
-    axs[1].set_ylabel('Accuracy', fontsize=14)
-    axs[1].legend(fontsize=12)
-
-    if 'ang_sep' in val_metrics:
-        lonlat = np.array((dataset.hpGrid.lon, dataset.hpGrid.lat))
-        pos1 = lonlat[:, :-1]
-        pos2 = lonlat[:, 1:]
-        ang_seps = geometry.angular_separation(pos1=pos1, pos2=pos2)
-        average_bin_sep = np.mean(ang_seps)
-
-        axs[2].plot(val_train_metrics['epoch'], np.array(val_train_metrics['ang_sep'])/units.deg, label='train', color='black', linestyle='dotted')
-        axs[2].plot(val_metrics['epoch'], np.array(val_metrics['ang_sep'])/units.deg, label='val')
-        axs[2].set_ylabel('Angular separation \n (deg)', fontsize=14)
-        axs[2].set_xlabel('Epoch')
-        axs[2].hlines(y=average_bin_sep/units.deg, xmin=0, xmax=np.max(val_train_metrics['epoch']), label='average bin sep', color='red', linestyle='dashed')
-        axs[2].legend(fontsize=12)
-
-    for ax in axs:
-        ax.grid(True, alpha=.5)
-
-    fig.tight_layout()
-    fig.savefig(results_outdir / 'figures' / 'loss_and_metrics_history.png')    
-
-    if 'filter_accuracy' in val_metrics:
-        fig, ax = plt.subplots(1)
-        ax.plot(val_train_metrics['epoch'], val_train_metrics['filter_accuracy'])
-        ax.plot(val_metrics['epoch'], val_metrics['filter_accuracy'])
-        ax.set_ylabel('Filter Accuracy', fontsize=14)
-        ax.set_xlabel('Epoch')
-        ax.hlines(y=1., xmin=0, xmax=np.max(val_train_metrics['epoch']), color='red', linestyle='dashed')
-        fig.tight_layout()
-        fig.savefig(results_outdir / 'figures' / 'filter_accuracy.png')
-
-    i = 0
-    fig, ax = plt.subplots()
-    for key in val_metrics.keys():
-        if key != 'accuracy' and key != 'epoch' and 'loss' not in key and key != 'ang_sep':
-            ax.plot(val_metrics['epoch'], val_metrics[key], label='val ' + key, color=f"C{i}")
-            ax.plot(val_metrics['epoch'], val_train_metrics[key], color=f"C{i}", linestyle='dotted')
-            i += 1
-    ax.grid(True, alpha=.5)
-    ax.legend()
-    ax.set_xlabel('Epoch', fontsize=14)
-    fig.tight_layout()
-    fig.savefig(results_outdir / 'figures' / 'val_metrics.png')
-
-    if 'unique_bins' in val_metrics:
-        # Count bins with < 10 examples
-        bin_ids, _ = np.unique(dataset.actions.detach().numpy(), return_counts=True)
-        total_bin_diversity = len(bin_ids)/dataset.num_actions
-        fig, ax = plt.subplots()
-        ax.plot(val_train_metrics['epoch'], val_train_metrics['unique_bins'], label='train', color='grey', alpha=.5, linestyle='dotted')
-        ax.plot(val_metrics['epoch'], val_metrics['unique_bins'], label='val')
-        ax.set_ylabel('Unique bins \n (normalized by total number of bins)', fontsize=14)
-        ax.set_xlabel('Epoch')
-        ax.hlines(y=total_bin_diversity, xmin=0, xmax=np.max(val_train_metrics['epoch']), label='dataset-wide unique bin visit', color='black', linestyle='dotted')
-        ax.legend(fontsize=12)
-        fig.tight_layout()
-        fig.savefig(results_outdir / 'figures' / 'unique_bins_history.png')
-    
-    fig, ax = plt.subplots()
-    ax.grid(True, alpha=.5)
-    ax.plot(train_metrics['epoch'], train_metrics['lr'])
-    ax.set_xlabel('Epoch', fontsize=14)
-    ax.set_ylabel('LR', fontsize=14)
-    fig.tight_layout()
-    fig.savefig(results_outdir / 'figures' / 'lr_steps.png')
     
 def get_args():
     parser = argparse.ArgumentParser()
@@ -206,10 +118,10 @@ def main():
     logging.getLogger("cartopy").setLevel(logging.WARNING)
     
     # Make sure action space and grid networks align
-    if 'filter' in cfg['data']['bin_space']:
-        assert cfg['model']['grid_network'] == "multi_dim_scorer", "Only multi_dim_scorer can handle filter in action space right now"
-    if len(cfg['data']['bin_features']) > 0:
-        assert np.isin(cfg['model']['grid_network'], ["single_bin_scorer", "multi_dim_scorer"]), "Must use a grid_network if using bin features. Options: single_bin_scorer, multi_dim_scorer"
+    # if 'filter' in cfg['data']['bin_space']:
+    #     assert cfg['model']['grid_network'] == "multi_dim_scorer", "Only multi_dim_scorer can handle filter in action space right now"
+    # if len(cfg['data']['bin_features']) > 0:
+    #     assert np.isin(cfg['model']['grid_network'], ["single_bin_scorer", "multi_dim_scorer", "multi_head_scorer"]), "Must use a grid_network if using bin features. Options: single_bin_scorer, multi_dim_scorer"
 
     # Get training configs used more than once
     batch_size = cfg['train']['batch_size']
@@ -241,23 +153,9 @@ def main():
     logger.info("Finished constructing train_dataset.")
     logger.info(f"Train dataset has {train_dataset.n_nights} nights and {train_dataset.num_transitions} transitions")
 
-    # Plot bin membership for fields in ra vs dec
-    colors = [f'C{i}' for i in range(7)]
-    for i, (bin_id, g) in enumerate(train_dataset._df.groupby('bin')):
-        plt.scatter(g.ra, g.dec, label=bin_id, color=colors[i%len(colors)], s=1)
-    plt.title("Fields in train data, colored by bin membership")
-    plt.xlabel('ra')
-    plt.ylabel('dec')
-    plt.savefig(fig_outdir / 'train_data_fields_dec_vs_ra.png')
+    plot_bin_membership(train_dataset, fig_outdir)
+    plot_global_feature_distributions(train_dataset, fig_outdir)
 
-    fig, axs = plt.subplots(len(train_dataset.global_feature_names), figsize=(4, len(train_dataset.global_feature_names)*3))
-    next_states = train_dataset.states[1:].T
-    for i, feat_name in enumerate(train_dataset.global_feature_names):
-        axs[i].hist(next_states[i])
-        axs[i].set_title(f"Train distribution ({feat_name})")
-    fig.tight_layout()
-    fig.savefig(fig_outdir / 'train_data_global_feature_distributions.png')
-        
     if cfg['train']['use_train_as_val']:
         trainloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, \
                                                    random_seed=cfg['metadata']['seed'], return_train_and_val=False)
@@ -291,7 +189,6 @@ def main():
                                 activation=cfg['model']['activation'], 
                                 grid_network=cfg['model']['grid_network'],
                                 use_contextual_gating=cfg['model']['contextual_gating'],
-                                use_cql=cfg['model'].get('use_cql', None),
                                 cql_alpha=cfg['model'].get('cql_alpha', None),
                                 nside=cfg['data']['nside'],
                                 bin_space=cfg['data']['bin_space']
@@ -370,32 +267,33 @@ def main():
     train_actions = dataset.actions[train_indices]
 
     # If you need bin_states:
-    if dataset._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
+    if dataset._grid_network in GRID_NETWORKS:
         val_bin_states = dataset.bin_states[val_compact_idxs]
         train_bin_states = dataset.bin_states[train_compact_idxs]
 
     # val_states, val_actions, _, _, _, _, val_bin_states, _ = dataset[valloader.dataset.indices]
-    # train_states, train_actions, _, _, _, _, train_bin_states, _ = dataset[trainloader.dataset.indices]
+    # train_states, train_actions, _, _, _, _, train_bin_states, _ = dataset[trainloader.dataset.indices
 
     do_bin_states = dataset._grid_network is not None
-    for prefix, (states, bin_states, actions) in zip(['val_', 'train_'], [ (val_states, val_bin_states, val_actions), (train_states, train_bin_states, train_actions) ]):
-        eval_actions_list = []
-        # Process in smaller chunks to save VRAM
-        plot_batch_size = 128 
-        for i in range(0, len(states), plot_batch_size):
-            with torch.no_grad():
-                # Only send a slice to the device
-                s_chunk = states[i:i + plot_batch_size].to(device)
-                if do_bin_states:
-                    b_chunk = bin_states[i:i + plot_batch_size].to(device)
-                else:
-                    b_chunk = None
-                
-                with torch.amp.autocast('cuda', dtype=torch.float32):
-                    q_vals = agent.algorithm.policy_net(x_glob=s_chunk, x_bin=b_chunk, y_data=None)
-                
-                chunk_actions = torch.argmax(q_vals, dim=1).cpu()
-                eval_actions_list.append(chunk_actions)
+    if do_bin_states:
+        for prefix, (states, bin_states, actions) in zip(['val_', 'train_'], [ (val_states, val_bin_states, val_actions), (train_states, train_bin_states, train_actions) ]):
+            eval_actions_list = []
+            # Process in smaller chunks to save VRAM
+            plot_batch_size = 128 
+            for i in range(0, len(states), plot_batch_size):
+                with torch.no_grad():
+                    # Only send a slice to the device
+                    s_chunk = states[i:i + plot_batch_size].to(device)
+                    if do_bin_states:
+                        b_chunk = bin_states[i:i + plot_batch_size].to(device)
+                    else:
+                        b_chunk = None
+                    
+                    with torch.amp.autocast('cuda', dtype=torch.float32):
+                        q_vals = agent.algorithm.policy_net(x_glob=s_chunk, x_bin=b_chunk, y_data=None)
+                    
+                    chunk_actions = torch.argmax(q_vals, dim=1).cpu()
+                    eval_actions_list.append(chunk_actions)
         
         # Combine back into a single numpy array for your plotting function
         eval_actions = torch.cat(eval_actions_list).numpy()
@@ -415,7 +313,7 @@ def main():
         axs[1].plot(eval_sequence - target_sequence, marker='o', alpha=.5)
         axs[1].set_ylabel('Eval sequence - target sequence \n[bin number]')
         axs[1].set_xlabel('observation index')
-        fig.savefig(fig_outdir / (prefix + 'eval_and_target_bin_sequences.png'))
+        fig.savefig(fig_outdir / (prefix + 'val_bin_sequences.png'))
 
         logger.info(f'Results saved in {results_outdir}')
 
