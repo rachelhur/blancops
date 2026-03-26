@@ -25,7 +25,6 @@ FILTER INFO
 # Filter wavelengths (nm) according to obztak https://github.com/kadrlica/obztak/blob/c28fab23b09bcff1cf46746eae4ec7e40aeb7f7a/obztak/seeing.py#L22
 FILTER2WAVE = {
     # 'u': 380, # not present in train data,
-    ZENITH_FILTER: ZENITH_WAVELENGTH,
     'g': 480,
     'r': 640,
     'i': 780,
@@ -33,11 +32,10 @@ FILTER2WAVE = {
     'Y': 990
 }
 
-NUM_FILTERS = len(FILTER2WAVE) - 1 if ZENITH_FILTER in FILTER2WAVE else len(FILTER2WAVE)
+NUM_FILTERS = len(FILTER2WAVE)
 FILTERWAVENORM = 1000.
 FILTER2IDX = {k: i for i, k in enumerate(FILTER2WAVE.keys())}
 IDX2WAVE = {i: FILTER2WAVE[k] for i, k in enumerate(FILTER2WAVE.keys())}
-IDX2WAVE.update({ZENITH_FILTER_IDX: ZENITH_WAVELENGTH})
 
 """
 
@@ -57,3 +55,11 @@ NORMALIZATION CONSTANTS
 
 SKYBRIGHT_MAX = 23
 SKYBRIGHT_MIN = 17
+
+"""
+
+IMPLEMENTED GRID NETWORK NAMES
+
+"""
+
+GRID_NETWORKS = ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer']

@@ -14,7 +14,7 @@ from blancops.algorithms.bc import BehaviorCloning
 def setup_algorithm(algorithm_name=None, num_actions=None, loss_fxn=None, hidden_dim=None, lr=None, lr_scheduler=None, device=None, 
                     lr_scheduler_kwargs=None, gamma=None, tau=None, lr_scheduler_epoch_start=None, lr_scheduler_num_epochs=None, activation=None, 
                     grid_network=None, n_global_features=None, n_bin_features=0, num_filters=None, embedding_dim=None, use_contextual_gating=False,
-                    use_cql=True, cql_alpha=1., nside=None, bin_space=None):
+                    cql_alpha=1., nside=None, bin_space=None):
     assert loss_fxn is not None
 
     # Initialize activation functions
@@ -69,7 +69,8 @@ def setup_algorithm(algorithm_name=None, num_actions=None, loss_fxn=None, hidden
             loss_fxn = loss_fxn
         else:
             raise NotImplementedError(f'Loss function {loss_fxn} not yet implemented for {algorithm_name}')
-
+        
+        use_cql = algorithm_name == 'CQL'
         if use_cql:
             dist_matrix = calculate_distance_matrix(nside=nside, is_azel='azel' in bin_space)
             Q_max = 1 / (1 - gamma)

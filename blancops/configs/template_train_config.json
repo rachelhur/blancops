@@ -22,7 +22,6 @@
     "data": {
         "bin_method": "healpix",
         "nside": 16,
-        "num_bins_1d": null,
         "bin_space": "azel_filter",
         "specific_years": [
             2015,
@@ -42,7 +41,6 @@
             "moon_distance",
             "angular_distance_to_pointing"
         ],
-        "pointing_features": [],
         "do_ang_distance_norm": true,
         "global_features": [
             "ra",

@@ -272,7 +272,12 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
         "num_incomplete_fields",
         "min_tiling",
     ]
-    do_history_based_features = any(hist_feat in base_feat for base_feat in base_bin_feature_names for hist_feat in history_based_features)
+
+    do_history_based_features = any(
+        hist_feat in base_feat
+        for base_feat in base_bin_feature_names 
+        for hist_feat in history_based_features
+        )
 
     # Instantaenous features
     do_angular_distance_to_pointing = "angular_distance_to_pointing" in base_bin_feature_names
@@ -291,8 +296,10 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
     # Pre-allocate
     if do_ha:
         calculated_features['ha'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+        logger.debug(f"Calculating ha for {n_timestamps} timestamps and {n_bins} bins")
     if do_airmass:
         calculated_features['airmass'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+        logger.debug(f"Calculating airmass for {n_timestamps} timestamps and {n_bins} bins")
     if do_moon_dist:
         calculated_features['moon_distance'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
         logger.debug(f"Calculating moon distance for {n_timestamps} timestamps and {n_bins} bins")
@@ -312,7 +319,6 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
         else:
             target_lons = pt_df['ra'].values
             target_lats = pt_df['dec'].values
-
     normed_features = {}
     if do_cyclical_norm:
         for feat_name in calculated_features.keys():
@@ -366,16 +372,16 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
         calculated_night_history_features = calculate_history_dependent_bin_features(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, 
                                                                                      night2visithistory=night2fieldvisits, night2filtervisithistory=night2filtervisithistory,
                                                                                      field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space,
-                                                                                     requested_features=base_bin_feature_names)
+                                                                                     requested_features=bin_feature_names)
         calculated_features = calculated_features | calculated_night_history_features
     
-    bin_states = np.array([calculated_features.get(key, None) for key in bin_feature_names if key in calculated_features.keys()])
+    bin_states = np.array([calculated_features.get(key, np.full(shape=(n_timestamps, n_bins), fill_value=None)) for key in bin_feature_names])
     bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
     assert (bin_states != None).all()
 
     # Make sure there are no missing columns
     missing_cols = len(bin_feature_names) - bin_states.shape[-1]
-    assert missing_cols == 0, f'Features {missing_cols} do not exist in dataframe. These are not yet implemented in method self._get_bin_features()'
+    assert missing_cols == 0, f'Requested feature not found. Check spelling or implement in source code.'
     
     return bin_states
 
@@ -414,7 +420,7 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
     ra_arr = np.array([field2radec[fid][0] for fid in field_ids])
     dec_arr = np.array([field2radec[fid][1] for fid in field_ids])
     max_s_vis_all = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
-    if do_filt: 
+    if do_filt:
         max_s_f_vis_all = np.array([fieldfilter2maxvisits[fid] for fid in field_ids], dtype=np.int32)
 
     pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX) #.fillna(-1)
@@ -544,7 +550,12 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
             np.divide(v_n_vis, v_max_n, out=n_til, where=in_n_plan)
             s_mins, n_mins = np.full(n_bins, 2.0, dtype=np.float32), np.full(n_bins, 2.0, dtype=np.float32)
             np.minimum.at(s_mins, v_bins, s_til); np.minimum.at(n_mins, v_bins, n_til)
-            s_mins[~act_s | (s_mins > 1.0)] = sentinel_val; n_mins[~act_n | (n_mins > 1.0)] = sentinel_val
+            s_mins = np.clip(s_mins, 0.0, 1.0)
+            s_mins[~act_s] = sentinel_val
+            s_mins[~act_s | (s_mins > 1.0)] = sentinel_val
+            n_mins = np.clip(n_mins, 0.0, 1.0)
+            n_mins[~act_n] = sentinel_val
+            n_mins[~act_n | (n_mins > 1.0)] = sentinel_val
             
             if 'survey_min_tiling' in calculated_features: calculated_features['survey_min_tiling'][global_idx] = s_mins
             if 'night_min_tiling' in calculated_features: calculated_features['night_min_tiling'][global_idx] = n_mins

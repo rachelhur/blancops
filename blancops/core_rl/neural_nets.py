@@ -5,6 +5,8 @@ from torch.nn import functional as F
 import logging
 logger = logging.getLogger(__name__)
 
+def setup_network():
+    pass
 
 class MLP(nn.Module):
     """Deep Q-Network mapping observations to action-values.
@@ -78,13 +80,40 @@ class MultiScoreMLP(nn.Module):
         joint_action_scores = scores.view(batch_size, -1) # flattens last dim (filter) first --> [bin0filter0, bin0filter1, ... bin1filter0, bin1filter1, ... binNfilterM]
         return joint_action_scores 
     
-class MultiHeadNetwork(nn.Module):
-    def __init__(self, global_dim, global_enc_dim, output_dim, num_heads, hidden_dim=128, activation=None):
-        super(MultiHeadNetwork, self).__init__()
-        self.activation = nn.ReuLu if activation is None else activation
-        self.global_enc = MLP(global_dim, global_enc_dim)
-        self.spatial_enc = MLP()
+class MultiHeadMultiScoreNet(nn.Module):
+    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None, use_contextual_gating=False):
+        super().__init__()
+        self.activation = nn.ReLU if activation is None else activation
+        self.glob_enc = nn.Sequential(
+            nn.Linear(global_dim, hidden_dim),
+            self.activation()
+        )
+        self.bin_enc = nn.Sequential(
+            nn.Linear(bin_feat_dim, hidden_dim),
+            self.activation()
+        )
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            self.activation(),
+            nn.Linear(hidden_dim, score_dim) 
+        )
 
+    def forward(self, x_glob, x_bin, y_data=None):
+        batch_size, n_bins, _ = x_bin.shape
+        
+        # 1. Process independently
+        g_emb = self.glob_enc(x_glob) 
+        g_emb = g_emb.unsqueeze(1).expand(-1, n_bins, -1) # Shape: (Batch, Bins, Hidden)
+        
+        b_emb = self.bin_enc(x_bin) # Shape: (Batch, Bins, Hidden)
+        
+        # 2. Fuse deep in the network
+        fused = torch.cat([g_emb, b_emb], dim=-1) # Shape: (Batch, Bins, Hidden * 2)
+        
+        # 3. Output scores
+        scores = self.net(fused) 
+        return scores.view(batch_size, -1)
+    
 class BinEmbeddingDQN(nn.Module):
     """Deep Q-Network mapping observations to action-values.
     """
@@ -131,37 +160,3 @@ class SpatialEncoder(nn.Module):
     def forward(self, x):
         # x shape: (Batch, Features, Lat, Lon)
         return self.cnn(x)
-
-
-# def linear_schedule(eps_start: float, eps_end: float, duration: int, t: int):
-#     """
-#     Decreases epsilon linearly as a function of time step.
-
-#     Args
-#     ----
-#     eps_start: float
-#         starting epsilon value
-#     eps_end: float
-#         final epsilon value
-#     duration: int
-#         Number of time steps it takes to move from eps_start to eps_end
-#     t: ind
-#         Current time step
-    
-#     Returns
-#     ------
-#     epsilon: float
-#         Current epsilon value
-        
-#     """
-#     try:
-#         slope = (eps_end - eps_start) / duration
-#         return max(slope * t + eps_start, eps_end)
-#     except:
-#         raise Exception("Error in linear_schedule")
-
-# def exponential_schedule(eps_start: float, eps_end: float, decay_rate: float, t: int):
-#     try:
-#         return eps_end + (eps_start - eps_end) * np.exp(-1. * t / decay_rate)
-#     except:
-#         raise Exception("Error in exponential_schedule")

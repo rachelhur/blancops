@@ -104,22 +104,15 @@ class Agent:
         # Check that valloader is not empty
         if valloader is not None and len(valloader) == 0:
             raise ValueError("Validation dataloader is empty! Check dataset split logic.")
-        train_metrics = {
-            'train_loss': [],
-            'train_qvals': [],
-            'lr': [],
-            'epoch': []
-        }
 
         val_metrics = {metric: [] for metric in self.algorithm.val_metrics}
         val_metrics.update({'epoch': []})
-        val_train_metrics = {metric: [] for metric in self.algorithm.val_metrics}
-        val_train_metrics.update({'epoch': []})
+        train_metrics = {metric: [] for metric in self.algorithm.val_metrics}
+        train_metrics.update({'epoch': [], 'lr': []})
 
         save_filepath = self.train_outdir + 'best_weights.pt'
         train_metrics_filepath = self.train_outdir + 'train_metrics.pkl'
         val_metrics_filepath = self.train_outdir + 'val_metrics.pkl'
-        val_train_metrics_filepath = self.train_outdir + 'val_train_metrics.pkl'
         self.algorithm.policy_net.train()
 
         if trainloader is not None:
@@ -134,7 +127,11 @@ class Agent:
             loader_iter = None  # not used for manual sampling
             raise DeprecationWarning("Passing `dataset` and `batch_size` directly to `fit` is deprecated. Please use a DataLoader instead.")
 
+        use_best_val_loss = self.algorithm.name == 'BC'
+        use_best_ang_sep = self.algorithm.name in ["DDQN", "DQN", "CQL"]
+        assert use_best_val_loss or use_best_ang_sep, "Algorithm name is not valid. Check config file."
         best_val_loss = 1e5
+        best_ang_sep = 1e5
         best_epoch = 0
         patience_cur = patience
         use_patience = patience != 0
@@ -162,60 +159,58 @@ class Agent:
                     i_epoch += 1
                     
                 pbar.update(1)
-
                 pbar.set_description(f"Epoch {i_epoch}/{int(num_epochs)} (step {i_step}/{total_steps})")
+
+                # Train step
                 with torch.amp.autocast('cuda'):
-                    loss, q_val = self.algorithm.train_step(batch, epoch_num=i_epoch, step_num=i_step)
-                if i_step % train_log_freq == 0:
-                    train_metrics['train_loss'].append(loss)
-                    train_metrics['train_qvals'].append(q_val)  
+                    log_metrics = i_step % steps_per_epoch == 0
+                    train_metrics_dict = self.algorithm.train_step(batch, epoch_num=i_epoch, hpGrid=hpGrid, compute_metrics=log_metrics)                
+                if log_metrics:
+                    for k, v in train_metrics_dict.items():
+                        if k not in train_metrics:
+                            train_metrics[k] = []
+                        train_metrics[k].append(v)
+                        
                     train_metrics['lr'].append(self.algorithm.optimizer.param_groups[0]["lr"])
                     train_metrics['epoch'].append(i_epoch)
 
-                # At end of each epoch, do validation check
+                # Validation step
                 with torch.no_grad():
                     if i_step % steps_per_epoch == 0:
-                        if trainloader is not None:
-                            # --- evaluation from dataloader ---
-                            val_metric_sums = [0.0] * len(val_metrics)
-                            num_val_batches = len(valloader)
+
+                        val_metric_sums = [0.0] * len(self.algorithm.val_metrics)
+                        num_val_batches = len(valloader)
+
+                        with torch.amp.autocast('cuda'):
                             for eval_batch in valloader:
                                 batch_metrics = self.algorithm.val_step(eval_batch, hpGrid)
                                 for idx, val in enumerate(batch_metrics):
                                     val_metric_sums[idx] += val
-                                
-                            # Average the metrics across all validation batches
-                            val_metric_vals = [total / num_val_batches for total in val_metric_sums]
-                            # Also calculate train metrics on a single batch (or average if preferred)
-                            val_train_metric_vals = self.algorithm.val_step(batch, hpGrid)
-                        else:
-                            # --- old method fallback ---
-                            eval_obs, expert_actions, _, _, _, action_masks = dataset.sample(batch_size)
-                        
-                        for metric_name, metric_val in zip(val_metrics.keys(), val_metric_vals):
-                            if metric_name != 'epoch':
-                                val_metrics[metric_name].append(metric_val)
-                        val_metrics['epoch'].append(i_epoch)
-                        for metric_name, metric_val in zip(val_train_metrics.keys(), val_train_metric_vals):
-                            if metric_name != 'epoch':
-                                val_train_metrics[metric_name].append(metric_val)
-                        val_train_metrics['epoch'].append(i_epoch)
+                            
+                        # Average the metrics across all validation batches
+                        val_metric_vals = [total / num_val_batches for total in val_metric_sums]
 
+                        # Append to tracking dicts
+                        for metric_name, metric_val in zip(self.algorithm.val_metrics, val_metric_vals):
+                            val_metrics[metric_name].append(metric_val)
+                        val_metrics['epoch'].append(i_epoch)
+
+                        # Log comparison (Val Set vs. The single Train Batch we just ran)
+                        val_log_str = " ".join(f"{k} = {v:.3f} |" for k, v in zip(self.algorithm.val_metrics, val_metric_vals))
+                        train_log_str = " ".join(f"{k} = {v:.3f} |" for k, v in train_metrics_dict.items())
+                    
                         logger.info(
-                            f"Best val loss so far {best_val_loss:.3f} at epoch {best_epoch} \n" + \
-                            f"Validation check at train step {i_step} \n " + \
-                                " ".join(
-                                    f"{k} = {v:.3f} | " for k, v in zip(val_metrics.keys(), val_metric_vals)
-                                ) + "\n" + \
-                                " (train batch)" + \
-                                " ".join(
-                                    f"{k} = {v:.3f} | " for k, v in zip(val_train_metrics.keys(), val_train_metric_vals)
-                                )
+                        # f"Best val loss so far {best_val_loss:.3f} at epoch {best_epoch} \n"
+                        f"Validation check at train step {i_step} \n"
+                        f" (val set)      {val_log_str} \n"
+                        f" (train batch)  {train_log_str}"
                         )
 
+                        # val_loss_cur = val_metrics[self.algorithm.val_metrics[0]][-1]
                         val_loss_cur = val_metrics['val_loss'][-1]
+                        ang_sep_cur = val_metrics['ang_sep'][-1]
 
-                        if val_loss_cur < best_val_loss and best_val_loss != val_loss_cur and i_step % steps_per_epoch ==0:
+                        if val_loss_cur < best_val_loss and use_best_val_loss:
                             best_val_loss = val_loss_cur
                             best_epoch = i_epoch
                             patience_cur = patience
@@ -225,22 +220,30 @@ class Agent:
                                 pickle.dump(train_metrics, handle)
                             with open(val_metrics_filepath, 'wb') as handle:
                                 pickle.dump(val_metrics, handle)
-                            with open(val_train_metrics_filepath, 'wb') as handle:
-                                pickle.dump(val_train_metrics, handle)
+                        elif ang_sep_cur < best_ang_sep and use_best_ang_sep:
+                            best_ang_sep = ang_sep_cur
+                            best_epoch = i_epoch
+                            patience_cur = patience
+                            logger.info(f'Improved model at step {i_step}. New best angular separation is {best_ang_sep:.3f} Saving weights.')
+                            self.save(save_filepath)
+                            with open(train_metrics_filepath, 'wb') as handle:
+                                pickle.dump(train_metrics, handle)
+                            with open(val_metrics_filepath, 'wb') as handle:
+                                pickle.dump(val_metrics, handle)
                         elif use_patience:
                             patience_cur -= 1
                             logger.debug(f"Patience left: {patience_cur}")
                             if patience_cur == 0:
                                 logger.info("No patience left. Ending training.")
                                 break
-        
-        logger.info(f"Best val loss was {best_val_loss:.3f} at epoch {best_epoch}")
+        if use_best_val_loss:
+            logger.info(f"Best val loss was {best_val_loss:.3f} at epoch {best_epoch}")
+        elif use_best_ang_sep:
+            logger.info(f"Best angular separation was {best_ang_sep:.3f} at epoch {best_epoch}")
         with open(train_metrics_filepath, 'wb') as handle:
             pickle.dump(train_metrics, handle)
         with open(val_metrics_filepath, 'wb') as handle:
             pickle.dump(val_metrics, handle)
-        with open(val_train_metrics_filepath, 'wb') as handle:
-            pickle.dump(val_train_metrics, handle)
     
     def evaluate(self, env, cfg, num_episodes, field_choice_method='interp', eval_outdir=None, field2nvisits=None, field2radec=None):
         """Evaluates the agent in an environment for multiple episodes.

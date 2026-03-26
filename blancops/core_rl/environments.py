@@ -610,7 +610,7 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         
         if self._grid_network is None:
             self.state_feature_names = self.global_feature_names + self.bin_feature_names
-        elif self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
+        elif self._grid_network in GRID_NETWORKS:
             self.state_feature_names = self.global_feature_names
         
         self.global_pd_nightgroup = global_pd_nightgroup
@@ -841,7 +841,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                                 )
         if self._grid_network is None:
             self.state_feature_names = self.global_feature_names + self.bin_feature_names
-        elif self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
+        elif self._grid_network in GRID_NETWORKS:
             self.state_feature_names = self.global_feature_names
         
         self.state_dim = cfg['data']['state_dim']
@@ -854,6 +854,8 @@ class OnlineBlancoEnv(BaseBlancoEnv):
 
         self._global_state = np.zeros(self.state_dim, dtype=np.float32)
         self._bin_state = np.zeros(self.bin_state_dim, dtype=np.float32)
+        self._setup_action_and_obs_spaces()
+
         super().__init__()
 
     def step(self, actions: dict):
@@ -944,7 +946,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                 self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
                 # np.add.at(self._max_n_filter_visits_arr, (0, 0), 1)
 
-            if self._grid_network in ['single_bin_scorer', 'multi_dim_scorer']:
+            if self._grid_network in GRID_NETWORKS:
                 A, B = self.nbins, self.bin_state_dim
                 self._bin_state = np.array(self._bin_state).reshape((A, B))
         else:

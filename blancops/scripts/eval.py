@@ -215,12 +215,10 @@ def main():
 
     # Parse args
     args = parser.parse_args()
-    args_dict = vars(args)
 
     # Get configs
     global_cfg = load_global_config()
     cfg = load_model_config(Path(args.trained_model_dir) / "config.json")
-    workspace = get_workspace_dir()
     
     # Define eval outdir
     evaluation_name = args.evaluation_name
@@ -306,7 +304,6 @@ def main():
                                 tau=cfg['model']['tau'],
                                 activation=cfg['model']['activation'],
                                 use_contextual_gating=cfg['model'].get('contextual_gating', None),
-                                use_cql=cfg['model'].get('use_cql', None),
                                 cql_alpha=cfg['model'].get('cql_alpha', None),
                                 nside=cfg['data']['nside'],
                                 bin_space=cfg['data']['bin_space']
@@ -316,7 +313,7 @@ def main():
         algorithm=algorithm,
         train_outdir=args.trained_model_dir,
     )
-    agent.load(args.trained_model_dir + 'best_weights.pt')
+    agent.load(Path(args.trained_model_dir) / 'best_weights.pt')
 
     # Initialize environment
     logger.info("Setting up environment...")
@@ -333,7 +330,8 @@ def main():
         zenith_bin_states = test_dataset._prenorm_bin_states[zenith_idxs].detach().numpy()
     else:
         zenith_bin_states = None
-    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, zenith_bin_states=zenith_bin_states)
+    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, \
+                   zenith_bin_states=zenith_bin_states)
     
     # Plot predicted action for each state
     cur_idxs = test_dataset.current_state_idxs
