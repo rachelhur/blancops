@@ -122,6 +122,13 @@ def normalize_noncyclic_features(state,
             state[np.isnan(state)] = 1.2
     return state
     
+def get_sun_and_moon_positions(time):
+    sun_radec = ephemerides.get_source_ra_dec('sun', time=time)
+    sun_azel = ephemerides.equatorial_to_topographic(ra=sun_radec[0], dec=sun_radec[1], time=time)
+    moon_radec = ephemerides.get_source_ra_dec('moon', time=time)
+    moon_azel = ephemerides.equatorial_to_topographic(ra=moon_radec[0], dec=moon_radec[1], time=time)
+    return sun_radec, sun_azel, moon_radec, moon_azel
+
 def get_zenith_features(original_df):
     """
     Constructs dataframe with zenith features for each night in the original_df.
@@ -444,6 +451,8 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
     dec_arr = np.array([field2radec[fid][1] for fid in field_ids])
     if do_filt:
         max_s_f_vis_all = np.array([fieldfilter2maxvisits[fid] for fid in field_ids], dtype=np.int32)
+    else:
+        max_s_vis_all = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
 
     pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX)
 
