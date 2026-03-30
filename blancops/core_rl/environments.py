@@ -328,7 +328,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             ra = ra_arr[field_id]
             dec = dec_arr[field_id]
             new_features['ra'], new_features['dec'] = ra, dec
-            new_features['filter_wave'] = 0 if self._bin_num == WAIT_SIGNAL else IDX2WAVE[filter_idx] / FILTERWAVENORM
+            new_features['filter_wave'] = 0 if (self._bin_num == WAIT_SIGNAL) or (not self.do_filt) else IDX2WAVE[filter_idx] / FILTERWAVENORM
         # --- OnlineEnv Logic --- #
         
         # new_features['ra'], new_features['dec'] = self.field2radec[field_id]
