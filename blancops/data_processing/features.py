@@ -373,20 +373,21 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
 
     # Calculate night-based features if needed
     if do_history_based_features:
+        logger.info("Calculating history-based features. This may take a while...")
         calculated_night_history_features = calculate_history_dependent_bin_features(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, 
                                                                                      night2visithistory=night2fieldvisits, night2filtervisithistory=night2filtervisithistory,
                                                                                      field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space,
                                                                                      requested_features=bin_feature_names)
         calculated_features = calculated_features | calculated_night_history_features
     
-    bin_states = np.array([calculated_features.get(key, np.full(shape=(n_timestamps, n_bins), fill_value=None)) for key in bin_feature_names])
+    bin_states = np.array([calculated_features.get(key, np.full(shape=(n_timestamps, n_bins), fill_value=np.nan)) for key in bin_feature_names])
     bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
-    assert (bin_states != None).all()
+    assert (bin_states != np.nan).all()
 
     # Make sure there are no missing columns
-    missing_cols = len(bin_feature_names) - bin_states.shape[-1]
-    assert missing_cols == 0, f'Requested feature not found. Check spelling or implement in source code.'
-    
+    missing_keys = set(bin_feature_names) - set(calculated_features.keys())
+    assert not missing_keys, f"Missing features: {missing_keys}"
+
     return bin_states
 
 def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2visithistory, 
