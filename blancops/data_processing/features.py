@@ -352,8 +352,9 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
                 # ONLY calculate ra/dec if they were actually requested
                 if do_ra or do_dec: 
                     ra_i, dec_i = ephemerides.topographic_to_equatorial(az=lon, el=lat, time=time)
-                    calculated_features['ra_cos'], calculated_features['ra_sin'] = np.cos(ra_i), np.sin(ra_i)
                     calculated_features['ra'][i], calculated_features['dec'][i] = ra_i, dec_i
+                    # if do_cyclical_norm:
+                    #     calculated_features['ra_cos'][i], calculated_features['ra_sin'][i] = np.cos(ra_i), np.sin(ra_i)
             else:
                 if 'ra' in calculated_features: calculated_features['ra'][i] = lon
                 if 'dec' in calculated_features: calculated_features['dec'][i] = lat
