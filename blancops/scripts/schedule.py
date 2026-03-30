@@ -62,6 +62,7 @@ def main():
     assert os.path.exists(cfg_dir), f"Directory {cfg_dir} does not exist"
     cfg = load_model_config(cfg_dir / "config.json")
     nside = cfg['data']['nside']
+    bin_space = cfg['data']['bin_space']
     
     # Define eval outdir
     schedule_name = f"{args.schedule_name}_v0"

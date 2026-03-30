@@ -3,6 +3,7 @@ import gymnasium as gym
 from collections import defaultdict
 import torch
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 import time
 from typing import Tuple
@@ -340,14 +341,15 @@ class Agent:
                         # Log zenith state if is new night
                         if info.get('night_idx') != night_idx:
                             night_idx = info.get('night_idx')
-                            episode_data[f'night-{night_idx}'] = {
+                            current_night_key = f'night-{night_idx}'
+                            episode_data[current_night_key] = {
                                 'glob_observations': [state['global_state']],
                                 'bin_observations': [state['bin_state']],
                                 'rewards': [reward],
                                 'timestamp': [info.get('timestamp')],
                                 'field_id': [field_id],
                                 'bin': [bin_idx],
-                                'filter': [filter_idx]
+                                'filter_idx': [filter_idx]
                             }
 
                         # pbar update
@@ -377,6 +379,9 @@ class Agent:
         with open(Path(eval_outdir) / 'eval_metrics.pkl', 'wb') as handle:
             pickle.dump(eval_metrics, handle)
             logger.info(f'eval_metrics.pkl saved in {eval_outdir}')
+        
+        self.save_survey_schedule(eval_metrics, eval_outdir)
+        return eval_metrics
 
     def choose_action(self, x_glob, x_bin, action_mask, epsilon):
         """Selects an action using the underlying algorithm.
@@ -454,8 +459,8 @@ class Agent:
             q_interpolated = interpolate_on_sphere(target_lons, target_lats, lon_data, lat_data, q_vals)
             best_idx = np.argmax(q_interpolated[action_mask])
             best_field = field_ids_in_bin[best_idx]
-
             return best_field
+
         elif field_choice_method == 'random':
             field_id = random.choice(field_ids_in_bin)
             return field_id
