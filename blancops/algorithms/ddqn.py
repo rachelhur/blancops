@@ -109,7 +109,7 @@ class DDQN(AlgorithmBase):
         dones = dones.to(device=self.device, dtype=state_dtype)
 
         # DDQN
-        with torch.amp.autocast('cuda'):
+        with torch.amp.autocast(device_type='cuda'):
             q_vals_all = self.policy_net(x_glob=state, x_bin=bin_states)
             q_val = q_vals_all.gather(1, actions).squeeze(1) 
             
@@ -236,7 +236,7 @@ class DDQN(AlgorithmBase):
             if invalid_expert_mask.any():
                 print(f"WARNING: {invalid_expert_mask.sum().item()} expert actions in this batch are masked as INVALID!")
             
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast(device_type='cuda'):
                 q_vals_all = self.policy_net(x_glob=state, x_bin=bin_states)
                 q_val = q_vals_all.gather(1, actions).squeeze(1)
 

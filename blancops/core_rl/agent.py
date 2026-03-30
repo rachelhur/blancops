@@ -162,7 +162,7 @@ class Agent:
                 pbar.set_description(f"Epoch {i_epoch}/{int(num_epochs)} (step {i_step}/{total_steps})")
 
                 # Train step
-                with torch.amp.autocast('cuda'):
+                with torch.amp.autocast(device_type='cuda'):
                     log_metrics = i_step % steps_per_epoch == 0
                     train_metrics_dict = self.algorithm.train_step(batch, epoch_num=i_epoch, hpGrid=hpGrid, compute_metrics=log_metrics)                
                 if log_metrics:
@@ -181,7 +181,7 @@ class Agent:
                         val_metric_sums = [0.0] * len(self.algorithm.val_metrics)
                         num_val_batches = len(valloader)
 
-                        with torch.amp.autocast('cuda'):
+                        with torch.amp.autocast(device_type='cuda'):
                             for eval_batch in valloader:
                                 batch_metrics = self.algorithm.val_step(eval_batch, hpGrid)
                                 for idx, val in enumerate(batch_metrics):
