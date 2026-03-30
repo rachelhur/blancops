@@ -7,113 +7,131 @@ from venv import logger
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
+from datetime import timezone
 
 from blancops.data_processing.constants import *
+from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.data_processing.features import get_nautical_twilight
 from blancops.plotting.plotting import plot_schedule_from_file
+from collections import defaultdict
+from blancops.ephemerides.ephemerides import topographic_to_equatorial
+from blancops.math import units
 
-def save_schedule(night_metrics, save_dir, make_gifs=True, nside=None, is_azel=False, whole=False, field2radec_filepath=None):
-    # Save timestamps, field_ids, and bin numbers
-    bin_space = 'azel' if is_azel else 'radec'
-    assert os.path.exists(save_dir)
-
-    timestamps = np.array(night_metrics['timestamp']).astype(np.int32)
-    bins = np.array(night_metrics['bin']).astype(np.int32)
-    fids = np.array(night_metrics['field_id']).astype(np.int32)
-    if len(timestamps) < 1:
-        return
-
-    real_obs_mask = (bins != ZENITH_BIN_NUM) & (bins != WAIT_SIGNAL)
-    
-    schedule_full = {
-        'agent_timestamp': timestamps[real_obs_mask],
-        'agent_field_id': fids[real_obs_mask],
-        'agent_bin_id': bins[real_obs_mask],
-    }
-
-    df = pd.DataFrame(data={k: pd.Series(v) for k, v in schedule_full.items()}).fillna(0).astype(int)
-
-    output_filepath = save_dir / "schedule.csv"
-    df.to_csv(output_filepath, index=False)
-
-    # schedule = pd.read_csv(output_filepath)
-    logger.info("Creating fieldbin movies")
-    # Create binfield movies
-
-    plot_schedule_from_file(
-        outfile=save_dir / "agent_fieldbin_schedule.gif",
-        schedule_file=output_filepath,
-        plot_type='fieldbin',
-        nside=nside,
-        fields_file=field2radec_filepath,
-        whole=False,
-        compare=False,
-        expert=False,
-        is_azel=bin_space=='azel',
-        mollweide=False,
-    )
-
-    if make_gifs:
-        # Create fields movies
-        logger.info("Creating field movies")
-        if not is_azel:
-            plot_schedule_from_file(
-                outfile=save_dir / "expert_field_schedule.gif",
-                schedule_file=output_filepath,
-                plot_type='field',
-                nside=nside,
-                fields_file=field2radec_filepath,
-                whole=False,
-                compare=False,
-                expert=True,
-                is_azel=bin_space=='azel',
-                mollweide=False,
-            )
-
+def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_ortho, bin_space, nside, field2radec_filepath):
+    if do_fieldbin:
         plot_schedule_from_file(
-            outfile=save_dir / "agent_bin_schedule.gif",
-            schedule_file=output_filepath,
+            outfile=save_dir / "agent_fieldbin_schedule.gif",
+            schedule_file=schedule_path,
+            plot_type='fieldbin',
+            nside=nside,
+            fields_file=field2radec_filepath,
+            whole=False,
+            compare=False,
+            expert=False,
+            is_azel='azel' in bin_space,
+            mollweide=False,
+        )
+    if do_bin:
+        plot_schedule_from_file(
+            outfile=save_dir + 'agent_bin_schedule.gif',
+            schedule_file=schedule_path,
             plot_type='bin',
             nside=nside,
             fields_file=field2radec_filepath,
             whole=False,
             compare=False,
             expert=False,
-            is_azel=bin_space=='azel',
+            is_azel='azel' in bin_space,
             mollweide=False,
         ) 
 
         if bin_space == 'radec':
-            # Mollefield
-            logger.info("Creating static plots")
-            plot_schedule_from_file(
-                outfile=save_dir / "mollweide.png",
-                schedule_file=output_filepath,
-                plot_type='bin',
-                nside=nside,
-                fields_file=field2radec_filepath,
-                whole=True,
-                compare=True,
-                expert=True,
-                is_azel=bin_space=='azel',
-                mollweide=True,
-            )  
-            plot_schedule_from_file(
-                outfile=save_dir / "ortho.png",
-                schedule_file=output_filepath,
-                plot_type='bin',
-                nside=nside,
-                fields_file=field2radec_filepath,
-                whole=True,
-                compare=True,
-                expert=True,
-                is_azel=bin_space=='azel',
-                mollweide=False,
-            )  
+            if do_mollefield:
+                # Mollefield
+                logger.info("Creating static plots")
+                plot_schedule_from_file(
+                    outfile=save_dir / "mollweide.png",
+                    schedule_file=schedule_path,
+                    plot_type='bin',
+                    nside=nside,
+                    fields_file=field2radec_filepath,
+                    whole=True,
+                    compare=True,
+                    expert=True,
+                    is_azel='azel' in bin_space,
+                    mollweide=True,
+                )  
+            if do_ortho:
+                plot_schedule_from_file(
+                    outfile=save_dir / "ortho.png",
+                    schedule_file=schedule_path,
+                    plot_type='bin',
+                    nside=nside,
+                    fields_file=field2radec_filepath,
+                    whole=True,
+                    compare=True,
+                    expert=True,
+                    is_azel='azel' in bin_space,
+                    mollweide=False,
+                )  
 
-from datetime import timezone
-def plot_static_diagnostics(eval_metrics, observing_night_strs, schedule_outdir, grid_network, env, field_lookup, nside, lookup_dirpath, num_actions, bin_space, ep_num=0):
-    ep_num = 0
+def save_survey_diagnostics(eval_metrics, save_dir, field_lookup, nside, bin_space, ep_num=0):
+    eval_metrics = eval_metrics[f'ep-{ep_num}']
+    _preflat_metrics = defaultdict(list)
+    hpGrid = HealpixGrid(nside=nside, is_azel='azel' in bin_space)
+
+    # Extract the arrays from each night
+    for night_key, metrics_dict in eval_metrics.items():
+        for metric_name, array_values in metrics_dict.items():
+            _preflat_metrics[metric_name].append(array_values)
+            
+    # Concatenate the collected arrays for each metric
+    survey_metrics = {}
+    for k, list_of_arrays in _preflat_metrics.items():
+        survey_metrics[k] = np.concatenate(list_of_arrays)
+    
+    # Filter out zenith and wait states
+    sel_valid_obs = survey_metrics['bin'] != ZENITH_BIN_NUM
+    sel_valid_obs &= survey_metrics['bin'] != WAIT_SIGNAL
+    for k, v in survey_metrics.items():
+        survey_metrics[k] = v[sel_valid_obs]
+
+    field_ids = survey_metrics['field_id']
+    bin_nums = survey_metrics['bin']
+    timestamps = survey_metrics['timestamp']
+    
+    # --- Plot bin and field radecs --- #
+
+    # Get bin radecs
+    bin2coord = {int(i): (lon, lat) for i, (lon, lat) in enumerate(zip(hpGrid.lon, hpGrid.lat))}
+    if hpGrid.is_azel:
+        bin_azels = np.array([bin2coord[bid] for bid in bin_nums])
+        bin_radecs = np.zeros(shape=bin_azels.shape)
+        for i, ts in enumerate(timestamps):
+            bin_radecs[i] = topographic_to_equatorial(bin_azels[i, 0], bin_azels[i, 1], time=ts)
+    else:
+        bin_radecs = np.array([bin2coord[bid] for bid in bin_nums])
+    bin_radecs /= units.deg
+    print(bin_radecs)
+
+    # Get field radecs
+    field_radecs = np.array([[field_lookup['ra'][str(field_id)], field_lookup['dec'][str(field_id)]] for field_id in field_ids])
+    field_radecs /= units.deg
+
+    # Plot
+    fig, axs = plt.subplots(1, 2, figsize=(10,5), sharex=True, sharey=True)
+    axs[0].scatter(bin_radecs[:, 0], bin_radecs[:, 1], cmap='Blues', c=np.arange(len(bin_radecs)))
+    axs[0].set_xlabel('ra ')
+    axs[0].set_ylabel('dec')
+    axs[0].set_title('Bins')
+    
+    axs[1].scatter(field_radecs[:, 0], field_radecs[:, 1], label='agent', cmap='Purples', c=np.arange(len(field_radecs)), s=10)
+    axs[1].set_xlabel('ra ')
+    axs[1].set_title('Fields')
+
+    fig.savefig(save_dir / "survey_ra_vs_dec.png")
+
+def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir, grid_network, env, nside, lookup_dirpath, num_actions, bin_space, ep_num=0, do_gifs=False):
     eval_metrics = eval_metrics[f'ep-{ep_num}']
     night_info = []
     for obs_n_str in observing_night_strs:
@@ -132,6 +150,7 @@ def plot_static_diagnostics(eval_metrics, observing_night_strs, schedule_outdir,
         night_dir = schedule_outdir / date_str
         if not os.path.exists(night_dir):
             os.makedirs(night_dir)
+
         metrics = eval_metrics[f'night-{night_idx}']
         print(metrics['timestamp'].shape, metrics['glob_observations'].shape)
         if len(metrics['timestamp']) < 2:
@@ -205,39 +224,28 @@ def plot_static_diagnostics(eval_metrics, observing_night_strs, schedule_outdir,
             fig.tight_layout()
             fig.savefig(night_dir / 'bin_features_vs_time.png')
 
-        # Plot static bin and field radec scatter plots
-        bin2coord = {int(i): (lon, lat) for i, (lon, lat) in enumerate(zip(env.unwrapped.hpGrid.lon, env.unwrapped.hpGrid.lat))}
-        eval_bin_radecs = np.array([bin2coord[bin_num] for bin_num in bin_nums[real_obs_mask]])
-        eval_field_radecs = np.array([[field_lookup['ra'][str(field_id)], field_lookup['dec'][str(field_id)]] for field_id in field_ids[real_obs_mask]])
-        
-        # Plot bins
-        if len(eval_bin_radecs) == 0:
-            night_dt += timedelta(days=1)
-
-            continue
-        fig, axs = plt.subplots(1, 2, figsize=(10,5), sharex=True, sharey=True)
-        axs[1].scatter(eval_bin_radecs[:, 0], eval_bin_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(eval_bin_radecs)))
-        for ax in axs:
-            ax.set_xlabel('x (ra or az)')
-            ax.legend()
-        axs[0].set_ylabel('y (dec or el)')
-        fig.suptitle(f'Bins - night {night_idx}')
-        fig.savefig(night_dir / "bins_ra_vs_dec.png")
-        plt.close()
-        
-        # Plot fields
-        fig, axs = plt.subplots(1, 2, figsize=(10,5), sharex=True, sharey=True)
-        axs[1].scatter(eval_field_radecs[:, 0], eval_field_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(eval_field_radecs)), s=10)
-        for ax in axs:
-            ax.set_xlabel('ra')
-            ax.legend() 
-        axs[0].set_ylabel('dec')
-        fig.suptitle(f'Fields - night {night_idx}')
-        fig.savefig(night_dir / "fields_ra_vs_dec.png")
-        plt.close()
-
         logger.info(f'Creating schedule gif for {night_idx}th night')
-        save_schedule(night_metrics=metrics, save_dir=night_dir, nside=nside, make_gifs=True, 
-                    is_azel='azel' in bin_space, field2radec_filepath= lookup_dirpath / 'field2radec.json')
-        
+        save_nightly_schedule(night_metrics=metrics, save_dir=night_dir)
+        if do_gifs:
+            save_gifs(night_dir / "schedule.csv", night_dir, do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, bin_space=bin_space, nside=nside, 
+                      field2radec_filepath=lookup_dirpath / 'field2radec.json')
+            
         night_dt += timedelta(days=1)
+
+def save_nightly_schedule(night_metrics, save_dir):
+    timestamps = night_metrics['timestamp']
+    bins = night_metrics['bin']
+    fids = night_metrics['field_id']
+    if len(timestamps) < 1:
+        return
+
+    real_obs_mask = (bins != ZENITH_BIN_NUM) & (bins != WAIT_SIGNAL)
+    
+    schedule_full = {
+        'agent_timestamp': timestamps[real_obs_mask],
+        'agent_field_id': fids[real_obs_mask],
+        'agent_bin_id': bins[real_obs_mask],
+    }
+
+    df = pd.DataFrame(data={k: pd.Series(v) for k, v in schedule_full.items()}).fillna(0).astype(int)
+    df.to_csv(save_dir / "schedule.csv", index=False)

@@ -21,8 +21,7 @@ from blancops.data_processing.data_processing import load_raw_data_to_dataframe,
 from blancops.data_processing.constants import *
 from blancops.core_rl.environments import OnlineBlancoEnv
 from blancops.data_processing.features import get_nautical_twilight
-from datetime import datetime, timedelta
-from blancops.plotting.schedule_viz import plot_static_diagnostics, save_schedule
+from blancops.plotting.schedule_viz import *
 
 import logging
 logger = logging.getLogger(__name__)
@@ -43,7 +42,10 @@ def main():
     parser.add_argument('-f', '--field_lookup_dir', type=Path, default=None, required=False, help='relative path to field lookup dir')
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
     parser.add_argument('-c', '--field_choice_method', type=str, default='random', help="Options: random, interp")
-    parser.add_argument('-g', '--make_gifs', action='store_true', help="Whether to create the set of gifs. Currently can only choose to make all or none.")
+    parser.add_argument('--sun_horizon', type=float, default=-12, help="Sun horizon in degrees for determining night start/end. Default is -12.")
+    parser.add_argument('--airmass_lim', type=float, default=1.2, help="The agent will only observe if there exist *any* fields below the airmass_lim")
+    parser.add_argument('--no_night_diagnostics', action='store_false', help="Whether to skip generating nightly diagnostics plots" )
+    parser.add_argument('--do_night_gifs', action='store_true')
 
     # Evaluation hyperparameters
     parser.add_argument('--num_episodes', type=int, default=1, help='Number of evaluation episodes to run')
@@ -69,8 +71,8 @@ def main():
     else:
         while os.path.exists(schedule_outdir):
             # Match any string ending in digits. 
-            # Group 1 captures the prefix (e.g., "eval_2026-03-06_")
-            # Group 2 captures the number suffix (e.g., "0")
+            # Group 1: prefix (e.g., "eval_2026-03-06_")
+            # Group 2: number suffix
             match = re.search(r"^(.*?)(\d+)$", schedule_name)
             
             if match:
@@ -100,10 +102,27 @@ def main():
 
     # Load lookup tables
     if args.schedule_name in TEST_SUITE_NAMES:
+        print(f"Using test suite {args.schedule_name} with predefined lookup tables and observing nights")
         test_name = args.schedule_name
         workspace_dir = get_workspace_dir()
         lookup_dirpath = workspace_dir / "data" / "test_suite" / test_name
-        observing_night_strs = np.array(MS_OBSERVING_DATES)
+        if test_name == 'gw-followup':
+            print(f"Using GW followup test suite with predefined observing nights based on {args.observing_nights} set")
+            if args.observing_nights[0] == 'good':
+                print('USING GOOD GW FOLLOWUP NIGHTS')
+                observing_night_strs = GW_OBSERVING_DATES_GOOD
+            elif args.observing_nights[0] == 'bad':
+                observing_night_strs = GW_OBSERVING_DATES_BAD
+            else:
+                observing_night_strs = args.observing_nights
+        elif test_name == 'healpix-grid':
+            observing_night_strs = HP_OBSERVING_DATES
+        elif test_name == 'magic-spring':
+            observing_night_strs = MS_OBSERVING_DATES
+        elif test_name == 'delve':
+            observing_night_strs = args.observing_nights
+        else:
+            raise ValueError(f"Test suite {test_name} not recognized. Must be one of {TEST_SUITE_NAMES}")
     else:
         lookup_dirpath = args.field_lookup_dir.resolve()
 
@@ -112,15 +131,16 @@ def main():
         assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
     with open(lookup_dirpath / "field_lookup.json", 'r') as f:
         field_lookup = json.load(f)
-    with open(lookup_dirpath / "field2radec.json") as f:
-        field2radec = json.load(f)
     
+    field2radec = pd.read_json(lookup_dirpath / "field2radec.json")
+    field2radec = field2radec[['ra', 'dec']].to_numpy()
+    field2nvisits = np.array([n for n in field_lookup['n_visits'].values()])
+
     # Check that field_lookup has all required columns needed to run environment
     required_columns = ['field_id', 'exptime', 'ra', 'dec', 'n_visits', 'filter'] # 'dithers','object', 'priorities'
     for col in required_columns:
         assert col in field_lookup.keys(), f"Column '{col}' not found in field_lookup.json"
     
-
     logger.info("Setting up agent...")
     algorithm = setup_algorithm(algorithm_name=cfg['model']['algorithm'], 
                                 num_actions=cfg['data']['num_actions'],
@@ -136,8 +156,8 @@ def main():
                                 tau=cfg['model']['tau'],
                                 activation=cfg['model']['activation'],
                                 cql_alpha=cfg['model'].get('cql_alpha', None),
-                                nside=cfg['data'].get('nside', None),
-                                bin_space=cfg['data']['bin_space']
+                                nside=nside,
+                                bin_space=bin_space
                                 )
     
     agent = Agent(
@@ -155,21 +175,27 @@ def main():
     )
 
     # Creat env
-    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, lookup_path=lookup_dirpath / 'field_lookup.json',
-                    observing_night_strs=observing_night_strs, horizon='-12', max_nights=args.max_nights)
-    field2nvisits = {int(fid): n for fid, n in field_lookup['n_visits'].items()}
-    field2radec = {int(fid): (field_lookup['ra'][fid], field_lookup['dec'][fid]) for fid in field_lookup['ra'].keys()}
+
+    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, data_dir=lookup_dirpath, field2radec=field2radec,
+                    observing_night_strs=observing_night_strs, horizon=sun_horizon, max_nights=args.max_nights, airmass_limit=args.airmass_lim)
+    # field2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
 
     # Evaluate
-    agent.evaluate(env=env, cfg=cfg, num_episodes=1, field_choice_method=args.field_choice_method, eval_outdir=schedule_outdir,
+    eval_metrics = agent.evaluate(env=env, cfg=cfg, num_episodes=1, field_choice_method=args.field_choice_method, eval_outdir=schedule_outdir,
               field2nvisits=field2nvisits, field2radec=field2radec)
 
-    # Load results
-    with open(schedule_outdir / 'eval_metrics.pkl', 'rb') as f:
-        eval_metrics = pickle.load(f)
+    logger.info("Generating plots...")
+    save_survey_diagnostics(eval_metrics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, bin_space=bin_space)
+    save_gifs(schedule_path=schedule_outdir / 'survey_schedule.csv', save_dir=schedule_outdir, do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, bin_space=bin_space, nside=nside, field2radec_filepath=lookup_dirpath / "field2radec.json")
 
-    logger.info("Generating evaluation plots...")
-    plot_static_diagnostics(eval_metrics=eval_metrics, observing_night_strs=observing_night_strs, schedule_outdir=schedule_outdir, grid_network=cfg['model']['grid_network'],
-                            nside=nside, lookup_dirpath=lookup_dirpath, env=env, field_lookup=field_lookup, num_actions=cfg['data']['num_actions'], bin_space=cfg['data']['bin_space'])
+    # # Load results
+    # with open(schedule_outdir / 'eval_metrics.pkl', 'rb') as f:
+    #     eval_metrics = pickle.load(f)
+
+    if not args.no_night_diagnostics:
+        save_nightly_diagnostics(eval_metrics=eval_metrics, observing_night_strs=observing_night_strs, schedule_outdir=schedule_outdir, grid_network=cfg['model']['grid_network'],
+                            nside=nside, lookup_dirpath=lookup_dirpath, env=env, num_actions=cfg['data']['num_actions'], bin_space=bin_space,
+                            do_gifs=not args.do_night_gifs)
+        
 if __name__ == "__main__":
     main()
