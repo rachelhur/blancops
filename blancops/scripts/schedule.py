@@ -174,6 +174,9 @@ def main():
         entry_point=OnlineBlancoEnv,
     )
 
+    #pyephem requires sun horizon to be in string format if degrees (float if radians)
+    sun_horizon = str(args.sun_horizon)
+
     # Creat env
 
     env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, data_dir=lookup_dirpath, field2radec=field2radec,
