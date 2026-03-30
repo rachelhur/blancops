@@ -287,6 +287,8 @@ class Agent:
 
                 i = 0
                 last_bin_idx = ZENITH_BIN_NUM
+                field_id = ZENITH_FIELD_ID
+                filter_idx = ZENITH_FILTER_IDX
                 pbar = tqdm(total=250*num_nights, dynamic_ncols=True, desc=f"Rolling out policy for night {night_idx} step {i}")
                 while not (terminated or truncated):
                     with torch.no_grad():
@@ -295,7 +297,8 @@ class Agent:
                         # Catch the edge case where no fields are above the horizon - tell agent to wait
                         if not action_mask.any():
                             logger.warning(f"No valid fields available at step {i} (mask is all zeros).")
-                            bin_idx, field_id, filter_idx = WAIT_SIGNAL, WAIT_SIGNAL, WAIT_SIGNAL
+                            # bin_idx, field_id, filter_idx = WAIT_SIGNAL, WAIT_SIGNAL, WAIT_SIGNAL
+                            bin_idx = WAIT_SIGNAL # do not update filter and field id since they should stay the same in wait state
                         else:
                             action = self.choose_action(x_glob=state['global_state'], x_bin=state['bin_state'], action_mask=action_mask, epsilon=None)
                             if 'filter' in bin_space:

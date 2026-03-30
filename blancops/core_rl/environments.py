@@ -18,6 +18,8 @@ from astropy.time import Time
 from datetime import datetime, timezone, timedelta
 import pickle
 import json
+from einops import rearrange
+
 
 from abc import ABC, abstractmethod
 
@@ -155,36 +157,41 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         # --- OnlineEnv Logic --- #
         if bin_num == WAIT_SIGNAL:
             print('ENVIRONMENT RECEIVED A WAIT SIGNAL')
-            self._ts = self._fast_forward_to_timestamp(
+            self._ts = self._fast_forward(
                 timestamp=self._ts,
                 ras=self._ra_arr,
                 decs=self._dec_arr,
                 visited=self._s_visits_cur,
                 max_visits=self._max_s_visits_arr
             )
+            # Stay in same field and filter after waiting
+            field_id = self._field_id
+            filter_idx = self._filter_idx
+        # --- OnlineEnv Logic --- #
         else:
             last_field_id = self._field_id
             exptime = self._get_exposure_time(field_id=str(field_id))
             slew_time = self._get_slew_time(last_field_id, field_id)
             self._ts += exptime + slew_time
+
             self._n_visits_cur[field_id] += 1
             self._s_visits_cur[field_id] += 1
-        # --- OnlineEnv Logic --- #
-
-        if self.do_filt and filter_idx != WAIT_SIGNAL:
-            self._s_filter_visits_cur[field_id, filter_idx] += 1
-            self._n_filter_visits_cur[field_id, filter_idx] += 1   
-        
+            if self.do_filt:
+                self._s_filter_visits_cur[field_id, filter_idx] += 1
+                self._n_filter_visits_cur[field_id, filter_idx] += 1  
+             
         self._bin_num = bin_num
         self._field_id = field_id
         self._filter_idx = filter_idx
         
         self._global_state = self._calculate_global_features(field_id=field_id, filter_idx=filter_idx, timestamp=self._ts,
-                                                          sunset_ts=self._sunset_ts, sunrise_ts=self._sunrise_ts
+                                                          sunset_ts=self._sunset_ts, sunrise_ts=self._sunrise_ts,
+                                                          ra_arr=self._ra_arr, dec_arr=self._dec_arr,
                                                           )
         self._bin_state = self._calculate_bin_features(timestamp=self._ts) if self.include_bin_features else np.array([])
-        self._update_action_masks(timestamp=self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
-                                                  hpGrid=self.hpGrid, visited=self._s_visits_cur)
+        # self._update_action_masks(timestamp=self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+                                                #   hpGrid=self.hpGrid, visited=self._s_visits_cur)
+        self._update_action_masks()
 
     def _get_state(self):
         global_state, bin_state = self._global_state, self._bin_state
@@ -238,15 +245,20 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         -------
             dict: A dictionary containing the current action mask.
         """
-        return {'action_mask': self._action_mask.copy(), 
-                'visited': self._n_visits_cur.copy(),
+        info_dict = {'action_mask': self._action_mask.copy(), 
+                's_visited': self._s_visits_cur.copy(),
+                'n_visited': self._n_visits_cur.copy(),
+                'valid_fields_per_bin': self._valid_fields_per_bin,
                 'timestamp': self._ts,
                 'is_new_night': bool(self._is_new_night),
                 'night_idx': int(self._night_idx),
                 'bin': int(self._bin_num),
                 'field_id': int(self._field_id),
-                'valid_fields_per_bin': self._valid_fields_per_bin 
         }
+        if getattr(self, 'do_filt', True):
+            info_dict['s_filter_visits'] = self._s_filter_visits_cur.copy()
+            info_dict['max_s_filter_visits'] = self._max_s_filter_visits_arr.copy()
+        return info_dict
 
     def _calculate_global_features(self, field_id, filter_idx, timestamp, sunset_ts, sunrise_ts):
         new_features = {}
@@ -255,7 +267,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         new_features['lst'] = lst.radian
         
         # --- OnlineEnv Logic --- #
-        if field_id == ZENITH_FIELD_ID or field_id == WAIT_SIGNAL:
+        if field_id == ZENITH_FIELD_ID:
             blanco = ephemerides.blanco_observer(time=timestamp)
             ra, dec = new_features['lst'], blanco.lon
             new_features['ra'], new_features['dec'] = ra, dec 
@@ -306,7 +318,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         features = {}
 
         # --- OnlineEnv Logic --- #
-        if self._field_id == ZENITH_FIELD_ID or self._field_id == WAIT_SIGNAL:
+        if self._bin_num == WAIT_SIGNAL:
             blanco = ephemerides.blanco_observer(time=timestamp)
             features['ra'], features['dec'] = blanco.lat, blanco.lon
         else:
