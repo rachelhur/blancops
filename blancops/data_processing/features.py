@@ -402,33 +402,50 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
 
     do_filt = 'filter' in bin_space
     is_azel = hpGrid.is_azel
+    
+    # State Assignment Helper
+    def assign_state(mask_n, mask_s, count_n, count_s, act_n_msk, act_s_msk, key_n, key_s):
+        res_n, res_s = np.zeros(n_bins, dtype=np.float32), np.zeros(n_bins, dtype=np.float32)
+        np.divide(np.bincount(v_bins, weights=mask_n, minlength=n_bins), count_n, out=res_n, where=act_n_msk)
+        np.divide(np.bincount(v_bins, weights=mask_s, minlength=n_bins), count_s, out=res_s, where=act_s_msk)
+        res_n[~act_n_msk] = sentinel_val; res_s[~act_s_msk] = sentinel_val
+        if key_n in historic_features: historic_features[key_n][global_idx] = res_n
+        if key_s in historic_features: historic_features[key_s][global_idx] = res_s
 
     # ---------------------------------------------------------
     # 1. STRICT MEMORY ALLOCATION
     # ---------------------------------------------------------
-    calculated_features = {}
     base_keys = ['night_num_unvisited_fields', 'night_num_incomplete_fields', 'night_min_tiling',
                  'survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']
     
-    for key in base_keys:
-        if key in requested_features:
-            calculated_features[key] = np.full(arr_shape, 0.0, dtype=np.float32) if 'min_tiling' in key else np.zeros(arr_shape, dtype=np.float32)
-        if do_filt:
-            for filt_name in FILTER2IDX.keys():
-                filt_key = f"{key}_{filt_name}"
-                if filt_key in requested_features:
-                    calculated_features[filt_key] = np.full(arr_shape, 0.0, dtype=np.float32) if 'min_tiling' in key else np.zeros(arr_shape, dtype=np.float32)
-
+    # Get required features
+    matched_keys = [
+        req_key for req_key in requested_features 
+        if any(base_key in req_key for base_key in base_keys)
+    ]
+    # if do_filt:
+    #     filter_keys = []
+    #     for key in matched_keys:
+    #         for filt_name in FILTER2IDX.keys():
+    #             filt_key = f"{key}_{filt_name}"
+    #             if filt_key in requested_features:
+    #                 filter_keys.append(filt_key)
+    #     matched_keys = filter_keys
+    logger.debug(f"Requested history-based features: {matched_keys}")
+    
+    historic_features = {}
+    for key in matched_keys:
+        historic_features[key] = np.full(arr_shape, sentinel_val, dtype=np.float32)
+    
     # ---------------------------------------------------------
     # 2. SURVEY-WIDE SETUP
     # ---------------------------------------------------------
     ra_arr = np.array([field2radec[fid][0] for fid in field_ids])
     dec_arr = np.array([field2radec[fid][1] for fid in field_ids])
-    max_s_vis_all = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
     if do_filt:
         max_s_f_vis_all = np.array([fieldfilter2maxvisits[fid] for fid in field_ids], dtype=np.int32)
 
-    pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX) #.fillna(-1)
+    pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX)
 
     # STATIC RADEC CACHE (Computed once if static coords)
     if not is_azel:
@@ -437,14 +454,15 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
         v_mask_static = bins_static != ZENITH_BIN_NUM
         v_bins_static = bins_static[v_mask_static]
 
-        bc_s_static = np.bincount(v_bins_static, weights=(max_s_vis_all[v_mask_static] > 0), minlength=n_bins)
-        act_s_static = bc_s_static > 0
-
         if do_filt:
             bc_s_f_static = np.zeros((n_bins, nfilters), dtype=np.float64)
             for f in range(nfilters):
                 bc_s_f_static[:, f] = np.bincount(v_bins_static, weights=(max_s_f_vis_all[v_mask_static, f] > 0), minlength=n_bins)
             act_s_f_static = bc_s_f_static > 0
+        else:
+            bc_s_static = np.bincount(v_bins_static, weights=(max_s_vis_all[v_mask_static] > 0), minlength=n_bins)
+            act_s_static = bc_s_static > 0
+
 
     # ---------------------------------------------------------
     # 3. NIGHT LOOP
@@ -457,11 +475,11 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
 
     for night, group in tqdm(pt_df.groupby('night'), desc=f'Calculating {"AzEl" if is_azel else "RaDec"} History'):
         # A. Initialize Night Counters
-        cur_s_vis = night2visithistory[night][field_ids].copy().astype(np.int32)
-        cur_n_vis = np.zeros(nfields, dtype=np.int32)
         if do_filt:
             cur_s_f_vis, cur_n_f_vis = night2filtervisithistory[night].copy(), np.zeros((nfields, nfilters), dtype=np.int32)
-        
+        else:
+            cur_s_vis = night2visithistory[night][field_ids].copy().astype(np.int32)
+            cur_n_vis = np.zeros(nfields, dtype=np.int32)
         step_fids = group['field_id'].to_numpy(dtype=np.int32)
         step_filts = group['filt_idx'].to_numpy(dtype=np.int32)
         step_times = group['timestamp'].to_numpy(dtype=np.int32)
@@ -474,9 +492,6 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
         valid_map = map_n_fids != ZENITH_FIELD_ID
         final_fids = map_n_fids[valid_map]
         
-        max_n_vis = np.bincount(final_fids, minlength=nfields)
-        max_s_vis = np.maximum(max_n_vis, max_s_vis_all)
-
         if do_filt:
             n_filts_raw = group['filt_idx'][valid_night].to_numpy(dtype=np.int32)
             aligned_filts = n_filts_raw[valid_fids][valid_map]
@@ -485,13 +500,13 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
             max_n_f_vis = np.zeros((nfields, nfilters), dtype=np.int32)
             np.add.at(max_n_f_vis, (final_fids[valid_filt], aligned_filts[valid_filt]), 1)
             max_s_f_vis = np.maximum(max_n_f_vis, max_s_f_vis_all)
+        else:
+            max_n_vis = np.bincount(final_fids, minlength=nfields)
+            max_s_vis = np.maximum(max_n_vis, max_s_vis_all)
 
         # C. If RaDec, inject static variables for the night
         if not is_azel:
             v_bins, v_mask = v_bins_static, v_mask_static
-            bc_s, act_s = bc_s_static, act_s_static
-            bc_n = np.bincount(v_bins, weights=(max_n_vis[v_mask] > 0), minlength=n_bins)
-            act_n = bc_n > 0
             
             if do_filt:
                 bc_s_f, act_s_f = bc_s_f_static, act_s_f_static
@@ -499,7 +514,10 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
                 for f in range(nfilters):
                     bc_n_f[:, f] = np.bincount(v_bins, weights=(max_n_f_vis[v_mask, f] > 0), minlength=n_bins)
                 act_n_f = bc_n_f > 0
-
+            else:
+                bc_s, act_s = bc_s_static, act_s_static
+                bc_n = np.bincount(v_bins, weights=(max_n_vis[v_mask] > 0), minlength=n_bins)
+                act_n = bc_n > 0
         # ---------------------------------------------------------
         # 4. TIMESTEP LOOP
         # ---------------------------------------------------------
@@ -507,12 +525,13 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
             
             # I. Update Tracking Counters
             if obs_fid != ZENITH_FIELD_ID:
-                cur_s_vis[obs_fid] += 1
-                cur_n_vis[obs_fid] += 1
-                if do_filt and obs_filt != ZENITH_FILTER_IDX:
+                if do_filt:
                     cur_s_f_vis[obs_fid, obs_filt] += 1
                     cur_n_f_vis[obs_fid, obs_filt] += 1
-
+                else:
+                    cur_s_vis[obs_fid] += 1
+                    cur_n_vis[obs_fid] += 1
+ 
             # II. If AzEl, do 5-minute dynamic cache updates
             if is_azel and abs(timestamp - cache_time) > 300:
                 az, el = ephemerides.equatorial_to_topographic(ra_arr, dec_arr, time=timestamp)
@@ -520,59 +539,31 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
                 v_mask = (el > 0) & (bins != ZENITH_BIN_NUM)
                 v_bins = bins[v_mask]
                 
-                bc_s = np.bincount(v_bins, weights=(max_s_vis[v_mask] > 0), minlength=n_bins)
-                bc_n = np.bincount(v_bins, weights=(max_n_vis[v_mask] > 0), minlength=n_bins)
-                act_s, act_n = bc_s > 0, bc_n > 0
-                
                 if do_filt:
                     bc_s_f, bc_n_f = np.zeros((n_bins, nfilters)), np.zeros((n_bins, nfilters))
                     for f in range(nfilters):
                         bc_s_f[:, f] = np.bincount(v_bins, weights=(max_s_f_vis[v_mask, f] > 0), minlength=n_bins)
                         bc_n_f[:, f] = np.bincount(v_bins, weights=(max_n_f_vis[v_mask, f] > 0), minlength=n_bins)
                     act_s_f, act_n_f = bc_s_f > 0, bc_n_f > 0
+                else:    
+                    bc_s = np.bincount(v_bins, weights=(max_s_vis[v_mask] > 0), minlength=n_bins)
+                    bc_n = np.bincount(v_bins, weights=(max_n_vis[v_mask] > 0), minlength=n_bins)
+                    act_s, act_n = bc_s > 0, bc_n > 0
                     
                 cache_time = timestamp
-
-            # III. State Assignment Helper
-            def assign_state(mask_n, mask_s, count_n, count_s, act_n_msk, act_s_msk, key_n, key_s):
-                res_n, res_s = np.zeros(n_bins, dtype=np.float32), np.zeros(n_bins, dtype=np.float32)
-                np.divide(np.bincount(v_bins, weights=mask_n, minlength=n_bins), count_n, out=res_n, where=act_n_msk)
-                np.divide(np.bincount(v_bins, weights=mask_s, minlength=n_bins), count_s, out=res_s, where=act_s_msk)
-                res_n[~act_n_msk] = sentinel_val; res_s[~act_s_msk] = sentinel_val
-                if key_n in calculated_features: calculated_features[key_n][global_idx] = res_n
-                if key_s in calculated_features: calculated_features[key_s][global_idx] = res_s
-
-            # IV. Execute 1D States 
-            v_s_vis, v_n_vis = cur_s_vis[v_mask], cur_n_vis[v_mask]
-            v_max_s, v_max_n = max_s_vis[v_mask], max_n_vis[v_mask]
-            in_s_plan, in_n_plan = v_max_s > 0, v_max_n > 0
-
-            assign_state((v_n_vis == 0) & in_n_plan, (v_s_vis == 0) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_unvisited_fields', 'survey_num_unvisited_fields')
-            assign_state((v_n_vis < v_max_n) & in_n_plan, (v_s_vis < v_max_s) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_incomplete_fields', 'survey_num_incomplete_fields')
-
-            s_til, n_til = np.full_like(v_s_vis, 2.0, dtype=np.float32), np.full_like(v_n_vis, 2.0, dtype=np.float32)
-            np.divide(v_s_vis, v_max_s, out=s_til, where=in_s_plan)
-            np.divide(v_n_vis, v_max_n, out=n_til, where=in_n_plan)
-            s_mins, n_mins = np.full(n_bins, 2.0, dtype=np.float32), np.full(n_bins, 2.0, dtype=np.float32)
-            np.minimum.at(s_mins, v_bins, s_til); np.minimum.at(n_mins, v_bins, n_til)
-            s_mins = np.clip(s_mins, 0.0, 1.0)
-            s_mins[~act_s] = sentinel_val
-            s_mins[~act_s | (s_mins > 1.0)] = sentinel_val
-            n_mins = np.clip(n_mins, 0.0, 1.0)
-            n_mins[~act_n] = sentinel_val
-            n_mins[~act_n | (n_mins > 1.0)] = sentinel_val
             
-            if 'survey_min_tiling' in calculated_features: calculated_features['survey_min_tiling'][global_idx] = s_mins
-            if 'night_min_tiling' in calculated_features: calculated_features['night_min_tiling'][global_idx] = n_mins
-
-            # V. Execute 2D States (If Filter Space Active)
+            # Execute 2D States (If Filter Space Active)
             if do_filt:
                 v_s_f_vis, v_n_f_vis = cur_s_f_vis[v_mask], cur_n_f_vis[v_mask]
                 v_max_s_f, v_max_n_f = max_s_f_vis[v_mask], max_n_f_vis[v_mask]
                 in_s_f_plan, in_n_f_plan = v_max_s_f > 0, v_max_n_f > 0
                 
-                s_f_mins, n_f_mins = np.full((n_bins, nfilters), 2.0, dtype=np.float32), np.full((n_bins, nfilters), 2.0, dtype=np.float32)
-                s_f_til, n_f_til = np.full_like(v_s_f_vis, 2.0, dtype=np.float32), np.full_like(v_n_f_vis, 2.0, dtype=np.float32)
+                # Initialize with np.inf to prevent masking highly over-visited fields
+                s_f_mins = np.full((n_bins, nfilters), np.inf, dtype=np.float32)
+                n_f_mins = np.full((n_bins, nfilters), np.inf, dtype=np.float32)
+                s_f_til = np.full_like(v_s_f_vis, np.inf, dtype=np.float32)
+                n_f_til = np.full_like(v_n_f_vis, np.inf, dtype=np.float32)
+                
                 np.divide(v_s_f_vis, v_max_s_f, out=s_f_til, where=in_s_f_plan)
                 np.divide(v_n_f_vis, v_max_n_f, out=n_f_til, where=in_n_f_plan)
 
@@ -584,17 +575,54 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
                     
                     np.minimum.at(s_f_mins[:, f], v_bins, s_f_til[:, f])
                     np.minimum.at(n_f_mins[:, f], v_bins, n_f_til[:, f])
-                    s_f_mins[~act_s_f[:, f] | (s_f_mins[:, f] > 1.0), f] = sentinel_val
-                    n_f_mins[~act_n_f[:, f] | (n_f_mins[:, f] > 1.0), f] = sentinel_val
                     
-                    if (sk := f'survey_min_tiling_{filt_name}') in calculated_features: calculated_features[sk][global_idx] = s_f_mins[:, f]
-                    if (nk := f'night_min_tiling_{filt_name}') in calculated_features: calculated_features[nk][global_idx] = n_f_mins[:, f]
+                    # Apply sentinels exclusively to untouched bins (np.inf)
+                    s_f_mins[~act_s_f[:, f] | np.isinf(s_f_mins[:, f]), f] = sentinel_val
+                    n_f_mins[~act_n_f[:, f] | np.isinf(n_f_mins[:, f]), f] = sentinel_val
+                    
+                    # Cap over-visited fields safely at 1.0 without destroying sentinels
+                    s_f_mins[:, f] = np.minimum(s_f_mins[:, f], 1.0)
+                    n_f_mins[:, f] = np.minimum(n_f_mins[:, f], 1.0)
+                    
+                    if (sk := f'survey_min_tiling_{filt_name}') in historic_features: historic_features[sk][global_idx] = s_f_mins[:, f]
+                    if (nk := f'night_min_tiling_{filt_name}') in historic_features: historic_features[nk][global_idx] = n_f_mins[:, f]
+            else:
+                # IV. Execute 1D States (No per-filter tracking, just overall visit counts)
+
+                # Get valid visit/max_visit arrays for visited bins
+                v_s_vis, v_n_vis = cur_s_vis[v_mask], cur_n_vis[v_mask]
+                v_max_s, v_max_n = max_s_vis[v_mask], max_n_vis[v_mask]
+                in_s_plan, in_n_plan = v_max_s > 0, v_max_n > 0
+
+                # NUM UNVISITED/INCOMPLETE (normalized by number of fields in bin) 
+                assign_state((v_n_vis == 0) & in_n_plan, (v_s_vis == 0) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_unvisited_fields', 'survey_num_unvisited_fields')
+                assign_state((v_n_vis < v_max_n) & in_n_plan, (v_s_vis < v_max_s) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_incomplete_fields', 'survey_num_incomplete_fields')
+
+                # MIN TILING
+                s_til, n_til = np.full_like(v_s_vis, np.inf, dtype=np.float32), np.full_like(v_n_vis, np.inf, dtype=np.float32)
+                np.divide(v_s_vis.astype(np.float32), v_max_s.astype(np.float32), out=s_til, where=in_s_plan)
+                np.divide(v_n_vis.astype(np.float32), v_max_n.astype(np.float32), out=n_til, where=in_n_plan)
+                
+                s_mins, n_mins = np.full(n_bins, np.inf, dtype=np.float32), np.full(n_bins, np.inf, dtype=np.float32)
+                np.minimum.at(s_mins, v_bins, s_til)
+                np.minimum.at(n_mins, v_bins, n_til)
+                
+                # Apply sentinels exclusively to untouched bins (np.inf)
+                s_mins[~act_s | np.isinf(s_mins)] = sentinel_val
+                n_mins[~act_n | np.isinf(n_mins)] = sentinel_val
+                
+                # Cap over-visited fields safely at 1.0 without destroying sentinels
+                s_mins = np.minimum(s_mins, 1.0)
+                n_mins = np.minimum(n_mins, 1.0)
+                
+                if 'survey_min_tiling' in historic_features: historic_features['survey_min_tiling'][global_idx] = s_mins
+                if 'night_min_tiling' in historic_features: historic_features['night_min_tiling'][global_idx] = n_mins
 
             global_idx += 1
-
-    _validate_history_dependent_features(do_filt=do_filt, idx2filter=idx2filter, calculated_features=calculated_features)
+    _validate_history_dependent_features(do_filt=do_filt, idx2filter=idx2filter, calculated_features=historic_features)
+    logger.debug(f"Historic features generated: {list(historic_features.keys())}")
     
-    return calculated_features
+    return historic_features
 
 def _validate_history_dependent_features(do_filt, idx2filter, calculated_features):
     # Build a list of feature groupings to validate (both survey and night levels)
