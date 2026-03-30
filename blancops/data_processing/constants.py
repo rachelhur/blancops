@@ -1,4 +1,12 @@
 """
+BLANCO CONSTS
+"""
+
+# BLANCO_LAT = -30.169
+BLANCO_LON = "-70:48:23.49"
+BLANCO_ELEV = 2200
+
+"""
 
 ZENITH CONSTANTS
 
@@ -33,9 +41,11 @@ FILTER2WAVE = {
 }
 
 NUM_FILTERS = len(FILTER2WAVE)
-FILTERWAVENORM = 1000.
-FILTER2IDX = {k: i for i, k in enumerate(FILTER2WAVE.keys())}
 IDX2WAVE = {i: FILTER2WAVE[k] for i, k in enumerate(FILTER2WAVE.keys())}
+FILTERWAVENORM = 1000.
+
+FILTER2IDX = {k: i for i, k in enumerate(FILTER2WAVE.keys())}
+IDX2FILTER = {v: k for k, v in FILTER2IDX.items()}
 
 """
 

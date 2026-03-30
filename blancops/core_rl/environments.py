@@ -269,7 +269,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
     def _calculate_global_features(self, field_id, filter_idx, timestamp, sunset_ts, sunrise_ts):
         new_features = {}
         astro_time = Time(timestamp, format='unix', scale='utc')
-        lst = astro_time.sidereal_time('apparent', longitude="-70:48:23.49")  # Blanco longitude
+        lst = astro_time.sidereal_time('apparent', longitude=BLANCO_LON)
         new_features['lst'] = lst.radian
         
         # --- OnlineEnv Logic --- #
@@ -326,7 +326,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         # --- OnlineEnv Logic --- #
         if self._bin_num == WAIT_SIGNAL:
             blanco = ephemerides.blanco_observer(time=timestamp)
-            features['ra'], features['dec'] = blanco.lat, blanco.lon
+            pointing_radec = np.array(blanco.radec_of('0',  '90'))
         else:
             features['ra'], features['dec'] = self._ra_arr[self._field_id], self._dec_arr[self._field_id]
         # --- OnlineEnv Logic --- #
