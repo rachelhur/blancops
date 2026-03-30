@@ -651,7 +651,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
     def _get_exposure_time(self, field_id=None):
         if int(field_id) < 0:
             return 0.0
-        elif field_id is None:
+        elif (field_id is None) or getattr(self, 'field_lookup', None) is None:
             return 90.0
         return self.field_lookup['exptime'].values[int(field_id)]
 
