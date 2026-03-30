@@ -465,6 +465,84 @@ class Agent:
             field_id = random.choice(field_ids_in_bin)
             return field_id
         
+    def save_survey_schedule(self, eval_metrics, save_dir, ep_num=0):
+        # Use a defaultdict to easily collect lists of arrays for each metric key
+        eval_metrics = eval_metrics[f'ep-{ep_num}']
+        collected_metrics = defaultdict(list)
+        schedule_keys = ['bin', 'field_id', 'filter_idx', 'timestamp']
+
+        # Extract the arrays from each night
+        for night_key, metrics_dict in eval_metrics.items():
+            for metric_name, array_values in metrics_dict.items():
+                if metric_name in schedule_keys:
+                    collected_metrics[metric_name].append(array_values)
+        
+        # Concatenate the collected arrays for each metric
+        schedule = {}
+        for k, list_of_arrays in collected_metrics.items():
+            # np.concatenate joins the arrays end-to-end
+            if k == 'bin':
+                key = 'agent_bin_id'
+            elif k == 'field_id':
+                key = 'agent_field_id'
+            elif k == 'filter_idx':
+                key = 'agent_filter'
+            elif k == 'timestamp':
+                key = 'agent_timestamp'
+
+            schedule[key] = np.concatenate(list_of_arrays)
+        
+        # Filter out zenith and wait states
+        sel_valid_obs = schedule['agent_bin_id'] != ZENITH_BIN_NUM
+        sel_valid_obs &= schedule['agent_bin_id'] != WAIT_SIGNAL
+        for k, v in schedule.items():
+            schedule[k] = v[sel_valid_obs]
+
+        # Save schedule
+        df = pd.DataFrame(data={k: pd.Series(v) for k, v in schedule.items()})
+        df['agent_filter'] = df['agent_filter'].map(IDX2FILTER)
+        df.to_csv(Path(save_dir) / "survey_schedule.csv", index=False)
+        return schedule
+    
+
+    # def choose_field(self, obs, info, field2nvisits, field2radec, hpGrid, field_choice_method, fields_in_bin, filter_idx): 
+    #     """
+    #     Choose field in bin based on interpolated Q-values
+    #     """
+    #     assert len(fields_in_bin) != 0, "The agent is receiving an empty list for `fields_in_bin`. "
+    #     glob_state, bin_state = obs
+    #     s_visited = info.get('s_visited', None)
+    #     action_mask = info.get('action_mask', None)
+    #     field_ids_in_bin = [fid for fid in fields_in_bin if s_visited[fid] < field2nvisits[fid]]
+
+    #     if field_choice_method == 'interp':
+    #         with torch.no_grad():
+    #             glob_state = torch.as_tensor(glob_state, device=self.device, dtype=torch.float32)
+    #             bin_state = torch.as_tensor(bin_state, device=self.device, dtype=torch.float32)
+    #             action_mask = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
+    #             q_vals = self.algorithm.policy_net(glob_state, bin_state).squeeze(0)
+    #             q_vals = q_vals.cpu().detach().numpy() #TODO - use mask
+
+    #         lon_data = hpGrid.lon
+    #         lat_data = hpGrid.lat
+
+    #         target_lonlats = np.array([field2radec[fid] for fid in field_ids_in_bin])
+    #         if hpGrid.is_azel:
+    #             timestamp = info.get('timestamp')
+    #             target_lons, target_lats = ephemerides.equatorial_to_topographic(ra=target_lonlats[:, 0], dec=target_lonlats[:, 1], time=timestamp)
+    #         else:
+    #             target_lons = target_lonlats[:, 0]
+    #             target_lats = target_lonlats[:, 1]
+
+    #         q_interpolated = interpolate_on_sphere(target_lons, target_lats, lon_data, lat_data, q_vals)
+    #         best_idx = np.argmax(q_interpolated)
+    #         best_field = field_ids_in_bin[best_idx]
+    #         return best_field
+
+    #     elif field_choice_method == 'random':
+    #         field_id = random.choice(field_ids_in_bin)
+    #         return field_id
+        
     def choose_filter(self, filter2wave=None):
         if filter2wave is None:
             # Filter wavelengths (nm) according to obztak https://github.com/kadrlica/obztak/blob/c28fab23b09bcff1cf46746eae4ec7e40aeb7f7a/obztak/seeing.py#L22
@@ -479,6 +557,3 @@ class Agent:
         normalized_waves = np.array(list(filter2wave.values())) / 1000
         filter_wave = random.choice(normalized_waves)
         return filter_wave
-        
-    def _save_SISPI_schedule(self, outdir):
-        return
