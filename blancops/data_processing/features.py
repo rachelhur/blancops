@@ -187,29 +187,29 @@ def calculate_global_features(df, field2name, hpGrid,
 
     # 4. Get time dependent features (sun and moon pos)
     for idx, time in tqdm(zip(indices, timestamps), total=len(timestamps), desc='Calculating sun and moon ra/dec and az/el'):
-        sun_ra, sun_dec = ephemerides.get_source_ra_dec('sun', time=time)
-        df.loc[idx, ['sun_ra', 'sun_dec']] = sun_ra, sun_dec
-        df.loc[idx, ['sun_az', 'sun_el']] = ephemerides.equatorial_to_topographic(ra=sun_ra, dec=sun_dec, time=time)
-
-        moon_ra, moon_dec = ephemerides.get_source_ra_dec('moon', time=time)
-        df.loc[idx, ['moon_ra', 'moon_dec']] = moon_ra, moon_dec
-        df.loc[idx, ['moon_az', 'moon_el']] = ephemerides.equatorial_to_topographic(ra=moon_ra, dec=moon_dec, time=time)
+        sun_radec, sun_azel, moon_radec, moon_azel = get_sun_and_moon_positions(time=time)
+        df.loc[idx, ['sun_ra', 'sun_dec']] = sun_radec
+        df.loc[idx, ['sun_az', 'sun_el']] = sun_azel
+        df.loc[idx, ['moon_ra', 'moon_dec']] = moon_radec
+        df.loc[idx, ['moon_az', 'moon_el']] = moon_azel
 
     # Use first and last observation in night of offline dataset as time start and end
     def normalize_times(time_series):
-        sunset = get_nautical_twilight(time_series.median(), event_type='set')
-        sunrise = get_nautical_twilight(time_series.median(), event_type='rise')
-        total_time = sunrise - sunset
+        sunset_ts = get_nautical_twilight(time_series.median(), event_type='set')
+        sunrise_ts = get_nautical_twilight(time_series.median(), event_type='rise')
+        total_time = sunrise_ts - sunset_ts
 
-        time_series = (time_series - sunset) / total_time
+        time_series = (time_series - sunset_ts) / total_time
         assert all(time_series.values > 0) and all(time_series.values < 1), "Time fractions should be between 0 and 1"
         return time_series
+    
     # Using nautical twilight for time start and end
     df['time_fraction_since_start'] = df.groupby('night')['timestamp'].transform(normalize_times)
     assert all(df['time_fraction_since_start'].values > 0) and all(df['time_fraction_since_start'].values < 1), "Time fractions should be between 0 and 1"  
 
     # 6. Add bin and field id columns to dataframe
     df['field_id'] = df['object'].map({v: k for k, v in field2name.items()})
+    
     if hpGrid is not None:
         if hpGrid.is_azel:
             lon = df['az']
@@ -328,7 +328,9 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
                 normed_features[f"{feat_name}_sin"] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
     calculated_features.update(normed_features)
 
-    # Calculate per-timestamp features
+    # ------------ #
+
+    # --- Calculate per-timestamp features --- #
     lon, lat = hpGrid.lon, hpGrid.lat
     for i, time in tqdm(enumerate(timestamps), total=n_timestamps, desc='Calculating bin features for all healpix bins and timestamps'):
         if do_ha:
@@ -347,7 +349,7 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
             if hpGrid.is_azel:
                 if 'az' in calculated_features: calculated_features['az'][i] = lon
                 if 'el' in calculated_features: calculated_features['el'][i] = lat
-                # ONLY calculate RA/DEC if they were actually requested
+                # ONLY calculate ra/dec if they were actually requested
                 if do_ra or do_dec: 
                     ra_i, dec_i = ephemerides.topographic_to_equatorial(az=lon, el=lat, time=time)
                     calculated_features['ra_cos'], calculated_features['ra_sin'] = np.cos(ra_i), np.sin(ra_i)
