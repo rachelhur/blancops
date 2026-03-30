@@ -49,9 +49,7 @@ def get_args():
     parser.add_argument('--model.activation', type=str, default='relu', help='The activation function to use in the neural network. Options: relu, mish, swish ')
 
     # Data selection and setup
-    parser.add_argument('--data.bin_method', type=str, default='healpix', help='Binning method to use (healpix or uniform)')
-    parser.add_argument('--data.nside', type=int, default=16, help='Healpix nside parameter (only used if binning_method is healpix)')
-    parser.add_argument('--data.num_bins_1d', type=int, default=16, help='Number of bins in 1dim (only used if binning_method is uniform)')
+    parser.add_argument('--data.nside', type=int, default=16, help='Healpix nside parameter')
     parser.add_argument('--data.bin_space', type=str, default='radec', help='Binning space to use (azel or radec)')
     parser.add_argument('--data.specific_years', type=int, nargs='*', default=None, help='Specific years to include in the dataset')
     parser.add_argument('--data.specific_months', type=int, nargs='*', default=None, help='Specific months to include in the dataset')
@@ -193,7 +191,14 @@ def main():
                                 use_contextual_gating=cfg['model']['contextual_gating'],
                                 cql_alpha=cfg['model'].get('cql_alpha', None),
                                 nside=cfg['data']['nside'],
-                                bin_space=cfg['data']['bin_space']
+                                bin_space=cfg['data']['bin_space'],
+                                emb_dim=cfg['model'].get('embedding_dim', None),
+                                nbins=train_dataset.nbins,
+                                glob_hidden=cfg['model'].get('glob_hidden', None),
+                                bin_hidden=cfg['model'].get('bin_hidden', None),
+                                bin_out=cfg['model'].get('bin_out', None), 
+                                state_latent_dim=cfg['model'].get('state_latent_dim', None), 
+                                bin_first=cfg['model'].get('bin_first', False)
                                 )
 
     agent = Agent(
@@ -204,7 +209,7 @@ def main():
     # Save (or update) config file after updating
     cfg['data']['state_dim'] = train_dataset.state_dim
     cfg['data']['bin_state_dim'] = 0 if train_dataset._grid_network is None else train_dataset.bin_state_dim
-    cfg['data']['num_actions'] = train_dataset.num_actions
+    cfg['data']['num_actions'] = train_dataset.nbins
     cfg['train']['lr_scheduler_kwargs'] = {key: float(val) for key, val in lr_scheduler_kwargs.items()}
     
     def check_cfg_dtypes(d):

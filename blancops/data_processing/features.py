@@ -454,8 +454,13 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
     else:
         max_s_vis_all = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
 
-    pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX)
-
+    pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX).fillna(ZENITH_FILTER_IDX).astype(np.int32)
+    if pt_df['filt_idx'].isna().any():
+        bad_filters = pt_df.loc[pt_df['filt_idx'].isna(), 'filter'].unique()
+        logger.warning(f"Found {pt_df['filt_idx'].isna().sum()} NaNs in 'filt_idx'.")
+        logger.warning(f"Unmapped filter strings causing NaNs: {bad_filters}")
+        logger.warning(f"Current FILTER2IDX keys: {list(FILTER2IDX.keys())}")
+    
     # STATIC RADEC CACHE (Computed once if static coords)
     if not is_azel:
         bins_raw = hpGrid.ang2idx(lon=ra_arr, lat=dec_arr)

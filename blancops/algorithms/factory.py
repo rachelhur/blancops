@@ -13,8 +13,8 @@ from blancops.algorithms.bc import BehaviorCloning
 
 def setup_algorithm(algorithm_name=None, num_actions=None, loss_fxn=None, hidden_dim=None, lr=None, lr_scheduler=None, device=None, 
                     lr_scheduler_kwargs=None, gamma=None, tau=None, lr_scheduler_epoch_start=None, lr_scheduler_num_epochs=None, activation=None, 
-                    grid_network=None, n_global_features=None, n_bin_features=0, num_filters=None, embedding_dim=None, use_contextual_gating=False,
-                    cql_alpha=1., nside=None, bin_space=None):
+                    grid_network=None, n_global_features=None, n_bin_features=0, num_filters=None, use_contextual_gating=False,
+                    cql_alpha=1., nside=None, bin_space=None, emb_dim=None, nbins=None, glob_hidden=None, bin_hidden=None, bin_out=None, state_latent_dim=None, bin_first=False):
     assert loss_fxn is not None
 
     # Initialize activation functions
@@ -53,9 +53,15 @@ def setup_algorithm(algorithm_name=None, num_actions=None, loss_fxn=None, hidden
         'grid_network': grid_network,
         'n_global_features': n_global_features,
         'n_bin_features': n_bin_features,
-        'embedding_dim': embedding_dim,
         'num_filters': num_filters,
-        'use_contextual_gating': use_contextual_gating
+        'use_contextual_gating': use_contextual_gating,
+        'emb_dim': emb_dim, 
+        'nbins': nbins,
+        'glob_hidden': glob_hidden,
+        'bin_hidden': bin_hidden,
+        'bin_out': bin_out,
+        'state_latent_dim': state_latent_dim,
+        'bin_first': bin_first
     }
         
     if algorithm_name == 'DDQN' or algorithm_name == 'DQN' or algorithm_name == 'CQL':

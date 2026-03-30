@@ -51,12 +51,10 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         # Get other configurations
         bin_space = cfg['data']['bin_space']
-        binning_method = cfg['data']['bin_method']
         nside = cfg['data']['nside']
         logger.info(f'Including the following bin features: {cfg["data"].get("bin_features")}')
         logger.info(f'Including the following global features: {cfg["data"]["global_features"]}')
         include_bin_features = len(cfg['data']['bin_features']) > 0
-        num_bins_1d = cfg['data']['num_bins_1d']
 
         # Load lookup tables
         if field2maxvisits_path is None:
@@ -86,16 +84,12 @@ class OfflineDataset(torch.utils.data.Dataset):
         with open(fieldfilter2maxvisits, 'rb') as f:
             fieldfilter2maxvisits = pickle.load(f)
 
-        # Initialize healpix grid if binning_method is healpix
-        self.hpGrid = None if binning_method != 'healpix' else ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in bin_space))
+        self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in bin_space))
         self.num_filters = NUM_FILTERS if 'filter' in bin_space else 1
 
         # Set number of actions based on binning method
-        if binning_method == 'uniform':
-            self.num_bins = int(num_bins_1d**2)
-        elif binning_method == 'healpix':
-            self.num_bins = len(self.hpGrid.lon)
-        self.num_actions = self.num_bins * self.num_filters
+        self.nbins = len(self.hpGrid.lon)
+        self.num_actions = self.nbins * self.num_filters
 
         # Save list of all feature names
         self.base_global_feature_names = cfg['data']['global_features'].copy()
@@ -151,7 +145,6 @@ class OfflineDataset(torch.utils.data.Dataset):
             df=self._df, 
             bin_states=bin_states,  
             include_bin_features=include_bin_features, 
-            binning_method=binning_method, 
             bin_space=bin_space,
             )
         
@@ -293,7 +286,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         #     assert self.states.shape[0] - 1 == self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.action_masks.shape[0], \
         #         f"Shape mismatch: states {self.shape}, actions {self.actions.shape}, rewards {self.rewards.shape}, dones {self.dones.shape}, action_masks {self.action_masks.shape}"
 
-    def _construct_transitions(self, df, bin_states, include_bin_features, binning_method, bin_space):
+    def _construct_transitions(self, df, bin_states, include_bin_features, bin_space):
         state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact = self._get_state_indices(df)
         self.df_idx_to_compact = df_idx_to_compact
         self.curr_compact_idxs = np.array([df_idx_to_compact[i] for i in current_state_idxs])
@@ -303,7 +296,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         states, bin_states = self._construct_states(df=df, bin_states=bin_states, include_bin_features=include_bin_features, state_idxs=state_idxs)
         num_transitions = len(next_state_idxs)
 
-        actions = self._construct_actions(df, bin_space=bin_space, binning_method=binning_method, next_state_idxs=next_state_idxs)
+        actions = self._construct_actions(df, bin_space=bin_space, next_state_idxs=next_state_idxs)
         rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, reward_choice=self.reward_choice)
         # dones = np.zeros(num_transitions, dtype=bool) # False unless last observation of the night
         # dones[-1] = True
@@ -380,31 +373,27 @@ class OfflineDataset(torch.utils.data.Dataset):
         # Get bin_features and next_bin_features
         return bin_states[state_idxs]
     
-    def _construct_actions(self, df, bin_space, binning_method, next_state_idxs):
+    def _construct_actions(self, df, bin_space, next_state_idxs):
         assert bin_space in ['radec', 'azel', 'radec_filter', 'azel_filter'], 'bin_space must be radec or azel'
-        assert binning_method in ['uniform', 'healpix'], 'bining_method must be uniform or healpix'
 
-        if binning_method == 'healpix':
-            next_state_df = df.iloc[next_state_idxs]
-            if self.hpGrid.is_azel:
-                lonlat = next_state_df[['az', 'el']].values
-            else:
-                lonlat = next_state_df[['ra', 'dec']].values
-            bin_indices = self.hpGrid.ang2idx(lon=lonlat[:, 0], lat=lonlat[:, 1])
-
-            if 'filter' in bin_space:
-                assert ZENITH_FILTER not in next_state_df['filter'].values, \
-                    f"Invalid data: Found '{ZENITH_FILTER}' in next_state_df. Zenith states must be dropped prior to action mapping."
-                filter_series = next_state_df['filter']
-                filter_indices = filter_series.map(FILTER2IDX).values.astype(np.int32)
-                assert not np.isnan(filter_indices).any(), \
-                    "Invalid data: Found unmapped filters. Ensure FILTER2IDX covers all strings in the dataset."
-                actions = (bin_indices * NUM_FILTERS) + filter_indices
-                return actions
-
-            return bin_indices
+        next_state_df = df.iloc[next_state_idxs]
+        if self.hpGrid.is_azel:
+            lonlat = next_state_df[['az', 'el']].values
         else:
-            raise NotImplementedError
+            lonlat = next_state_df[['ra', 'dec']].values
+        bin_indices = self.hpGrid.ang2idx(lon=lonlat[:, 0], lat=lonlat[:, 1])
+
+        if 'filter' in bin_space:
+            assert ZENITH_FILTER not in next_state_df['filter'].values, \
+                f"Invalid data: Found '{ZENITH_FILTER}' in next_state_df. Zenith states must be dropped prior to action mapping."
+            filter_series = next_state_df['filter']
+            filter_indices = filter_series.map(FILTER2IDX).values.astype(np.int32)
+            assert not np.isnan(filter_indices).any(), \
+                "Invalid data: Found unmapped filters. Ensure FILTER2IDX covers all strings in the dataset."
+            actions = (bin_indices * NUM_FILTERS) + filter_indices
+            return actions
+
+        return bin_indices
 
     def _construct_rewards(self, df, next_state_idxs, reward_choice='teff_rate'):
         assert reward_choice in ['teff_rate', 'expert_actions'], 'reward_choice must be teff_rate or expert_actions'

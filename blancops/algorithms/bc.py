@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from blancops.core_rl.neural_nets import MLP, MultiHeadMultiScoreNet, SingleScoreMLP, BinEmbeddingDQN, MultiScoreMLP
+from blancops.core_rl.neural_nets import MLP, AutoregressiveDiscreteNet, MultiHeadMultiScoreNet, SingleScoreMLP, BinEmbeddingDQN, MultiScoreMLP
 from blancops.math import geometry
 from blancops.algorithms.base import AlgorithmBase
 from blancops.data_processing.constants import GRID_NETWORKS
@@ -14,7 +14,7 @@ from pathlib import Path
 class BehaviorCloning(AlgorithmBase):
     def __init__(self, n_global_features, n_bin_features, num_actions, hidden_dim, num_filters=None, loss_fxn=None, activation=None, lr=1e-3, lr_scheduler=None, lr_scheduler_kwargs=None, \
                     lr_scheduler_epoch_start=1, lr_scheduler_num_epochs=5, device='cpu', grid_network=None, use_contextual_gating=False,
-                    embedding_dim=None
+                    emb_dim=None, nbins=None, glob_hidden=None, bin_hidden=None, bin_out=None, state_latent_dim=None, bin_first=False
                     ):
         super().__init__()
         assert grid_network in [None] + GRID_NETWORKS
@@ -34,6 +34,9 @@ class BehaviorCloning(AlgorithmBase):
             self.policy_net = MultiScoreMLP(global_dim=n_global_features, bin_feat_dim=n_bin_features, score_dim=num_filters, hidden_dim=hidden_dim, activation=activation, use_contextual_gating=use_contextual_gating).to(device)
         elif grid_network == 'multi_head_scorer':
             self.policy_net = MultiHeadMultiScoreNet(global_dim=n_global_features, bin_feat_dim=n_bin_features, score_dim=num_filters, hidden_dim=hidden_dim, activation=activation, use_contextual_gating=use_contextual_gating).to(device)
+        elif grid_network == 'autoregressive':
+            self.policy_net = AutoregressiveDiscreteNet(glob_dim=n_global_features, bin_dim=n_bin_features, action_dims=[nbins, num_filters], glob_hidden=glob_hidden, bin_hidden=bin_hidden, nbins=nbins, \
+                nfilters=num_filters, bin_out=bin_out, state_latent_dim=state_latent_dim, activation=activation, hidden_dim=hidden_dim, emb_dim=emb_dim, bin_first=bin_first)
         else:
             raise NotImplementedError(f"grid_network {grid_network} not implemented")
         self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr)
@@ -235,34 +238,3 @@ class BehaviorCloning(AlgorithmBase):
             action = torch.argmax(action_logits, dim=1)
 
             return action.cpu().numpy()[0] if action.size(0) == 1 else action.cpu().numpy()
-
-    # def predict(self, state):
-    #     """
-    #     Get action for a given state
-    #     """
-    #     self.policy_net.eval()
-    #     with torch.no_grad():
-    #         state_tensor = torch.tensor(state, dtype=torch.float32).to(self.device)
-    #         if len(state_tensor.shape) == 1:
-    #             state_tensor = state_tensor.unsqueeze(0)  # Add batch dimension
-                
-    #         action_logits = self.policy_net(state_tensor)
-    #         action = torch.argmax(action_logits, dim=1)
-    #         return action.cpu().numpy()[0] if action.size(0) == 1 else action.cpu().numpy()
-    
-    # def evaluate(self, test_dataset):
-    #     """
-    #     Evaluate the trained policy on test data
-    #     """
-    #     states = torch.tensor(np.array([d['state'] for d in test_dataset]), dtype=torch.float32)
-    #     expert_actions = torch.tensor([d['expert_action'] for d in test_dataset], dtype=torch.long)
-        
-    #     states = states.to(self.device)
-    #     expert_actions = expert_actions.to(self.device)
-        
-    #     with torch.no_grad():
-    #         action_logits = self.policy_net(states)
-    #         predicted_actions = torch.argmax(action_logits, dim=1)
-    #         accuracy = (predicted_actions == expert_actions).float().mean().item()
-        
-    #     return accuracy
