@@ -307,7 +307,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, reward_choice=self.reward_choice)
         # dones = np.zeros(num_transitions, dtype=bool) # False unless last observation of the night
         # dones[-1] = True
-        dones = self.construct_dones(num_transitions=num_transitions, next_state_idxs=next_state_idxs, current_state_idxs=current_state_idxs)
+        dones = self._construct_dones(num_transitions=num_transitions, next_state_idxs=next_state_idxs, current_state_idxs=current_state_idxs)
         # action_masks = self._construct_action_masks(state_df=df, bin_space=bin_space, num_transitions=num_transitions, state_idxs=state_idxs)
         action_masks = self._construct_action_masks(state_df=df, bin_space=bin_space, num_states=len(state_idxs), state_idxs=state_idxs)
         
@@ -324,7 +324,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             
         return states, bin_states, actions, rewards, dones, action_masks, num_transitions
 
-    def construct_dones(self, num_transitions, next_state_idxs, current_state_idxs):
+    def _construct_dones(self, num_transitions, next_state_idxs, current_state_idxs):
         dones = np.zeros(num_transitions, dtype=bool)
         # A transition is the last of the night if its 'next' state isn't a 'current' state for a subsequent transition
         for i in range(num_transitions):
