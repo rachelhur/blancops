@@ -89,16 +89,11 @@ def normalize_noncyclic_features(state,
     
     if do_debug:
         assert (state != np.isnan).any()
-    # Build masks (numpy boolean array)
+
     airmass_mask = np.array(['airmass' == feat for feat in state_feature_names], dtype=bool)
     skybright_mask = np.array(['sky_brightness' in feat for feat in state_feature_names], dtype=bool)
     max_norm_mask = np.array([any(max_feat == feat for max_feat in max_norm_feature_names) for feat in state_feature_names], dtype=bool)
     ang_distance_mask = np.array([any(dist_feat == feat for dist_feat in ang_distance_norm_feature_names) for feat in state_feature_names], dtype=bool)
-    # print([feat for feat in state_feature_names if any(dist_feat == feat for dist_feat in ang_distance_norm_feature_names)])
-    # print(ang_distance_norm_feature_names)
-    # print(state_feature_names)
-    # print(ang_distance_mask)
-    # print(ang_distance_mask.sum())
     if is_torch:
         airmass_mask = torch.tensor(airmass_mask, dtype=torch.bool, device=state.device)
         max_norm_mask = torch.tensor(max_norm_mask, dtype=torch.bool, device=state.device)
