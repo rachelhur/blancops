@@ -21,11 +21,13 @@ import warnings
 import logging
 logger = logging.getLogger(__name__)
 
-def get_nautical_twilight(timestamp, event_type='set', horizon='-10'):
+def get_nautical_twilight(timestamp, event_type='set', horizon='-10', buffer_in_seconds=10):
+    # local_noon_dt = night_dt.replace(hour=16, minute=0, second=0, tzinfo=timezone.utc)
+    # obs = ephemerides.blanco_observer(time=local_noon_dt.timestamp())
     obs = ephemerides.blanco_observer(time=timestamp)
     obs.horizon = horizon
     sun = ephem.Sun()
-    
+
     if event_type == 'rise':
         ephem_date = obs.next_rising(sun).datetime()
     elif event_type == 'set':
@@ -34,6 +36,10 @@ def get_nautical_twilight(timestamp, event_type='set', horizon='-10'):
         raise NotImplementedError
 
     dt_utc = ephem_date.replace(tzinfo=timezone.utc)
+    if event_type == 'rise':
+        dt_utc -= timedelta(seconds=buffer_in_seconds)
+    else:
+        dt_utc += timedelta(seconds=buffer_in_seconds)
     return dt_utc.timestamp()
 
 def get_sun_rise_and_set_times(df):
