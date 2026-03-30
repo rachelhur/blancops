@@ -433,15 +433,24 @@ class Agent:
         """
         assert len(fields_in_bin) != 0, "The agent is receiving an empty list for `fields_in_bin`. "
         glob_state, bin_state = obs
-        visited = info.get('visited', None)
-        action_mask = info.get('action_mask', None)
-        field_ids_in_bin = [fid for fid in fields_in_bin if visited[fid] < field2nvisits[fid]]
+        s_visited = info.get('s_visited', None)
+        s_filter_visits = info.get('s_filter_visits', None)
+        max_s_filter_visits = info.get('max_s_filter_visits', None)
+
+        if (s_filter_visits is not None) and (max_s_filter_visits is not None) and (filter_idx >= 0):
+            field_ids_in_bin = [fid for fid in fields_in_bin if s_filter_visits[fid, filter_idx] < max_s_filter_visits[fid, filter_idx]]
+        else:
+            field_ids_in_bin = [fid for fid in fields_in_bin if s_visited[fid] < field2nvisits[fid]]
+        
+        assert len(field_ids_in_bin) != 0, f"No valid fields left in bin for filter {filter_idx}"
+        
+        # action_mask = info.get('action_mask', None)
 
         if field_choice_method == 'interp':
             with torch.no_grad():
                 glob_state = torch.as_tensor(glob_state, device=self.device, dtype=torch.float32)
                 bin_state = torch.as_tensor(bin_state, device=self.device, dtype=torch.float32)
-                action_mask = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
+                # action_mask = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
                 q_vals = self.algorithm.policy_net(glob_state, bin_state).squeeze(0)
                 q_vals = q_vals.cpu().detach().numpy() #TODO - use mask
 
@@ -457,7 +466,7 @@ class Agent:
                 target_lats = target_lonlats[:, 1]
 
             q_interpolated = interpolate_on_sphere(target_lons, target_lats, lon_data, lat_data, q_vals)
-            best_idx = np.argmax(q_interpolated[action_mask])
+            best_idx = np.argmax(q_interpolated)
             best_field = field_ids_in_bin[best_idx]
             return best_field
 

@@ -139,7 +139,12 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             bool: True if the episode is terminated, False otherwise.
         """
         all_nights_completed = self._night_idx >= self.max_nights
-        all_fields_visited = all(np.array([self._s_visits_cur[fid] >= self.field2maxvisits[fid] for fid in self._fids]))
+        if self.do_filt:
+            all_fields_visited = np.all(self._s_filter_visits_cur >= self._max_s_filter_visits_arr)
+        else:
+            all_fields_visited = np.all(self._s_visits_cur >= self._max_s_visits_arr)
+        # all_fields_visited = all(np.array([self._s_visits_cur[fid] >= self.field2maxvisits[fid] for fid in self._fids]))
+        
         terminated = all_nights_completed or all_fields_visited
         if terminated:
             logger.info(f"Did not visit all fields" if not all_fields_visited else "Visited all fields! :)")
