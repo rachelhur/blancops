@@ -153,10 +153,8 @@ class OfflineDataset(torch.utils.data.Dataset):
         logger.info(f"States shape: {states.shape}, Actions shape: {self.actions.shape}, Rewards shape: {self.rewards.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
         logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}")
 
-# 1. ALWAYS set state feature names strictly to global (since `states` only holds globals at this point)
         state_feature_names = self.global_feature_names
 
-        # 2. ALWAYS Normalize global states
         self.states = normalize_noncyclic_features(
             state=states,
             state_feature_names=state_feature_names,
@@ -168,7 +166,6 @@ class OfflineDataset(torch.utils.data.Dataset):
             fix_nans=True
         )
 
-        # 3. ALWAYS Normalize bin states (if they exist) independently
         if include_bin_features and bin_states is not None:
             self.bin_states = normalize_noncyclic_features(
                 state=torch.tensor(bin_states).detach().clone(), # NOTE: use local `bin_states`, not `self.bin_states`
@@ -211,68 +208,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         else:
             raise NotImplementedError
         
-        # # Set dimension of observation
-        # self.state_dim = states.shape[-1]
-        # if self._grid_network is None:
-        #     state_feature_names = self.global_feature_names + self.bin_feature_names
-        # elif self._grid_network in ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer']:
-        #     self.bin_state_dim = bin_states.shape[-1]
-        #     state_feature_names = self.global_feature_names
-        # else:
-        #     raise NotImplementedError
-
-        # # Normalize states and next_states
-
-        # self.states = normalize_noncyclic_features(
-        #     state=states,
-        #     state_feature_names=state_feature_names,
-        #     max_norm_feature_names=self.max_norm_feature_names,
-        #     ang_distance_norm_feature_names=self.ang_distance_feature_names,
-        #     do_inverse_norm=self.do_inverse_norm,
-        #     do_max_norm=self.do_max_norm,
-        #     do_ang_distance_norm=self.do_ang_distance_norm,
-        #     fix_nans=True
-        # )
-        # if self._grid_network in ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer']:
-        #     self.bin_states = normalize_noncyclic_features(
-        #         state=torch.tensor(self.bin_states),
-        #         state_feature_names=self.bin_feature_names,
-        #         max_norm_feature_names=self.max_norm_feature_names,
-        #         ang_distance_norm_feature_names=self.ang_distance_feature_names,
-        #         do_inverse_norm=self.do_inverse_norm,
-        #         do_max_norm=self.do_max_norm,
-        #         do_ang_distance_norm=self.do_ang_distance_norm,
-        #         fix_nans=True,
-        #     )
-        # else:
-        #     self.bin_states = None
-        #     self.next_bin_states = None
-
-        # if self._grid_network is None:
-        #     if include_bin_features:
-        #         # Convert to tensors before manipulating
-        #         if not isinstance(self.states, torch.Tensor):
-        #             self.states = torch.as_tensor(self.states, dtype=torch.float32)
-        #         if not isinstance(self.bin_states, torch.Tensor):
-        #             self.bin_states = torch.as_tensor(self.bin_states, dtype=torch.float32)
-                    
-        #         # Flatten the 3D bin states [Batch, Bins, Features] -> [Batch, Bins * Features]
-        #         bs_flat = self.bin_states.reshape(self.bin_states.shape[0], -1)
-                
-        #         # Concatenate flat bin features directly to global features
-        #         self.states = torch.cat([self.states, bs_flat], dim=1)
-                
-        #         # Cleanup to save VRAM and bypass grid_network checks
-        #         self.bin_states = None 
-                
-        #     self.bin_state_dim = 0
-        #     self.state_dim = self.states.shape[-1]
-        # elif self._grid_network in ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer']:
-        #     self.state_dim = self.states.shape[-1]
-        #     self.bin_state_dim = self.bin_states.shape[-1] if include_bin_features else 0
-        # else:
-        #     raise NotImplementedError
-
         assert self.states.shape[0] == self.action_masks.shape[0], "States and masks must be 1:1"
         assert self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.num_transitions, \
                 f"Transition arrays shape mismatch: num_transitions {self.num_transitions}, bin_actions {self.actions.shape[0]}, rewards {self.rewards.shape[0]}, dones {self.dones.shape[0]}"
@@ -280,11 +215,6 @@ class OfflineDataset(torch.utils.data.Dataset):
             assert self.states.shape[0] == self.bin_states.shape[0],\
             f"State arrays shape mismatch: global state shape {self.states.shape[0]}, bin state shape {self.bin_states.shape[0]}"
 
-        # if include_bin_features:
-        #     assert self.states.shape[0] - 1 == self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.action_masks.shape[0] == self.bin_states.shape[0] - 1, \
-        # else:
-        #     assert self.states.shape[0] - 1 == self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.action_masks.shape[0], \
-        #         f"Shape mismatch: states {self.shape}, actions {self.actions.shape}, rewards {self.rewards.shape}, dones {self.dones.shape}, action_masks {self.action_masks.shape}"
 
     def _construct_transitions(self, df, bin_states, include_bin_features, bin_space):
         state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact = self._get_state_indices(df)
@@ -332,16 +262,6 @@ class OfflineDataset(torch.utils.data.Dataset):
             bin_states = self._construct_bin_states(bin_states=bin_states, state_idxs=state_idxs)
         else:
             bin_states = None
-            # if self._grid_network is None:
-            #     self.bin_states = np.array([])
-            #     self.next_bin_states = np.array([])
-            #     states = np.concatenate([global_states, bin_states], axis=1)
-            #     return states, bin_states
-            # elif self._grid_network  in ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer']:
-                # self.bin_states = bin_states
-                # return global_states, bin_states
-            # else:
-                # raise NotImplementedError(f"Grid network type {self._grid_network} not implemented for state construction.")
         return global_states, bin_states
     
     def _get_state_indices(self, df, max_time_diff_min=10):
@@ -476,22 +396,18 @@ class OfflineDataset(torch.utils.data.Dataset):
         generator = torch.Generator().manual_seed(random_seed)
         np.random.seed(random_seed) # Ensure consistent night selection
         
-        # 1. Randomly sample whole nights for the validation set
+        # Randomly sample whole nights for the validation set
         num_val_nights = max(1, int(self.n_nights * val_split))
         val_nights = np.random.choice(self.unique_nights, size=num_val_nights, replace=False)
         logger.info(f'Choosing {num_val_nights} nights for validation out of {self.n_nights} nights. Specifically, {np.sort(val_nights)}')
         
-        # 2. Track which night each transition belongs to
         transition_nights = self._df.iloc[self.next_state_idxs - 1]['night']
             
-        # 3. Create boolean mask mapping transitions to the selected val nights
         val_mask = np.isin(transition_nights, val_nights)
         
-        # 4. Extract the exact indices for train and val subsets
         train_indices = np.where(~val_mask)[0].tolist()
         val_indices = np.where(val_mask)[0].tolist()
         
-        # 5. Create Subsets
         train_dataset = Subset(self, train_indices)
         val_dataset = Subset(self, val_indices)
         

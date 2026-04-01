@@ -445,44 +445,6 @@ class Agent:
         return schedule
     
 
-    # def choose_field(self, obs, info, field2nvisits, field2radec, hpGrid, field_choice_method, fields_in_bin, filter_idx): 
-    #     """
-    #     Choose field in bin based on interpolated Q-values
-    #     """
-    #     assert len(fields_in_bin) != 0, "The agent is receiving an empty list for `fields_in_bin`. "
-    #     glob_state, bin_state = obs
-    #     s_visited = info.get('s_visited', None)
-    #     action_mask = info.get('action_mask', None)
-    #     field_ids_in_bin = [fid for fid in fields_in_bin if s_visited[fid] < field2nvisits[fid]]
-
-    #     if field_choice_method == 'interp':
-    #         with torch.no_grad():
-    #             glob_state = torch.as_tensor(glob_state, device=self.device, dtype=torch.float32)
-    #             bin_state = torch.as_tensor(bin_state, device=self.device, dtype=torch.float32)
-    #             action_mask = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
-    #             q_vals = self.algorithm.policy.core_net(glob_state, bin_state).squeeze(0)
-    #             q_vals = q_vals.cpu().detach().numpy() #TODO - use mask
-
-    #         lon_data = hpGrid.lon
-    #         lat_data = hpGrid.lat
-
-    #         target_lonlats = np.array([field2radec[fid] for fid in field_ids_in_bin])
-    #         if hpGrid.is_azel:
-    #             timestamp = info.get('timestamp')
-    #             target_lons, target_lats = ephemerides.equatorial_to_topographic(ra=target_lonlats[:, 0], dec=target_lonlats[:, 1], time=timestamp)
-    #         else:
-    #             target_lons = target_lonlats[:, 0]
-    #             target_lats = target_lonlats[:, 1]
-
-    #         q_interpolated = interpolate_on_sphere(target_lons, target_lats, lon_data, lat_data, q_vals)
-    #         best_idx = np.argmax(q_interpolated)
-    #         best_field = field_ids_in_bin[best_idx]
-    #         return best_field
-
-    #     elif field_choice_method == 'random':
-    #         field_id = random.choice(field_ids_in_bin)
-    #         return field_id
-        
     def choose_filter(self, filter2wave=None):
         if filter2wave is None:
             # Filter wavelengths (nm) according to obztak https://github.com/kadrlica/obztak/blob/c28fab23b09bcff1cf46746eae4ec7e40aeb7f7a/obztak/seeing.py#L22
