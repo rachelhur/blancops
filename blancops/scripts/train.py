@@ -50,7 +50,7 @@ def get_args():
 
     # Data selection and setup
     parser.add_argument('--data.nside', type=int, default=16, help='Healpix nside parameter')
-    parser.add_argument('--data.bin_space', type=str, default='radec', help='Binning space to use (azel or radec)')
+    parser.add_argument('--data.action_space', type=str, default='radec', help='Binning space to use (azel or radec)')
     parser.add_argument('--data.specific_years', type=int, nargs='*', default=None, help='Specific years to include in the dataset')
     parser.add_argument('--data.specific_months', type=int, nargs='*', default=None, help='Specific months to include in the dataset')
     parser.add_argument('--data.specific_days', type=int, nargs='*', default=None, help='Specific days to include in the dataset')
@@ -117,7 +117,7 @@ def main():
     logging.getLogger("cartopy").setLevel(logging.WARNING)
     
     # Make sure action space and grid networks align
-    # if 'filter' in cfg['data']['bin_space']:
+    # if 'filter' in cfg['data']['action_space']:
     #     assert cfg['model']['grid_network'] == "multi_dim_scorer", "Only multi_dim_scorer can handle filter in action space right now"
     # if len(cfg['data']['bin_features']) > 0:
     #     assert np.isin(cfg['model']['grid_network'], ["single_bin_scorer", "multi_dim_scorer", "multi_head_scorer"]), "Must use a grid_network if using bin features. Options: single_bin_scorer, multi_dim_scorer"

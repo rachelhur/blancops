@@ -22,7 +22,7 @@
     "data": {
         "bin_method": "healpix",
         "nside": 16,
-        "bin_space": "azel_filter",
+        "action_space": "azel_filter",
         "specific_years": [
             2015,
             2016,

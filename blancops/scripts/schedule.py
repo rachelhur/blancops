@@ -62,7 +62,7 @@ def main():
     assert os.path.exists(cfg_dir), f"Directory {cfg_dir} does not exist"
     cfg = load_model_config(cfg_dir / "config.json")
     nside = cfg['data']['nside']
-    bin_space = cfg['data']['bin_space']
+    action_space = cfg['data']['action_space']
     
     # Define eval outdir
     schedule_name = f"{args.schedule_name}_v0"
@@ -158,7 +158,7 @@ def main():
                                 activation=cfg['model']['activation'],
                                 cql_alpha=cfg['model'].get('cql_alpha', None),
                                 nside=nside,
-                                bin_space=bin_space
+                                action_space=action_space
                                 )
     
     agent = Agent(
@@ -189,8 +189,8 @@ def main():
               field2nvisits=field2nvisits, field2radec=field2radec)
 
     logger.info("Generating plots...")
-    save_survey_diagnostics(eval_metrics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, bin_space=bin_space)
-    save_gifs(schedule_path=schedule_outdir / 'survey_schedule.csv', save_dir=schedule_outdir, do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, bin_space=bin_space, nside=nside, field2radec_filepath=lookup_dirpath / "field2radec.json")
+    save_survey_diagnostics(eval_metrics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, action_space=action_space)
+    save_gifs(schedule_path=schedule_outdir / 'survey_schedule.csv', save_dir=schedule_outdir, do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, action_space=action_space, nside=nside, field2radec_filepath=lookup_dirpath / "field2radec.json")
 
     # # Load results
     # with open(schedule_outdir / 'eval_metrics.pkl', 'rb') as f:
@@ -198,7 +198,7 @@ def main():
 
     if not args.no_night_diagnostics:
         save_nightly_diagnostics(eval_metrics=eval_metrics, observing_night_strs=observing_night_strs, schedule_outdir=schedule_outdir, grid_network=cfg['model']['grid_network'],
-                            nside=nside, lookup_dirpath=lookup_dirpath, env=env, num_actions=cfg['data']['num_actions'], bin_space=bin_space,
+                            nside=nside, lookup_dirpath=lookup_dirpath, env=env, num_actions=cfg['data']['num_actions'], action_space=action_space,
                             do_gifs=not args.do_night_gifs)
         
 if __name__ == "__main__":

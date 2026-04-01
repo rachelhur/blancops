@@ -5,7 +5,7 @@ from blancops.math import units
 
 import matplotlib.pyplot as plt
 
-def plot_metrics(results_outdir, dataset):
+def plot_train_metrics(results_outdir, dataset):
     with open(results_outdir / 'train_metrics.pkl', 'rb') as f:
         train_metrics = pickle.load(f)
     with open(results_outdir / 'val_metrics.pkl', 'rb') as f:
@@ -47,15 +47,26 @@ def plot_metrics(results_outdir, dataset):
     fig.tight_layout()
     fig.savefig(results_outdir / 'figures' / 'loss_and_metrics_history.png')    
 
+    
+    # PLOT BIN AND FILTER ACCURACY
+    fig, ax = plt.subplots(1)
+    ax.plot(train_metrics['epoch'], train_metrics['bin_accuracy'], label='train', color='black', alpha=.5, linestyle='dotted')
+    ax.plot(val_metrics['epoch'], val_metrics['bin_accuracy'], label='val')
+    ax.set_ylabel('Bin Accuracy', fontsize=14)
+    ax.set_xlabel('Epoch')
+    ax.hlines(y=1., xmin=0, xmax=np.max(train_metrics['epoch']), color='red', linestyle='dashed')
+    ax.legend()
+
     if 'filter_accuracy' in val_metrics:
-        fig, ax = plt.subplots(1)
-        ax.plot(train_metrics['epoch'], train_metrics['filter_accuracy'])
-        ax.plot(val_metrics['epoch'], val_metrics['filter_accuracy'])
+        ax = fig.add_subplot(1,1,1)
+        ax.plot(train_metrics['epoch'], train_metrics['filter_accuracy'], label='train', color='black', alpha=.5, linestyle='dotted')
+        ax.plot(val_metrics['epoch'], val_metrics['filter_accuracy'], label='val')
         ax.set_ylabel('Filter Accuracy', fontsize=14)
         ax.set_xlabel('Epoch')
         ax.hlines(y=1., xmin=0, xmax=np.max(train_metrics['epoch']), color='red', linestyle='dashed')
+        ax.legend()
         fig.tight_layout()
-        fig.savefig(results_outdir / 'figures' / 'filter_accuracy.png')
+        fig.savefig(results_outdir / 'figures' / 'bin_and_filter_accuracy.png')
 
     i = 0
     fig, ax = plt.subplots()

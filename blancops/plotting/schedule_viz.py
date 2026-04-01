@@ -17,7 +17,7 @@ from collections import defaultdict
 from blancops.ephemerides.ephemerides import topographic_to_equatorial
 from blancops.math import units
 
-def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_ortho, bin_space, nside, field2radec_filepath):
+def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_ortho, action_space, nside, field2radec_filepath):
     if do_fieldbin:
         plot_schedule_from_file(
             outfile=save_dir / "agent_fieldbin_schedule.gif",
@@ -28,7 +28,7 @@ def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_or
             whole=False,
             compare=False,
             expert=False,
-            is_azel='azel' in bin_space,
+            is_azel='azel' in action_space,
             mollweide=False,
         )
     if do_bin:
@@ -41,11 +41,11 @@ def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_or
             whole=False,
             compare=False,
             expert=False,
-            is_azel='azel' in bin_space,
+            is_azel='azel' in action_space,
             mollweide=False,
         ) 
 
-        if bin_space == 'radec':
+        if action_space == 'radec':
             if do_mollefield:
                 # Mollefield
                 logger.info("Creating static plots")
@@ -58,7 +58,7 @@ def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_or
                     whole=True,
                     compare=True,
                     expert=True,
-                    is_azel='azel' in bin_space,
+                    is_azel='azel' in action_space,
                     mollweide=True,
                 )  
             if do_ortho:
@@ -71,14 +71,14 @@ def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_or
                     whole=True,
                     compare=True,
                     expert=True,
-                    is_azel='azel' in bin_space,
+                    is_azel='azel' in action_space,
                     mollweide=False,
                 )  
 
-def save_survey_diagnostics(eval_metrics, save_dir, field_lookup, nside, bin_space, ep_num=0):
+def save_survey_diagnostics(eval_metrics, save_dir, field_lookup, nside, action_space, ep_num=0):
     eval_metrics = eval_metrics[f'ep-{ep_num}']
     _preflat_metrics = defaultdict(list)
-    hpGrid = HealpixGrid(nside=nside, is_azel='azel' in bin_space)
+    hpGrid = HealpixGrid(nside=nside, is_azel='azel' in action_space)
 
     # Extract the arrays from each night
     for night_key, metrics_dict in eval_metrics.items():
@@ -131,7 +131,7 @@ def save_survey_diagnostics(eval_metrics, save_dir, field_lookup, nside, bin_spa
 
     fig.savefig(save_dir / "survey_ra_vs_dec.png")
 
-def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir, grid_network, env, nside, lookup_dirpath, num_actions, bin_space, ep_num=0, do_gifs=False):
+def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir, grid_network, env, nside, lookup_dirpath, num_actions, action_space, ep_num=0, do_gifs=False):
     eval_metrics = eval_metrics[f'ep-{ep_num}']
     night_info = []
     for obs_n_str in observing_night_strs:
@@ -227,7 +227,7 @@ def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir
         logger.info(f'Creating schedule gif for {night_idx}th night')
         save_nightly_schedule(night_metrics=metrics, save_dir=night_dir)
         if do_gifs:
-            save_gifs(night_dir / "schedule.csv", night_dir, do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, bin_space=bin_space, nside=nside, 
+            save_gifs(night_dir / "schedule.csv", night_dir, do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, action_space=action_space, nside=nside, 
                       field2radec_filepath=lookup_dirpath / 'field2radec.json')
             
         night_dt += timedelta(days=1)

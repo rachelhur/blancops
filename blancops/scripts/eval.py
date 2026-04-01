@@ -36,7 +36,7 @@ from pathlib import Path
 def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None, is_azel=False, whole=False, bin2pos_filepath=None, field2radec_filepath=None):
     bin2pos_filepath=None
     # Save timestamps, field_ids, and bin numbers
-    bin_space = 'azel' if is_azel else 'radec'
+    action_space = 'azel' if is_azel else 'radec'
     assert os.path.exists(save_dir)
 
     eval_timestamps = night_metrics['timestamp']
@@ -72,7 +72,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
         whole=False,
         compare=False,
         expert=False,
-        is_azel=bin_space=='azel',
+        is_azel=action_space=='azel',
         mollweide=False,
     )
     plot_schedule_from_file(
@@ -85,7 +85,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
         whole=False,
         compare=False,
         expert=True,
-        is_azel=bin_space=='azel',
+        is_azel=action_space=='azel',
         mollweide=False,
     )
 
@@ -103,7 +103,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 whole=False,
                 compare=False,
                 expert=True,
-                is_azel=bin_space=='azel',
+                is_azel=action_spaceace=='azel',
                 mollweide=False,
             )
             plot_schedule_from_file(
@@ -116,7 +116,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 whole=False,
                 compare=False,
                 expert=False,
-                is_azel=bin_space=='azel',
+                is_azel=action_space=='azel',
                 mollweide=False,
             )
 
@@ -130,7 +130,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
             whole=False,
             compare=False,
             expert=False,
-            is_azel=bin_space=='azel',
+            is_azel=action_space=='azel',
             mollweide=False,
         ) 
 
@@ -146,7 +146,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
             whole=False,
             compare=True,
             expert=True,
-            is_azel=bin_space=='azel',
+            is_azel=action_space=='azel',
             mollweide=False,
         )
         plot_schedule_from_file(
@@ -159,11 +159,11 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
             whole=False,
             compare=False,
             expert=True,
-            is_azel=bin_space=='azel',
+            is_azel=action_space=='azel',
             mollweide=False,
         )
 
-        if bin_space == 'radec':
+        if 'radec' in action_space:
             # Mollefield
             logger.info("Creating static plots")
             plot_schedule_from_file(
@@ -176,7 +176,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 whole=True,
                 compare=True,
                 expert=True,
-                is_azel=bin_space=='azel',
+                is_azel='azel' in action_space,
                 mollweide=True,
             )  
             plot_schedule_from_file(
@@ -189,7 +189,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 whole=True,
                 compare=True,
                 expert=True,
-                is_azel=bin_space=='azel',
+                is_azel='azel' in action_space,
                 mollweide=False,
             )  
 
@@ -306,7 +306,7 @@ def main():
                                 use_contextual_gating=cfg['model'].get('contextual_gating', None),
                                 cql_alpha=cfg['model'].get('cql_alpha', None),
                                 nside=cfg['data']['nside'],
-                                bin_space=cfg['data']['bin_space']
+                                action_space=cfg['data']['action_space']
                                 )
     
     agent = Agent(
@@ -343,7 +343,7 @@ def main():
     exp_mask = test_dataset.actions != ZENITH_BIN_NUM
     ag_mask = agent_actions != ZENITH_BIN_NUM
     # Get expert and agent actions (bin and filter)
-    if 'filter' in cfg['data']['bin_space']:
+    if 'filter' in cfg['data']['action_space']:
         expert_filters = exp_actions[exp_mask] % NUM_FILTERS
         agent_filters = agent_actions[ag_mask] % NUM_FILTERS
         expert_bins = exp_actions[exp_mask] // NUM_FILTERS
@@ -369,7 +369,7 @@ def main():
     axs[1].set_xlabel('Time since sunrise (normalized)')
     fig.savefig(eval_outdir + 'eval_and_target_bins.png')
 
-    if 'filter' in cfg['data']['bin_space']:
+    if 'filter' in cfg['data']['action_space']:
         fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
         axs[0].plot(expert_times, expert_filters, marker='*', alpha=.3, label='true')
         axs[0].plot(expert_times, agent_filters, marker='o', alpha=.3, label='pred')
@@ -542,7 +542,7 @@ def main():
 
         logger.info(f'Creating schedule gif for {night_idx}th night')
         
-        bin2pos_filepath = global_cfg['paths']['TRAIN_DIR'] + f"nside{nside}_bin2{cfg['data']['bin_space']}.json"
+        bin2pos_filepath = global_cfg['paths']['TRAIN_DIR'] + f"nside{nside}_bin2{cfg['data']['action_space']}.json"
         bin2pos_filepath = bin2pos_filepath.replace("_filter", "")
         save_schedule(night_metrics=metrics, pd_group=night_df, save_dir=night_dir, nside=nside, make_gifs=args.make_gifs, 
                       is_azel=test_dataset.hpGrid.is_azel, bin2pos_filepath=bin2pos_filepath, field2radec_filepath=field2radec_filepath)

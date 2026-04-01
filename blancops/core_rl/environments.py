@@ -678,14 +678,14 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         self.do_inverse_norm = cfg['data']['do_inverse_norm']
         self.do_ang_distance_norm = cfg['data']['do_ang_distance_norm']
         self.include_bin_features = len(cfg['data']['bin_features']) > 0
-        self.bin_space = cfg['data']['bin_space']
+        self.action_space = cfg['data']['action_space']
         nside = cfg['data']['nside']
-        self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.bin_space))
+        self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.action_space))
         self.nbins = len(self.hpGrid.idx_lookup)
         self._grid_network = cfg['model']['grid_network']
         self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
-        self.do_filt = 'filter' in self.bin_space
+        self.do_filt = 'filter' in self.action_space
         
         # Get field lookup tables
         with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2RADEC'], 'r') as f:
@@ -834,7 +834,7 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
     #             action_mask[b] = True
     #             self._valid_fields_per_bin[b].append(fid)
 
-    #     if 'filter' in self.bin_space:
+    #     if 'filter' in self.action_space:
     #         action_mask = np.repeat(action_mask[:, np.newaxis], NUM_FILTERS, axis=1).flatten() #TODO 2. in todoist
     #     self._action_mask = action_mask
     #     return action_mask
@@ -855,9 +855,9 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         self.do_inverse_norm = cfg['data']['do_inverse_norm']
         self.do_ang_distance_norm = cfg['data']['do_ang_distance_norm']
         self.include_bin_features = len(cfg['data']['bin_features']) > 0
-        self.bin_space = cfg['data']['bin_space']
+        self.action_space = cfg['data']['action_space']
         nside = cfg['data']['nside']
-        self.hpGrid = None if cfg['data']['bin_method'] != 'healpix' else ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.bin_space))
+        self.hpGrid = None if cfg['data']['bin_method'] != 'healpix' else ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.action_space))
         self.nbins = len(self.hpGrid.idx_lookup)
         self._grid_network = cfg['model']['grid_network']
         self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
@@ -875,7 +875,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
             self._night_info.append((midnight_dt, night_portion))
 
         self._airmass_limit = airmass_limit
-        self.do_filt = 'filter' in self.bin_space
+        self.do_filt = 'filter' in self.action_space
         self.nfilters = len(FILTER2IDX)
 
         self.field_lookup = pd.read_json(Path(data_dir) / "field_lookup.json" )

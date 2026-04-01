@@ -202,8 +202,8 @@ class Agent:
         field2nvisits = env.unwrapped.field2maxvisits if field2nvisits is None else field2nvisits
         field2radec = env.unwrapped.field2radec if field2radec is None else field2radec
         
-        hpGrid = None if cfg['data']['bin_method'] != 'healpix' else ephemerides.HealpixGrid(nside=cfg['data']['nside'], is_azel=('azel' in cfg['data']['bin_space']))
-        bin_space = cfg['data']['bin_space']
+        hpGrid = None if cfg['data']['bin_method'] != 'healpix' else ephemerides.HealpixGrid(nside=cfg['data']['nside'], is_azel=('azel' in cfg['data']['action_space']))
+        action_space = cfg['data']['action_space']
 
         with logging_redirect_tqdm():
             for episode in tqdm(range(num_episodes)):
@@ -243,7 +243,7 @@ class Agent:
                             bin_idx = WAIT_SIGNAL # do not update filter and field id since they should stay the same in wait state
                         else:
                             action = self.choose_action(x_glob=state['global_state'], x_bin=state['bin_state'], action_mask=action_mask, epsilon=None)
-                            if 'filter' in bin_space:
+                            if 'filter' in action_space:
                                 bin_idx = int(action // self.algorithm.num_filters)
                                 filter_idx = int(action % self.algorithm.num_filters)
                             else:

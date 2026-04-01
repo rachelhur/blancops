@@ -260,7 +260,7 @@ def calculate_global_features(df, field2name, hpGrid,
 
 def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names, 
                                    bin_feature_names, cyclical_feature_names, do_cyclical_norm, night2fieldvisits,
-                                   night2filtervisithistory, fieldfilter2maxvisits, field2radec, field2maxvisits, bin_space,
+                                   night2filtervisithistory, fieldfilter2maxvisits, field2radec, field2maxvisits, action_space,
                                    pt_az=None, pt_el=None, pt_ra=None, pt_dec=None, pt_filter=None, timestamps=None):
     """
     Calculate bin features dynamically based on requested feature names.
@@ -383,7 +383,7 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
         logger.info("Calculating history-based features. This may take a while...")
         calculated_night_history_features = calculate_history_dependent_bin_features(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, 
                                                                                      night2visithistory=night2fieldvisits, night2filtervisithistory=night2filtervisithistory,
-                                                                                     field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space,
+                                                                                     field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, action_space=action_space,
                                                                                      requested_features=bin_feature_names)
         calculated_features = calculated_features | calculated_night_history_features
     
@@ -399,7 +399,7 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
 
 def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2visithistory, 
                                              night2filtervisithistory, field2maxvisits, 
-                                             fieldfilter2maxvisits, bin_space, requested_features):
+                                             fieldfilter2maxvisits, action_space, requested_features):
     n_bins = len(hpGrid.idx_lookup)
     arr_shape = (len(pt_df), n_bins)
     field_ids = np.array(list(field2maxvisits.keys()))
@@ -407,7 +407,7 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
     idx2filter = {v: k for k, v in FILTER2IDX.items()}
     sentinel_val = AZEL_BIN_FEAT_SENTINEL if hpGrid.is_azel else RADEC_BIN_FEAT_SENTINEL
 
-    do_filt = 'filter' in bin_space
+    do_filt = 'filter' in action_space
     is_azel = hpGrid.is_azel
     
     # State Assignment Helper
@@ -704,7 +704,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
                 )
 
 # def calculate_history_dependent_bin_features(pt_df, hpGrid, night2visithistory, night2filtervisithistory, 
-#                                              fieldfilter2maxvisits, field2radec, field2maxvisits, bin_space,
+#                                              fieldfilter2maxvisits, field2radec, field2maxvisits, action_space,
 #                                              base_bin_feature_names):
 #     n_bins = len(hpGrid.idx_lookup)
 #     arr_shape = (len(pt_df), n_bins)
@@ -722,13 +722,13 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #         warnings.filterwarnings("error", category=RuntimeWarning)
 #         calculated_features = calculate_history_dependent_bin_features_azel(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, calculated_features=calculated_features, 
 #                                                                             night2visithistory=night2visithistory, night2filtervisithistory=night2filtervisithistory,
-#                                                                             field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space,
+#                                                                             field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, action_space=action_space,
 #                                                                             base_bin_feature_names)
 #     else:
 #         warnings.filterwarnings("error", category=RuntimeWarning)
 #         calculated_features = calculate_history_dependent_bin_features_radec(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, calculated_features=calculated_features, 
 #                                                                             night2visithistory=night2visithistory, night2filtervisithistory=night2filtervisithistory,
-#                                                                             field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, bin_space=bin_space,
+#                                                                             field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, action_space=action_space,
 #                                                                             base_bin_feature_names)
     
 #     for key, arr in calculated_features.items():
@@ -739,7 +739,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 
 
 # def calculate_history_dependent_bin_features_radec(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, 
-#                                                    night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, bin_space,
+#                                                    night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, action_space,
 #                                                     base_bin_feature_names):
 #     n_bins = len(hpGrid.idx_lookup)
 #     field_ids = np.array(list(field2maxvisits.keys()))
@@ -770,7 +770,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #     night_groups = pt_df.groupby('night')
 
 #     # if False:
-#     if 'filter' in bin_space:
+#     if 'filter' in action_space:
 #         # Precompute survey-wide filters for each filter
 #         nfields_s_filter = np.zeros((n_bins, nfilters), dtype=np.int32)
 #         for f in range(nfilters):
@@ -971,7 +971,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #     return calculated_features
         
 # def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, 
-#                                                   night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, bin_space,
+#                                                   night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, action_space,
 #                                                   base_bin_feature_names):
 #     n_bins = len(hpGrid.idx_lookup)
 #     field_ids = np.array(list(field2maxvisits.keys()))
@@ -1010,7 +1010,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #         cur_night_visits = np.zeros(nfields, dtype=np.int32)
         
 #         # 2D counters
-#         if 'filter' in bin_space:
+#         if 'filter' in action_space:
 #             cur_survey_filter_visits = night2filtervisithistory[night].copy()
 #             cur_night_filter_visits = np.zeros((nfields, nfilters), dtype=np.int32)
         
@@ -1027,7 +1027,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #         max_n_visits_arr = np.bincount(mapped_night_fids[valid_mapped_mask], minlength=nfields)
         
 #         # Night limits 2D
-#         if 'filter' in bin_space:
+#         if 'filter' in action_space:
 #             night_filts_raw = group['filt_idx'][valid_night_mask].to_numpy().astype(np.int32)
 #             max_n_filter_visits_arr = np.zeros((nfields, nfilters), dtype=np.int32)
 #             np.add.at(
@@ -1050,7 +1050,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #                     cur_survey_visits[idx] += 1
 #                     cur_night_visits[idx] += 1
                     
-#                     if 'filter' in bin_space and obs_filt != -1:
+#                     if 'filter' in action_space and obs_filt != -1:
 #                         cur_survey_filter_visits[idx, obs_filt] += 1
 #                         cur_night_filter_visits[idx, obs_filt] += 1
 
@@ -1081,7 +1081,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #                 act_s_cache, act_n_cache = active_bins_s, active_bins_n
                 
 #                 # 2D Filter Cache
-#                 if 'filter' in bin_space:
+#                 if 'filter' in action_space:
 #                     in_s_f_plan = max_s_filter_visits_arr[valid_mask] > 0
 #                     in_n_f_plan = max_n_filter_visits_arr[valid_mask] > 0
 
@@ -1104,7 +1104,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #                 bin_count_s, bin_count_n = bc_s_cache, bc_n_cache
 #                 active_bins_s, active_bins_n = act_s_cache, act_n_cache
                 
-#                 if 'filter' in bin_space:
+#                 if 'filter' in action_space:
 #                     bin_count_s_filter, bin_count_n_filter = bc_s_f_cache, bc_n_f_cache
 #                     active_bins_s_filter, active_bins_n_filter = act_s_f_cache, act_n_f_cache
 
@@ -1156,7 +1156,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #             calculated_features['night_min_tiling'][global_idx] = n_mins
             
 #             # 3. CALCULATE 2D FILTER STATE
-#             if 'filter' in bin_space:
+#             if 'filter' in action_space:
 #                 v_survey_f_counts = cur_survey_filter_visits[valid_mask]
 #                 v_night_f_counts = cur_night_filter_visits[valid_mask]
                 
@@ -1225,7 +1225,7 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
 #     return calculated_features
 
 # def calculate_history_dependent_bin_features_azel(pt_df, hpGrid, field2radec, calculated_features, night2visithistory, 
-#                                                   night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, bin_space):
+#                                                   night2filtervisithistory, field2maxvisits, fieldfilter2maxvisits, action_space):
 #     n_bins = len(hpGrid.idx_lookup)
 #     field_ids = np.array(list(field2maxvisits.keys()))
 #     nfields = len(field_ids)

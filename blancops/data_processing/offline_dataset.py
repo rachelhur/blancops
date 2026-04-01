@@ -30,7 +30,6 @@ class OfflineDataset(torch.utils.data.Dataset):
                  specific_years=None, specific_months=None, specific_days=None, specific_filters=None,
                  field2maxvisits_path=None, field2radec_path=None, field2name_path=None,
                  night2filtervisithistory_path=None, fieldfilter2maxvisits=None,
-                 debug_mode=False
                  ): 
         assert cfg is not None and gcfg is not None, "Must pass both cfg and gcfg"
 
@@ -221,7 +220,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 
             self._save_to_cache()
 
-    def _construct_transitions(self, df, bin_states, include_bin_features, bin_space):
+    def _construct_transitions(self, df, bin_states, include_bin_features, action_space):
         state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact = self._get_state_indices(df)
         self.df_idx_to_compact = df_idx_to_compact
         self.curr_compact_idxs = np.array([df_idx_to_compact[i] for i in current_state_idxs])
@@ -231,13 +230,13 @@ class OfflineDataset(torch.utils.data.Dataset):
         states, bin_states = self._construct_states(df=df, bin_states=bin_states, include_bin_features=include_bin_features, state_idxs=state_idxs)
         num_transitions = len(next_state_idxs)
 
-        actions = self._construct_actions(df, bin_space=bin_space, next_state_idxs=next_state_idxs)
+        actions = self._construct_actions(df, action_space=action_space, next_state_idxs=next_state_idxs)
         rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, reward_choice=self.reward_choice)
         # dones = np.zeros(num_transitions, dtype=bool) # False unless last observation of the night
         # dones[-1] = True
         dones = self._construct_dones(num_transitions=num_transitions, next_state_idxs=next_state_idxs, current_state_idxs=current_state_idxs)
-        # action_masks = self._construct_action_masks(state_df=df, bin_space=bin_space, num_transitions=num_transitions, state_idxs=state_idxs)
-        action_masks = self._construct_action_masks(state_df=df, bin_space=bin_space, num_states=len(state_idxs), state_idxs=state_idxs)
+        # action_masks = self._construct_action_masks(state_df=df, action_space=action_space, num_transitions=num_transitions, state_idxs=state_idxs)
+        action_masks = self._construct_action_masks(state_df=df, action_space=action_space, num_states=len(state_idxs), state_idxs=state_idxs)
         
         states = torch.as_tensor(states, dtype=torch.float32)
         actions = torch.as_tensor(actions, dtype=torch.int32)
@@ -298,8 +297,8 @@ class OfflineDataset(torch.utils.data.Dataset):
         # Get bin_features and next_bin_features
         return bin_states[state_idxs]
     
-    def _construct_actions(self, df, bin_space, next_state_idxs):
-        assert bin_space in ['radec', 'azel', 'radec_filter', 'azel_filter'], 'bin_space must be radec or azel'
+    def _construct_actions(self, df, action_space, next_state_idxs):
+        assert action_space in ['radec', 'azel', 'radec_filter', 'azel_filter'], 'action_space must be radec or azel'
 
         next_state_df = df.iloc[next_state_idxs]
         if self.hpGrid.is_azel:
@@ -308,7 +307,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             lonlat = next_state_df[['ra', 'dec']].values
         bin_indices = self.hpGrid.ang2idx(lon=lonlat[:, 0], lat=lonlat[:, 1])
 
-        if 'filter' in bin_space:
+        if 'filter' in action_space:
             assert ZENITH_FILTER not in next_state_df['filter'].values, \
                 f"Invalid data: Found '{ZENITH_FILTER}' in next_state_df. Zenith states must be dropped prior to action mapping."
             filter_series = next_state_df['filter']
@@ -330,7 +329,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             rewards = np.ones(len(next_state_df), dtype=np.float32)
         return rewards
 
-    def _construct_action_masks(self, state_df, bin_space, num_states, state_idxs):
+    def _construct_action_masks(self, state_df, action_space, num_states, state_idxs):
         """
         Constructs action masks only with the condition that bins outside of horizon are masked
         """
@@ -348,11 +347,37 @@ class OfflineDataset(torch.utils.data.Dataset):
             else:
                 els = np.tile(self.hpGrid.lat[:, np.newaxis], reps=len(state_df['timestamp'].values)).T
                 action_mask = els > 0
-            if 'filter' in bin_space:
+            if 'filter' in action_space:
                 action_mask = np.repeat(action_mask, self.num_filters, axis=1)
         else:
             action_mask = np.ones((num_states, self.num_actions))
         return action_mask
+        
+    def _save_to_cache(self):
+        """Packs the tensors into a dictionary and saves to disk."""
+        logger.info(f"Saving processed dataset to {self.cache_path}")
+        cache_dict = {
+            'states': self.states,
+            'bin_states': self.bin_states,
+            'actions': self.actions,
+            'action_masks': self.action_masks,
+            'rewards': self.rewards,
+            'dones': self.dones
+        }
+        # torch.save is highly optimized for writing dense tensors to disk
+        torch.save(cache_dict, self.cache_path)
+
+    def _load_from_cache(self):
+        """Loads the pre-compiled tensors directly into memory."""
+        logger.info(f"Loading processed dataset from {self.cache_path}")
+        cache_dict = torch.load(self.cache_path, weights_only=True) # weights_only=True is safer and faster
+        
+        self.states = cache_dict['states']
+        self.bin_states = cache_dict['bin_states']
+        self.actions = cache_dict['actions']
+        self.action_masks = cache_dict['action_masks']
+        self.rewards = cache_dict['rewards']
+        self.dones = cache_dict['dones']
         
     def __len__(self):
         return self.num_transitions
