@@ -43,178 +43,183 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.reward_choice = cfg['data']['reward_choice']
         self._calculate_action_mask = cfg['model']['algorithm'] != 'BC' # should be False if using bc (to minimize data processing time), otherwise True
         self._grid_network = cfg['model']['grid_network']
+        self._cache_path = Path(cfg['metadata']['parent_results_dir']).resolve() / Path(cfg['metadata']['exp_name']) / "dataset_cache.pt"
 
-        # Get global feature names
-        self.cyclical_feature_names = gcfg['features']['CYCLICAL_FEATURE_NAMES'] if self.do_cyclical_norm else []
-        self.max_norm_feature_names = gcfg['features']['MAX_NORM_FEATURE_NAMES'] if self.do_max_norm else []
-        self.ang_distance_feature_names = gcfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES'] if self.do_ang_distance_norm else []
-
-        # Get other configurations
-        bin_space = cfg['data']['bin_space']
-        nside = cfg['data']['nside']
-        logger.info(f'Including the following bin features: {cfg["data"].get("bin_features")}')
-        logger.info(f'Including the following global features: {cfg["data"]["global_features"]}')
-        include_bin_features = len(cfg['data']['bin_features']) > 0
-
-        # Load lookup tables
-        if field2maxvisits_path is None:
-            field2maxvisits_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2MAXVISITS_TRAIN']
-        if field2radec_path is None:
-            field2radec_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2RADEC']
-        if field2name_path is None:
-            field2name_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2NAME']
-        if night2filtervisithistory_path is None:
-            night2filtervisithistory_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FILTERVISITS']
-        if fieldfilter2maxvisits is None:
-            fieldfilter2maxvisits = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS']
-
-        with open(field2name_path, 'r') as f:
-            field2name = json.load(f)
-        with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
-            night2fieldvisits = pickle.load(f)
-        with open(field2radec_path, 'r') as f:
-            field2radec = json.load(f)
-            field2radec = {int(k): v for k, v in field2radec.items()}
-        with open(field2maxvisits_path, 'r') as f:
-            field2maxvisits = json.load(f)
-            field2maxvisits = {int(k): v for k, v in field2maxvisits.items()}
-        with open(night2filtervisithistory_path, 'rb') as f:
-            night2filtervisithistory = pickle.load(f)
-        # Add this block to load the pickle file into the dictionary variable
-        with open(fieldfilter2maxvisits, 'rb') as f:
-            fieldfilter2maxvisits = pickle.load(f)
-
-        self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in bin_space))
-        self.num_filters = NUM_FILTERS if 'filter' in bin_space else 1
-
-        # Set number of actions based on binning method
-        self.nbins = len(self.hpGrid.lon)
-        self.num_actions = self.nbins * self.num_filters
-
-        # Save list of all feature names
-        self.base_global_feature_names = cfg['data']['global_features'].copy()
-        self.base_bin_feature_names = cfg['data']['bin_features'].copy()
-        self.global_feature_names, self.bin_feature_names = setup_feature_names(base_global_feature_names=self.base_global_feature_names,
-                                                                                base_bin_feature_names=self.base_bin_feature_names,
-                                                                                cyclical_feature_names=self.cyclical_feature_names,
-                                                                                do_cyclical_norm=self.do_cyclical_norm,
-                                                                                )
-
-        # Process dataframe to add columns for global features
-        self._df = drop_rows_in_DECam_data(
-            df,
-            specific_years=cfg['data']['specific_years'] if specific_years is None else specific_years, 
-            specific_months=cfg['data']['specific_months'] if specific_months is None else specific_months, 
-            specific_days=cfg['data']['specific_days'] if specific_days is None else specific_days,
-            specific_filters=cfg['data']['specific_filters'] if specific_filters is None else specific_filters,
-            objects_to_remove=self.objects_to_remove
-            )
-        self._df = calculate_global_features(
-            df=self._df, 
-            field2name=field2name, 
-            hpGrid=self.hpGrid, 
-            base_global_feature_names=self.base_global_feature_names,
-            cyclical_feature_names=self.cyclical_feature_names, 
-            do_cyclical_norm=self.do_cyclical_norm
-        )
-        if len(self.bin_feature_names) > 0:
-            bin_states = calculate_bin_features(
-                pt_df=self._df,
-                hpGrid=self.hpGrid, 
-                base_bin_feature_names=self.base_bin_feature_names, 
-                bin_feature_names=self.bin_feature_names, 
-                cyclical_feature_names=self.cyclical_feature_names, 
-                do_cyclical_norm=self.do_cyclical_norm, 
-                field2radec=field2radec,
-                night2fieldvisits=night2fieldvisits,
-                fieldfilter2maxvisits=fieldfilter2maxvisits,
-                night2filtervisithistory=night2filtervisithistory,
-                field2maxvisits=field2maxvisits,
-                bin_space=bin_space
-            )
+        if os.path.exists(self._cache_path):
+            self._load_from_cache()
         else:
-            bin_states = None
+            # Get global feature names
+            self.cyclical_feature_names = gcfg['features']['CYCLICAL_FEATURE_NAMES'] if self.do_cyclical_norm else []
+            self.max_norm_feature_names = gcfg['features']['MAX_NORM_FEATURE_NAMES'] if self.do_max_norm else []
+            self.ang_distance_feature_names = gcfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES'] if self.do_ang_distance_norm else []
 
-        # Save night dates, total number of nights in dataset, and number of obs per night
-        self.unique_nights = self._df['night'].unique()
-        self.n_nights = self._df.groupby('night').ngroups
+            # Get other configurations
+            action_space = cfg['data']['action_space']
+            nside = cfg['data']['nside']
+            logger.info(f'Including the following bin features: {cfg["data"].get("bin_features")}')
+            logger.info(f'Including the following global features: {cfg["data"]["global_features"]}')
+            include_bin_features = len(cfg['data']['bin_features']) > 0
 
-        # Construct Transitions
-        states, bin_states, self.actions, self.rewards, self.dones, self.action_masks, self.num_transitions \
-            = self._construct_transitions(
-            df=self._df, 
-            bin_states=bin_states,  
-            include_bin_features=include_bin_features, 
-            bin_space=bin_space,
+            # Load lookup tables
+            if field2maxvisits_path is None:
+                field2maxvisits_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2MAXVISITS_TRAIN']
+            if field2radec_path is None:
+                field2radec_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2RADEC']
+            if field2name_path is None:
+                field2name_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2NAME']
+            if night2filtervisithistory_path is None:
+                night2filtervisithistory_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FILTERVISITS']
+            if fieldfilter2maxvisits is None:
+                fieldfilter2maxvisits = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS']
+
+            with open(field2name_path, 'r') as f:
+                field2name = json.load(f)
+            with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
+                night2fieldvisits = pickle.load(f)
+            with open(field2radec_path, 'r') as f:
+                field2radec = json.load(f)
+                field2radec = {int(k): v for k, v in field2radec.items()}
+            with open(field2maxvisits_path, 'r') as f:
+                field2maxvisits = json.load(f)
+                field2maxvisits = {int(k): v for k, v in field2maxvisits.items()}
+            with open(night2filtervisithistory_path, 'rb') as f:
+                night2filtervisithistory = pickle.load(f)
+            # Add this block to load the pickle file into the dictionary variable
+            with open(fieldfilter2maxvisits, 'rb') as f:
+                fieldfilter2maxvisits = pickle.load(f)
+
+            self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in action_space))
+            self.num_filters = NUM_FILTERS if 'filter' in action_space else 1
+
+            # Set number of actions based on binning method
+            self.nbins = len(self.hpGrid.lon)
+            self.num_actions = self.nbins * self.num_filters
+
+            # Save list of all feature names
+            self.base_global_feature_names = cfg['data']['global_features'].copy()
+            self.base_bin_feature_names = cfg['data']['bin_features'].copy()
+            self.global_feature_names, self.bin_feature_names = setup_feature_names(base_global_feature_names=self.base_global_feature_names,
+                                                                                    base_bin_feature_names=self.base_bin_feature_names,
+                                                                                    cyclical_feature_names=self.cyclical_feature_names,
+                                                                                    do_cyclical_norm=self.do_cyclical_norm,
+                                                                                    )
+
+            # Process dataframe to add columns for global features
+            self._df = drop_rows_in_DECam_data(
+                df,
+                specific_years=cfg['data']['specific_years'] if specific_years is None else specific_years, 
+                specific_months=cfg['data']['specific_months'] if specific_months is None else specific_months, 
+                specific_days=cfg['data']['specific_days'] if specific_days is None else specific_days,
+                specific_filters=cfg['data']['specific_filters'] if specific_filters is None else specific_filters,
+                objects_to_remove=self.objects_to_remove
+                )
+            self._df = calculate_global_features(
+                df=self._df, 
+                field2name=field2name, 
+                hpGrid=self.hpGrid, 
+                base_global_feature_names=self.base_global_feature_names,
+                cyclical_feature_names=self.cyclical_feature_names, 
+                do_cyclical_norm=self.do_cyclical_norm
             )
-        
-        self._prenorm_bin_states = bin_states
-        
-        logger.info(f"States shape: {states.shape}, Actions shape: {self.actions.shape}, Rewards shape: {self.rewards.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
-        logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}")
+            if len(self.bin_feature_names) > 0:
+                bin_states = calculate_bin_features(
+                    pt_df=self._df,
+                    hpGrid=self.hpGrid, 
+                    base_bin_feature_names=self.base_bin_feature_names, 
+                    bin_feature_names=self.bin_feature_names, 
+                    cyclical_feature_names=self.cyclical_feature_names, 
+                    do_cyclical_norm=self.do_cyclical_norm, 
+                    field2radec=field2radec,
+                    night2fieldvisits=night2fieldvisits,
+                    fieldfilter2maxvisits=fieldfilter2maxvisits,
+                    night2filtervisithistory=night2filtervisithistory,
+                    field2maxvisits=field2maxvisits,
+                    action_space=action_space
+                )
+            else:
+                bin_states = None
 
-        state_feature_names = self.global_feature_names
+            # Save night dates, total number of nights in dataset, and number of obs per night
+            self.unique_nights = self._df['night'].unique()
+            self.n_nights = self._df.groupby('night').ngroups
 
-        self.states = normalize_noncyclic_features(
-            state=states,
-            state_feature_names=state_feature_names,
-            max_norm_feature_names=self.max_norm_feature_names,
-            ang_distance_norm_feature_names=self.ang_distance_feature_names,
-            do_inverse_norm=self.do_inverse_norm,
-            do_max_norm=self.do_max_norm,
-            do_ang_distance_norm=self.do_ang_distance_norm,
-            fix_nans=True
-        )
+            # Construct Transitions
+            states, bin_states, self.actions, self.rewards, self.dones, self.action_masks, self.num_transitions \
+                = self._construct_transitions(
+                df=self._df, 
+                bin_states=bin_states,  
+                include_bin_features=include_bin_features, 
+                action_space=action_space,
+                )
+            
+            self._prenorm_bin_states = bin_states
+            
+            logger.info(f"States shape: {states.shape}, Actions shape: {self.actions.shape}, Rewards shape: {self.rewards.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
+            logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}")
 
-        if include_bin_features and bin_states is not None:
-            self.bin_states = normalize_noncyclic_features(
-                state=torch.tensor(bin_states).detach().clone(), # NOTE: use local `bin_states`, not `self.bin_states`
-                state_feature_names=self.bin_feature_names,
+            state_feature_names = self.global_feature_names
+
+            self.states = normalize_noncyclic_features(
+                state=states,
+                state_feature_names=state_feature_names,
                 max_norm_feature_names=self.max_norm_feature_names,
                 ang_distance_norm_feature_names=self.ang_distance_feature_names,
                 do_inverse_norm=self.do_inverse_norm,
                 do_max_norm=self.do_max_norm,
                 do_ang_distance_norm=self.do_ang_distance_norm,
-                fix_nans=True,
+                fix_nans=True
             )
-        else:
-            self.bin_states = None
-            self.next_bin_states = None
 
-        # If using flat MLP
-        if self._grid_network is None:
-            if include_bin_features and self.bin_states is not None:
-                # Convert to tensors before manipulating
-                if not isinstance(self.states, torch.Tensor):
-                    self.states = torch.as_tensor(self.states, dtype=torch.float32)
-                if not isinstance(self.bin_states, torch.Tensor):
-                    self.bin_states = torch.as_tensor(self.bin_states, dtype=torch.float32)
+            if include_bin_features and bin_states is not None:
+                self.bin_states = normalize_noncyclic_features(
+                    state=torch.tensor(bin_states).detach().clone(), # NOTE: use local `bin_states`, not `self.bin_states`
+                    state_feature_names=self.bin_feature_names,
+                    max_norm_feature_names=self.max_norm_feature_names,
+                    ang_distance_norm_feature_names=self.ang_distance_feature_names,
+                    do_inverse_norm=self.do_inverse_norm,
+                    do_max_norm=self.do_max_norm,
+                    do_ang_distance_norm=self.do_ang_distance_norm,
+                    fix_nans=True,
+                )
+            else:
+                self.bin_states = None
+                self.next_bin_states = None
+
+            # If using flat MLP
+            if self._grid_network is None:
+                if include_bin_features and self.bin_states is not None:
+                    # Convert to tensors before manipulating
+                    if not isinstance(self.states, torch.Tensor):
+                        self.states = torch.as_tensor(self.states, dtype=torch.float32)
+                    if not isinstance(self.bin_states, torch.Tensor):
+                        self.bin_states = torch.as_tensor(self.bin_states, dtype=torch.float32)
+                        
+                    # Flatten the 3D bin states [Batch, Bins, Features] -> [Batch, Bins * Features]
+                    bs_flat = self.bin_states.reshape(self.bin_states.shape[0], -1)
                     
-                # Flatten the 3D bin states [Batch, Bins, Features] -> [Batch, Bins * Features]
-                bs_flat = self.bin_states.reshape(self.bin_states.shape[0], -1)
+                    # Concatenate flat bin features directly to global features
+                    self.states = torch.cat([self.states, bs_flat], dim=1)
+                    
+                    # Cleanup to save VRAM and bypass grid_network checks
+                    self.bin_states = None 
+                    
+                self.bin_state_dim = 0
+                self.state_dim = self.states.shape[-1]
                 
-                # Concatenate flat bin features directly to global features
-                self.states = torch.cat([self.states, bs_flat], dim=1)
-                
-                # Cleanup to save VRAM and bypass grid_network checks
-                self.bin_states = None 
-                
-            self.bin_state_dim = 0
-            self.state_dim = self.states.shape[-1]
+            elif self._grid_network in GRID_NETWORKS:
+                self.state_dim = self.states.shape[-1]
+                self.bin_state_dim = self.bin_states.shape[-1] if include_bin_features else 0
+            else:
+                raise NotImplementedError
             
-        elif self._grid_network in GRID_NETWORKS:
-            self.state_dim = self.states.shape[-1]
-            self.bin_state_dim = self.bin_states.shape[-1] if include_bin_features else 0
-        else:
-            raise NotImplementedError
-        
-        assert self.states.shape[0] == self.action_masks.shape[0], "States and masks must be 1:1"
-        assert self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.num_transitions, \
-                f"Transition arrays shape mismatch: num_transitions {self.num_transitions}, bin_actions {self.actions.shape[0]}, rewards {self.rewards.shape[0]}, dones {self.dones.shape[0]}"
-        if include_bin_features and self._grid_network in GRID_NETWORKS:
-            assert self.states.shape[0] == self.bin_states.shape[0],\
-            f"State arrays shape mismatch: global state shape {self.states.shape[0]}, bin state shape {self.bin_states.shape[0]}"
-
+            assert self.states.shape[0] == self.action_masks.shape[0], "States and masks must be 1:1"
+            assert self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.num_transitions, \
+                    f"Transition arrays shape mismatch: num_transitions {self.num_transitions}, bin_actions {self.actions.shape[0]}, rewards {self.rewards.shape[0]}, dones {self.dones.shape[0]}"
+            if include_bin_features and self._grid_network in GRID_NETWORKS:
+                assert self.states.shape[0] == self.bin_states.shape[0],\
+                f"State arrays shape mismatch: global state shape {self.states.shape[0]}, bin state shape {self.bin_states.shape[0]}"
+                
+            self._save_to_cache()
 
     def _construct_transitions(self, df, bin_states, include_bin_features, bin_space):
         state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact = self._get_state_indices(df)

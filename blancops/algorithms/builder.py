@@ -60,9 +60,14 @@ def build_neural_network(config):
         raise NotImplementedError(f"Network {config['model']['grid_network']} not implemented.")
 
 def build_algorithm(config, device):
-    core_net = build_neural_network(config).to(device)
     
+    core_net = build_neural_network(config).to(device)
+    pretrained_path = config['metadata'].get('pretrained_model_path', None)
+    if pretrained_path:
+        core_net.load_state_dict(torch.load(pretrained_path, map_location=device))
+        logger.info(f"Loaded pretrained model from {pretrained_path}")
     optimizer = torch.optim.Adam(core_net.parameters(), lr=config['train']['lr'])
+    
     if config['model']['algorithm'] == 'BC':
         if config['model']['grid_network'] == 'autoregressive':
             policy = AutoregressiveActionPolicy(core_net, config['data']['num_filters'])
@@ -96,7 +101,7 @@ def build_algorithm(config, device):
         dist_scaling_factor = 0
         if use_cql:
             # Assuming calculate_distance_matrix is imported
-            dist_matrix = calculate_distance_matrix(nside=config['data']['nside'], is_azel='azel' in config['data']['bin_space'])
+            dist_matrix = calculate_distance_matrix(nside=config['data']['nside'], is_azel='azel' in config['data']['action_space'])
             Q_max = 1 / (1 - config['model']['gamma'])
             dist_scaling_factor = Q_max / torch.pi
 
