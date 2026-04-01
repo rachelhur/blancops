@@ -149,7 +149,10 @@ class AutoregressiveActionPolicy(PolicyBase):
         
         expert_bins = expert_actions_flat // self.num_filters
         expert_filters = expert_actions_flat % self.num_filters
-        expert_actions_multidim = torch.stack([expert_filters, expert_bins], dim=1)
+        if self._filt_idx == 0: 
+            expert_actions_multidim = torch.stack([expert_filters, expert_bins], dim=1)
+        else: 
+            expert_actions_multidim = torch.stack([expert_bins, expert_filters], dim=1)
         
         _, joint_logp, joint_entropy = self.core_net(
             x_glob=x_glob, 
