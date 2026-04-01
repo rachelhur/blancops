@@ -171,7 +171,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         # 3. ALWAYS Normalize bin states (if they exist) independently
         if include_bin_features and bin_states is not None:
             self.bin_states = normalize_noncyclic_features(
-                state=torch.tensor(bin_states), # NOTE: use local `bin_states`, not `self.bin_states`
+                state=torch.tensor(bin_states).detach().clone(), # NOTE: use local `bin_states`, not `self.bin_states`
                 state_feature_names=self.bin_feature_names,
                 max_norm_feature_names=self.max_norm_feature_names,
                 ang_distance_norm_feature_names=self.ang_distance_feature_names,
