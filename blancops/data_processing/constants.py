@@ -72,7 +72,7 @@ IMPLEMENTED GRID NETWORK NAMES
 
 """
 
-GRID_NETWORKS = ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer']
+GRID_NETWORKS = ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer', 'autoregressive']
 
 """
 

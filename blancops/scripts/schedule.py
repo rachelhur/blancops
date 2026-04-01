@@ -15,7 +15,7 @@ import json
 from blancops.plotting.plotting import plot_schedule_from_file
 from blancops.core_rl.agent import Agent
 from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config, get_workspace_dir
-from blancops.algorithms.factory import setup_algorithm
+from blancops.algorithms.builder import setup_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe, expand_feature_names_for_cyclic_norm
 from blancops.data_processing.constants import *

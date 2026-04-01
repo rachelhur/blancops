@@ -15,7 +15,7 @@ import logging
 from blancops.plotting.plotting import plot_schedule_from_file
 from blancops.core_rl.agent import Agent
 from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config, get_workspace_dir
-from blancops.algorithms.factory import setup_algorithm
+from blancops.algorithms.builder import setup_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe
 from blancops.core_rl.environments import OfflineBlancoTestingEnv
@@ -336,7 +336,7 @@ def main():
     # Plot predicted action for each state
     cur_idxs = test_dataset.current_state_idxs
     with torch.no_grad():
-        q_vals = agent.algorithm.policy_net(test_dataset.states[cur_idxs].to(device), test_dataset.bin_states[cur_idxs].to(device) if test_dataset.bin_states is not None else None)
+        q_vals = agent.algorithm.policy.core_net(test_dataset.states[cur_idxs].to(device), test_dataset.bin_states[cur_idxs].to(device) if test_dataset.bin_states is not None else None)
         agent_actions = torch.argmax(q_vals, dim=1).to('cpu').detach().numpy()
     
     exp_actions = test_dataset.actions.detach().numpy()    

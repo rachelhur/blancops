@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from blancops.core_rl.neural_nets import MLP, SingleScoreMLP, BinEmbeddingDQN, MultiScoreMLP
+from blancops.core_rl.neural_nets import MLP, SingleScoreMLP, BinEmbeddingDQN, ScoreMLP
 from blancops.math import geometry
 
 import logging
@@ -21,11 +21,11 @@ class AlgorithmBase:
         raise NotImplementedError
 
     def save(self, filepath):
-        torch.save({'policy_net': self.policy_net.state_dict()}, filepath)
+        torch.save({'policy': self.policy.state_dict()}, filepath)
     
     def load(self, filepath):
         checkpoint = torch.load(filepath, map_location=self.device)
-        self.policy_net.load_state_dict(checkpoint['policy_net'])
+        self.policy.load_state_dict(checkpoint['policy'])
 
     def _initialize_scheduler(self, lr_scheduler, lr_scheduler_kwargs, optimizer):
         if lr_scheduler is None:

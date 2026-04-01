@@ -25,22 +25,7 @@ class Agent:
     """
     A simple, generic agent/wrapper for fitting and evaluating RL algorithms. 
 
-    This class abstracts training loops, evaluation, saving/loading, and interaction with environment. It expects an underlying `algorithm` object that
-    implements:
-        - `algorithm.train_step(batch)`
-        - `algorithm.select_action(obs, mask, epsilon)`
-        - `algorithm.policy_net`
-        - `algorithm.save(path)`
-        - `algorithm.load(path)`
-
-    Attributes
-    ----------
-        algorithm (Algorithm): Q-learning algorithm implementing train + act.
-        device (str): Device used by the algorithm ('cpu' or 'cuda').
-        normalize_obs (bool): Whether to normalize observations before acting.
-        env (gym.Env | None): Optional environment for evaluation.
-        outdir (str): Directory for saving weights and training/evaluation logs.
-
+    This class abstracts training loops, evaluation, saving/loading, and interaction with environment. It expects an underlying `algorithm` object for training.
     """
     def __init__(
             self,
@@ -76,57 +61,24 @@ class Agent:
         raise NotImplementedError
 
         
-    def fit(self, num_epochs, dataset=None, batch_size=None, trainloader=None, valloader=None, patience=10, train_log_freq=10, hpGrid=None):
-        """Trains the agent on a transition dataset.
-
-        Uses repeated sampling from a dataset that implements `sample(batch_size)`
-        to perform Q-learning updates. Periodically evaluates accuracy on
-        expert actions to monitor learning progress.
-
-        Args:
-            dataset (object):
-                Must implement `sample(batch_size)` returning a full transition:
-                (obs, actions, rewards, next_obs, dones, action_masks).
-            num_epochs (int):
-                Number of passes through the dataset (used to compute steps).
-            batch_size (int):
-                Number of transitions per optimization step.
-
-        Saves:
-            - `<outdir>/weights.pt`: Final model weights.
-            - `<outdir>/train_metrics.pkl`: Dictionary containing:
-                - `loss_history`
-                - `q_history`
-                - `test_acc_history`
-        """
-        # assert dataset is not None and dataloader is not None
-        if trainloader is not None:
-            assert batch_size is not None
-        # Check that valloader is not empty
-        if valloader is not None and len(valloader) == 0:
+    def fit(self, num_epochs, batch_size, trainloader, valloader, patience=10, train_log_freq=10, hpGrid=None):
+        if len(valloader) == 0:
             raise ValueError("Validation dataloader is empty! Check dataset split logic.")
 
-        val_metrics = {metric: [] for metric in self.algorithm.val_metrics}
-        val_metrics.update({'epoch': []})
-        train_metrics = {metric: [] for metric in self.algorithm.val_metrics}
-        train_metrics.update({'epoch': [], 'lr': []})
-
+        val_metrics = defaultdict(list)
+        train_metrics = defaultdict(list)
+        
+        # Set to train mode
+        self.algorithm.policy.train()
         save_filepath = self.train_outdir + 'best_weights.pt'
         train_metrics_filepath = self.train_outdir + 'train_metrics.pkl'
         val_metrics_filepath = self.train_outdir + 'val_metrics.pkl'
-        self.algorithm.policy_net.train()
+        self.algorithm.policy.train()
 
-        if trainloader is not None:
-            dataset_size = len(trainloader.dataset)
-            steps_per_epoch = np.max([dataset_size // batch_size, 1])
-            total_steps = int(num_epochs * steps_per_epoch) # ie, total number of times dataset is sampled
-            loader_iter = iter(trainloader)  # create iterator
-        else:
-            # TODO for v0 only - remove when model is updated for release
-            dataset_size = np.prod(dataset.obs.shape[1:])
-            total_steps = int(num_epochs * dataset_size / batch_size)
-            loader_iter = None  # not used for manual sampling
-            raise DeprecationWarning("Passing `dataset` and `batch_size` directly to `fit` is deprecated. Please use a DataLoader instead.")
+        dataset_size = len(trainloader.dataset)
+        steps_per_epoch = np.max([dataset_size // batch_size, 1])
+        total_steps = int(num_epochs * steps_per_epoch) # ie, total number of times dataset is sampled
+        loader_iter = iter(trainloader)  # create iterator
 
         use_best_val_loss = self.algorithm.name == 'BC'
         use_best_ang_sep = self.algorithm.name in ["DDQN", "DQN", "CQL"]
@@ -147,14 +99,11 @@ class Agent:
         with logging_redirect_tqdm():
             pbar = tqdm(total=total_steps, dynamic_ncols=True, desc="Starting training")
             for i_step in range(total_steps):
-                if trainloader is not None:
-                    try:
-                        batch = next(loader_iter)
-                    except StopIteration:
-                        loader_iter = iter(trainloader)
-                        batch = next(loader_iter)
-                else:
-                    batch = dataset.sample(batch_size)
+                try:
+                    batch = next(loader_iter)
+                except StopIteration:
+                    loader_iter = iter(trainloader)
+                    batch = next(loader_iter)
 
                 if i_step % steps_per_epoch == 0:
                     i_epoch += 1
@@ -163,69 +112,61 @@ class Agent:
                 pbar.set_description(f"Epoch {i_epoch}/{int(num_epochs)} (step {i_step}/{total_steps})")
 
                 # Train step
-                with torch.amp.autocast(device_type='cuda'):
-                    log_metrics = i_step % steps_per_epoch == 0
-                    train_metrics_dict = self.algorithm.train_step(batch, epoch_num=i_epoch, hpGrid=hpGrid, compute_metrics=log_metrics)                
+                log_metrics = i_step % steps_per_epoch == 0
+                train_metrics_dict = self.algorithm.train_step(batch, epoch_num=i_epoch, hpGrid=hpGrid, compute_metrics=log_metrics) 
                 if log_metrics:
                     for k, v in train_metrics_dict.items():
-                        if k not in train_metrics:
-                            train_metrics[k] = []
                         train_metrics[k].append(v)
                         
                     train_metrics['lr'].append(self.algorithm.optimizer.param_groups[0]["lr"])
                     train_metrics['epoch'].append(i_epoch)
-
+                                   
                 # Validation step
                 with torch.no_grad():
-                    if i_step % steps_per_epoch == 0:
-
-                        val_metric_sums = [0.0] * len(self.algorithm.val_metrics)
+                    if log_metrics:
+                        val_metric_sums = defaultdict(float)
                         num_val_batches = len(valloader)
-
-                        with torch.amp.autocast(device_type='cuda'):
-                            for eval_batch in valloader:
-                                batch_metrics = self.algorithm.val_step(eval_batch, hpGrid)
-                                for idx, val in enumerate(batch_metrics):
-                                    val_metric_sums[idx] += val
+                        
+                        for eval_batch in valloader:
+                            batch_metrics = self.algorithm.val_step(eval_batch, hpGrid)
+                            for k, v in batch_metrics.items():
+                                val_metric_sums[k] += v
                             
-                        # Average the metrics across all validation batches
-                        val_metric_vals = [total / num_val_batches for total in val_metric_sums]
-
-                        # Append to tracking dicts
-                        for metric_name, metric_val in zip(self.algorithm.val_metrics, val_metric_vals):
-                            val_metrics[metric_name].append(metric_val)
+                        # Average and save the metrics
+                        val_log_str_parts = []
+                        for k, total in val_metric_sums.items():
+                            avg_val = total / num_val_batches
+                            val_metrics[k].append(avg_val)
+                            val_log_str_parts.append(f"{k} = {avg_val:.3f}")
                         val_metrics['epoch'].append(i_epoch)
 
-                        # Log comparison (Val Set vs. The single Train Batch we just ran)
-                        val_log_str = " ".join(f"{k} = {v:.3f} |" for k, v in zip(self.algorithm.val_metrics, val_metric_vals))
-                        train_log_str = " ".join(f"{k} = {v:.3f} |" for k, v in train_metrics_dict.items())
+                        # Log comparison
+                        val_log_str = " | ".join(val_log_str_parts)
+                        train_log_str = " | ".join(f"{k} = {v:.3f}" for k, v in train_metrics_dict.items())
                     
                         logger.info(
-                        # f"Best val loss so far {best_val_loss:.3f} at epoch {best_epoch} \n"
-                        f"Validation check at train step {i_step} \n"
-                        f" (val set)      {val_log_str} \n"
-                        f" (train batch)  {train_log_str}"
-                        )
+                            f"\nValidation check at train step {i_step} \n"
+                            f" (val set)      {val_log_str} \n"
+                            f" (train batch)  {train_log_str}"
+                        )       
 
-                        # val_loss_cur = val_metrics[self.algorithm.val_metrics[0]][-1]
-                        val_loss_cur = val_metrics['val_loss'][-1]
-                        ang_sep_cur = val_metrics['ang_sep'][-1]
-
+                        # Early stopping and model saving
+                        val_loss_cur = val_metrics.get('val_loss', [1e5])[-1]
+                        ang_sep_cur = val_metrics.get('ang_sep', [1e5])[-1]
+                        improved = False
                         if val_loss_cur < best_val_loss and use_best_val_loss:
+                            improved = True
                             best_val_loss = val_loss_cur
-                            best_epoch = i_epoch
-                            patience_cur = patience
-                            logger.info(f'Improved model at step {i_step}. New best val loss is {val_loss_cur:.3f} Saving weights.')
-                            self.save(save_filepath)
-                            with open(train_metrics_filepath, 'wb') as handle:
-                                pickle.dump(train_metrics, handle)
-                            with open(val_metrics_filepath, 'wb') as handle:
-                                pickle.dump(val_metrics, handle)
+                            metric_str = f"val loss is {val_loss_cur:.3f}"
                         elif ang_sep_cur < best_ang_sep and use_best_ang_sep:
+                            improved = True
                             best_ang_sep = ang_sep_cur
+                            metric_str = f"angular separation is {ang_sep_cur:.3f}"
+                        
+                        if improved:
                             best_epoch = i_epoch
                             patience_cur = patience
-                            logger.info(f'Improved model at step {i_step}. New best angular separation is {best_ang_sep:.3f} Saving weights.')
+                            logger.info(f'Improved model at step {i_step} (epoch {i_epoch}): {metric_str}. Saving weights')
                             self.save(save_filepath)
                             with open(train_metrics_filepath, 'wb') as handle:
                                 pickle.dump(train_metrics, handle)
@@ -254,7 +195,7 @@ class Agent:
             os.makedirs(eval_outdir)
             
         # evaluation metrics
-        self.algorithm.policy_net.eval()
+        self.algorithm.policy.eval()
         episode_rewards = []
         eval_metrics = {}
 
@@ -399,16 +340,6 @@ class Agent:
         Returns:
             int: Selected action index.
         """
-        # Add a batch dimension (axis 0) if it's missing
-        # if x_bin.ndim == 2:
-        #     x_bin = np.expand_dims(x_bin, axis=0)
-        # if x_glob.ndim == 1:
-        #     x_glob = np.expand_dims(x_glob, axis=0)
-        
-
-        # if action_mask is not None and action_mask.ndim == 1:
-        #     action_mask = np.expand_dims(action_mask, axis=0)
-            
         return self.algorithm.select_action(x_glob=x_glob, x_bin=x_bin, action_mask=action_mask, epsilon=epsilon)
     
     def save(self, filepath):
@@ -451,7 +382,7 @@ class Agent:
                 glob_state = torch.as_tensor(glob_state, device=self.device, dtype=torch.float32)
                 bin_state = torch.as_tensor(bin_state, device=self.device, dtype=torch.float32)
                 # action_mask = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
-                q_vals = self.algorithm.policy_net(glob_state, bin_state).squeeze(0)
+                q_vals = self.algorithm.policy.core_net(glob_state, bin_state).squeeze(0)
                 q_vals = q_vals.cpu().detach().numpy() #TODO - use mask
 
             lon_data = hpGrid.lon
@@ -529,7 +460,7 @@ class Agent:
     #             glob_state = torch.as_tensor(glob_state, device=self.device, dtype=torch.float32)
     #             bin_state = torch.as_tensor(bin_state, device=self.device, dtype=torch.float32)
     #             action_mask = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
-    #             q_vals = self.algorithm.policy_net(glob_state, bin_state).squeeze(0)
+    #             q_vals = self.algorithm.policy.core_net(glob_state, bin_state).squeeze(0)
     #             q_vals = q_vals.cpu().detach().numpy() #TODO - use mask
 
     #         lon_data = hpGrid.lon

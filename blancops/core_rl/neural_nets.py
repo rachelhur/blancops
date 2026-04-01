@@ -44,12 +44,12 @@ class SingleScoreMLP(nn.Module):
         x = torch.cat((x_glob_exp, x_bin), dim=-1) # (batch, n_bins, glob_dim + bin_dim)
         return self.net(x).squeeze(-1)
     
-class MultiScoreMLP(nn.Module):
+class ScoreMLP(nn.Module):
     """
     Outputs multiple scores for each input
     """
     def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, use_contextual_gating=False, activation=None):
-        super(MultiScoreMLP, self).__init__()
+        super(ScoreMLP, self).__init__()
         self.score_dim = score_dim
         self.activation = nn.ReLU if activation is None else activation
         self.use_contextual_gating = use_contextual_gating
@@ -79,8 +79,6 @@ class MultiScoreMLP(nn.Module):
         scores = self.net(x)
         joint_action_scores = scores.view(batch_size, -1) # flattens last dim (filter) first --> [bin0filter0, bin0filter1, ... bin1filter0, bin1filter1, ... binNfilterM]
         return joint_action_scores 
-    
-    
     
 class MultiHeadMultiScoreNet(nn.Module):
     def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None, use_contextual_gating=False):
@@ -129,7 +127,7 @@ class StateEncoder(nn.Module):
         )
         # Bin encoder - processes each bin's features independently and then flattens
         self.bin_enc = nn.Sequential(
-            nn.Linear(bin_dim * nbins, bin_hidden),
+            nn.Linear(bin_dim, bin_hidden),
             self.activation(),
             nn.Linear(bin_hidden, bin_out),
             self.activation()
@@ -139,6 +137,7 @@ class StateEncoder(nn.Module):
             nn.Linear(glob_hidden + bin_out * nbins, output_dim),
             self.activation()
         )
+        
     def forward(self, x_glob, x_bin):
         x_context = self.glob_enc(x_glob) # shape (batch, glob_hidden)
         x_binfeats = self.bin_enc(x_bin) # shape (batch, nbinbs, bin_hidden)
@@ -163,8 +162,11 @@ class AutoregressiveDiscreteNet(nn.Module):
         self.action_dims = action_dims
         self.num_actions = len(action_dims)
         self.activation = nn.ReLU if activation is None else activation
+        self._filt_idx = int(bin_first)
+        self._bin_idx = int(not bin_first)
+        
         if emb_dim is None:
-            emb_dim = state_latent_dim // 8 # about 11% of feature size
+            emb_dim = state_latent_dim // 8 # about 11% of latent state size - tune later
 
         # State encoder
         self.state_encoder = StateEncoder(glob_dim, bin_dim, nbins=nbins, glob_hidden=glob_hidden, bin_hidden=bin_hidden, bin_out=bin_out, output_dim=state_latent_dim, activation=self.activation)
@@ -185,55 +187,73 @@ class AutoregressiveDiscreteNet(nn.Module):
             # Input to the i-th head is the state features + embeddings of all prior actions
             input_dim = hidden_dim + (i * emb_dim)
             self.action_heads.append(nn.Linear(input_dim, action_dims[i]))
+        
 
-    def forward(self, x_glob, x_bin, action=None):
-        """
-        Args:
-            state (torch.Tensor): State tensor of shape (batch_size, state_dim)
-            action (torch.Tensor, optional): Action tensor of shape (batch_size, num_actions). 
-                                             If provided, evaluates the log probability of the given action. 
-                                             If None, samples a new action autoregressively.
-        Returns:
-            sampled_actions (torch.Tensor): The selected actions, shape (batch_size, num_actions)
-            joint_log_prob (torch.Tensor): The log probability of the joint action, shape (batch_size,)
-            entropy (torch.Tensor): The joint entropy of the distributions, shape (batch_size,)
-        """
+    def forward(self, x_glob, x_bin, action_mask, action=None):
+        # GET LATENT SPACE REPRESENTATION
         x_latent = self.state_encoder(x_glob, x_bin)
         
-        sampled_actions = []
+        pred_actions = []
         log_probs = []
         entropies = []
         
         x_current = x_latent
+        
+        # For each head, COMPUTE LOGITS, PRED ACTIONS, and APPEND EMBEDDING for next head
         for i in range(self.num_actions):
-            # Forward pass through the specific head
+            # 1. COMPUTE LOGITS
             logits = self.action_heads[i](x_current)
+            
+            if action_mask is not None:
+                # Unflatten mask (ie, flat_idx = (bin * nfilters) + filt)
+                batch_size = logits.size(0)
+                nfilters = self.action_dims[self._filt_idx]
+                nbins = self.action_dims[self._bin_idx]
+                
+                mask_2d = action_mask.view(batch_size, nbins, nfilters)
+                
+                # For first head, mask is just the original mask. For second head, must index into the mask based on the first head's sampled action
+                if i == 0:
+                    if self._filt_idx == 0: 
+                        step_mask = mask_2d.any(dim=1) # shape: (batch, nfilters)
+                    else:
+                        step_mask = mask_2d.any(dim=2) # shape: (batch, nbins)
+                else:
+                    first_choice = pred_actions[0]
+                    batch_idx = torch.arange(batch_size, device=logits.device)
+                    
+                    if self._bin_idx == 1:
+                        step_mask = mask_2d[batch_idx, :, first_choice]
+                    else:
+                        step_mask = mask_2d[batch_idx, first_choice, :]
+
+                # 2. PREDICT ACTIONS
+                mask_value = torch.finfo(logits.dtype).min
+                logits = logits.masked_fill(~step_mask, mask_value)
+            
             dist = Categorical(logits=logits)
             
-            # If actions are not provided (acting), sample them. 
-            # If provided (training), use the given ones to compute log_probs.
-            if action is None:
-                a_i = dist.sample()
+            if action is None: # ie, inference
+                a_i = logits.argmax(dim=-1)
             else:
-                a_i = action[:, i]
+                a_i = action[:, i] # training
                 
-            sampled_actions.append(a_i)
+            pred_actions.append(a_i)
             log_probs.append(dist.log_prob(a_i))
             entropies.append(dist.entropy())
             
-            # Prepare input for the next action head by appending the embedded action
+            # 3. APPEND EMBEDDING
             if i < self.num_actions - 1:
                 emb = self.action_embeddings[i](a_i)
                 x_current = torch.cat([x_current, emb], dim=-1)
                 
-        # Stack sequences along the dimension axis
-        sampled_actions = torch.stack(sampled_actions, dim=1)
+        pred_actions = torch.stack(pred_actions, dim=1)
         
         # Joint log probability and entropy are the sum of the individual step calculations
         joint_log_prob = torch.stack(log_probs, dim=1).sum(dim=1)
         joint_entropy = torch.stack(entropies, dim=1).sum(dim=1)
         
-        return sampled_actions, joint_log_prob, joint_entropy
+        return pred_actions, joint_log_prob, joint_entropy
     
 class BinEmbeddingDQN(nn.Module):
     """Deep Q-Network mapping observations to action-values.
@@ -247,7 +267,7 @@ class BinEmbeddingDQN(nn.Module):
         
         input_dim = (n_bin_features + embedding_dim) * action_dim + n_global_features
 
-        self.policy_net = nn.Sequential(
+        self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             self.activation(),
             nn.Linear(hidden_dim, hidden_dim),
@@ -264,7 +284,7 @@ class BinEmbeddingDQN(nn.Module):
         bin_flat = bin_input.flatten(start_dim=1)  # [batch, n_bins * (n_features + emb_dim)]
         full_input = torch.cat([bin_flat, local_features, global_features], dim=-1)
         
-        return self.policy_net(full_input)
+        return self.net(full_input)
 
 class SpatialEncoder(nn.Module):
     def __init__(self, num_features):
