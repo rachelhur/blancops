@@ -2,17 +2,17 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from blancops.core_rl.neural_nets import MLP, AutoregressiveDiscreteNet, MultiHeadMultiScoreNet, SingleScoreMLP, BinEmbeddingDQN, ScoreMLP
+from blancops.core_rl.neural_nets import MLP, AutoregressiveDiscreteNet, MultiHeadMultiScoreNet, BinEmbeddingDQN, ScoreMLP
 from blancops.math import geometry
 from blancops.algorithms.base import AlgorithmBase
-from blancops.data_processing.constants import GRID_NETWORKS
+from blancops.data_processing.constants import ACTION_ARCHITECTURES
 import logging
 logger = logging.getLogger(__name__)
 
 from pathlib import Path
 
 class BehaviorCloning(AlgorithmBase):
-    def __init__(self, policy, optimizer, lr_scheduler=None, lr_scheduler_epoch_start=1, lr_scheduler_num_epochs=50, optimizer_kwargs=None, lr_scheduler_kwargs=None, device='cpu'):
+    def __init__(self, policy, optimizer, lr_scheduler, lr_scheduler_epoch_start=1, lr_scheduler_num_epochs=50, optimizer_kwargs=None, lr_scheduler_kwargs=None, device='cpu'):
         super().__init__()
         self.name = 'BC'
         self.device = device
@@ -84,7 +84,8 @@ class BehaviorCloning(AlgorithmBase):
         self.policy.eval()
         with torch.no_grad():
             x_glob = torch.as_tensor(x_glob, dtype=torch.float32, device=self.device)
-            x_bin = torch.as_tensor(x_bin, dtype=torch.float32, device=self.device)
+            if x_bin is not None: # if filter only
+               x_bin = torch.as_tensor(x_bin, dtype=torch.float32, device=self.device)
             action_mask = torch.as_tensor(action_mask, dtype=torch.bool, device=self.device)
             
             # Handle unbatched environment steps
@@ -96,6 +97,6 @@ class BehaviorCloning(AlgorithmBase):
                 action_mask = action_mask.unsqueeze(0)
             
             with torch.amp.autocast(device_type=self.device_type_str, dtype=self.amp_dtype):
-                action_tensor = self.policy.get_action(x_glob, x_bin, action_mask)
+                action_tensor = self.policy.select_action(x_glob, x_bin, action_mask)
 
             return int(action_tensor.item())

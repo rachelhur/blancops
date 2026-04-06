@@ -11,7 +11,7 @@ import time
 
 from blancops.core_rl.agent import Agent
 from blancops.algorithms.builder import build_algorithm
-from blancops.data_processing.constants import GRID_NETWORKS
+from blancops.data_processing.constants import ACTION_ARCHITECTURES
 from blancops.math import geometry
 from blancops.math import units
 from blancops.utils.sys_utils import setup_logger, get_device, seed_everything
@@ -35,7 +35,6 @@ def get_args():
     
     # Data input and output file and dir setups
     parser.add_argument('--fits_path', type=str, default='../data/decam-exposures-20251211.fits', help='Path to offline dataset file')
-    parser.add_argument('--json_path', type=str, default='../data/decam-exposures-20251211.json', help='Path to offline dataset metadata json file')
     parser.add_argument('--metadata.parent_results_dir', type=str, default=None, help='Path to results directory')
     parser.add_argument('--metadata.exp_name', type=str, default='test_experiment', help='Name of the experiment -- used to create the subdir in parents_results_dir')
     parser.add_argument('--metadata.seed', type=int, default=10, help='Random seed for reproducibility')
@@ -116,12 +115,6 @@ def main():
     logging.getLogger("fontconfig").setLevel(logging.WARNING)
     logging.getLogger("cartopy").setLevel(logging.WARNING)
     
-    # Make sure action space and grid networks align
-    # if 'filter' in cfg['data']['action_space']:
-    #     assert cfg['model']['grid_network'] == "multi_dim_scorer", "Only multi_dim_scorer can handle filter in action space right now"
-    # if len(cfg['data']['bin_features']) > 0:
-    #     assert np.isin(cfg['model']['grid_network'], ["single_bin_scorer", "multi_dim_scorer", "multi_head_scorer"]), "Must use a grid_network if using bin features. Options: single_bin_scorer, multi_dim_scorer"
-
     # Get training configs used more than once
     batch_size = cfg['train']['batch_size']
     max_epochs = cfg['train']['max_epochs']
@@ -155,13 +148,8 @@ def main():
     plot_bin_membership(train_dataset, fig_outdir)
     plot_global_feature_distributions(train_dataset, fig_outdir)
 
-    if cfg['train']['use_train_as_val']:
-        trainloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, \
-                                                   random_seed=cfg['metadata']['seed'], return_train_and_val=False)
-        valloader = trainloader
-    else:
-        trainloader, valloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, \
-                                                              random_seed=cfg['metadata']['seed'], return_train_and_val=True)
+    trainloader, valloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, \
+                                                              random_seed=cfg['metadata']['seed'])
 
     # Initialize algorithm and agent
     logger.info("Initializing agent...")
@@ -199,16 +187,17 @@ def main():
 #     lr_scheduler=main_scheduler, 
 #     device='cuda'
 # )
-    # Save (or update) config file after updating
+    # Save (or update) config file for evaluation/schedule setup
     cfg['data']['state_dim'] = train_dataset.state_dim
-    cfg['data']['bin_state_dim'] = 0 if train_dataset._grid_network is None else train_dataset.bin_state_dim
+    cfg['data']['bin_state_dim'] = 0 if not train_dataset.include_bin_features else train_dataset.bin_state_dim
     cfg['data']['nbins'] = train_dataset.nbins
     cfg['data']['num_filters'] = train_dataset.num_filters
     cfg['data']['num_actions'] = train_dataset.num_actions
     cfg['train']['lr_scheduler_kwargs'] = {key: float(val) for key, val in lr_scheduler_kwargs.items()}
     cfg['data']['n_global_features'] = train_dataset.states.shape[-1]
     cfg['data']['n_bin_features'] = 0 if train_dataset.bin_states is None else train_dataset.bin_states.shape[-1]
-
+    
+    logger.debug(f"Updated config with dataset dimensions and lr_scheduler_kwargs: {cfg}")
 
     algorithm = build_algorithm(cfg, device)
     agent = Agent(
@@ -237,7 +226,6 @@ def main():
     logger.info("Starting training...")
 
     # Train agent
-    # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     start_time = time.time()
     agent.fit(
         num_epochs=max_epochs,
@@ -263,72 +251,8 @@ def main():
     #     save_config(config_dict=cfg, outdir=model_dir)
     #     agent.save(filepath=model_dir / 'best_weights.pt')
 
-    logger.info("Plotting training loss curve...")
+    logger.info("Plotting metrics...")
     plot_train_metrics(results_outdir, dataset=train_dataset)
-
-    # # Plot predicted action for each state in train dataset
-    # dataset = trainloader.dataset.dataset
-    # val_indices = valloader.dataset.indices
-    # train_indices = trainloader.dataset.indices
-
-    # val_compact_idxs = dataset.curr_compact_idxs[val_indices]
-    # train_compact_idxs = dataset.curr_compact_idxs[train_indices]
-
-    # val_states = dataset.states[val_compact_idxs]
-    # val_actions = dataset.actions[val_indices]
-
-    # train_states = dataset.states[train_compact_idxs]
-    # train_actions = dataset.actions[train_indices]
-
-    # # If you need bin_states:
-    # if dataset._grid_network in GRID_NETWORKS:
-    #     val_bin_states = dataset.bin_states[val_compact_idxs]
-    #     train_bin_states = dataset.bin_states[train_compact_idxs]
-
-    # # val_states, val_actions, _, _, _, _, val_bin_states, _ = dataset[valloader.dataset.indices]
-    # # train_states, train_actions, _, _, _, _, train_bin_states, _ = dataset[trainloader.dataset.indices
-
-    # do_bin_states = dataset._grid_network is not None
-    # if do_bin_states:
-    #     for prefix, (states, bin_states, actions) in zip(['val_', 'train_'], [ (val_states, val_bin_states, val_actions), (train_states, train_bin_states, train_actions) ]):
-    #         eval_actions_list = []
-    #         # Process in smaller chunks to save VRAM
-    #         plot_batch_size = 128 
-    #         for i in range(0, len(states), plot_batch_size):
-    #             with torch.no_grad():
-    #                 # Only send a slice to the device
-    #                 s_chunk = states[i:i + plot_batch_size].to(device)
-    #                 if do_bin_states:
-    #                     b_chunk = bin_states[i:i + plot_batch_size].to(device)
-    #                 else:
-    #                     b_chunk = None
-                    
-    #                 with torch.amp.autocast('cuda', dtype=torch.float32):
-    #                     q_vals = agent.algorithm.policy.core_net(x_glob=s_chunk, x_bin=b_chunk, y_data=None)
-                    
-    #                 chunk_actions = torch.argmax(q_vals, dim=1).cpu()
-    #                 eval_actions_list.append(chunk_actions)
-        
-    #     # Combine back into a single numpy array for your plotting function
-    #     eval_actions = torch.cat(eval_actions_list).numpy()
-
-    #     # Sequence of actions from target (original schedule) and policy
-    #     target_sequence = actions.detach().numpy()
-    #     eval_sequence = eval_actions
-    #     first_night_indices = np.where(states[:, -1] == 0)
-
-    #     fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
-        
-    #     axs[0].plot(target_sequence, marker='*', alpha=.3, label='true')
-    #     axs[0].plot(eval_sequence, marker='o', alpha=.3, label='pred')
-    #     axs[0].legend()
-    #     axs[0].set_ylabel('bin number')
-    #     axs[0].vlines(first_night_indices, ymin=0, ymax=len(dataset.hpGrid.lon), color='black', linestyle='--')
-    #     axs[1].plot(eval_sequence - target_sequence, marker='o', alpha=.5)
-    #     axs[1].set_ylabel('Eval sequence - target sequence \n[bin number]')
-    #     axs[1].set_xlabel('observation index')
-    #     fig.savefig(fig_outdir / (prefix + 'val_bin_sequences.png'))
-
 
 if __name__ == "__main__":
     main()

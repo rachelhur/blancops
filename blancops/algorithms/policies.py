@@ -24,6 +24,47 @@ class PolicyBase(nn.Module, ABC):
     def select_action(self, x_glob, x_bin, action_mask=None):
         pass
 
+    def _compute_standard_metrics(self, action_logits, expert_flat, action_masks, hpGrid=None):
+        """
+        Universally calculates entropy, margin, and physical metrics for any flat action policy.
+        """
+        metrics_dict = {}
+        mask_value = torch.finfo(action_logits.dtype).min
+        
+        with torch.no_grad():
+            # Clone and mask for accurate predictions
+            masked_logits = action_logits.clone()
+            masked_logits[~action_masks] = mask_value
+            pred_actions = masked_logits.argmax(dim=1)
+            
+            # 1. Log Probabilities & Entropy
+            logp = F.log_softmax(action_logits, dim=-1)
+            logp_expert_actions = logp.gather(1, expert_flat.unsqueeze(1)).squeeze(1)
+            
+            p = F.softmax(action_logits, dim=-1)
+            entropy = -(p * logp).sum(dim=-1).mean().item()
+
+            # 2. Action Margin (Expert vs Next Best)
+            _, num_actions = action_logits.shape
+            z_expert = action_logits.gather(1, expert_flat.unsqueeze(1)).squeeze(1)
+            expert_mask = F.one_hot(expert_flat, num_classes=num_actions).bool()
+            z_max_other = action_logits.masked_fill(expert_mask, float("-inf")).max(dim=1).values
+            margin = (z_expert - z_max_other).mean().item()
+
+            # 3. Domain-Specific Heavy Metrics
+            if hpGrid is not None:
+                heavy_metrics_dict = self._compute_heavy_metrics(pred_actions, expert_flat, hpGrid)
+                metrics_dict.update(heavy_metrics_dict)
+            
+            # Combine all universal metrics
+            metrics_dict.update({
+                'action_margin': margin,
+                'entropy': entropy,
+                'logp_expert_action': logp_expert_actions.mean().item(),
+            })
+            
+        return metrics_dict
+    
     def _compute_heavy_metrics(self, predicted_actions, expert_actions, hpGrid):
     # Default values for heavy metrics
         ang_sep = 0.0
@@ -35,8 +76,9 @@ class PolicyBase(nn.Module, ABC):
             # Get angular separation
             predicted_actions = predicted_actions.cpu()
             expert_actions = expert_actions.cpu()
+            metrics['accuracy'] = (predicted_actions == expert_actions).float().mean().item()
 
-            if self.num_filters is not None and self.num_filters != 1:                  
+            if self.num_filters is not None and self.num_filters != 1:        
                 # Get bins
                 predicted_bins = predicted_actions // self.num_filters
                 expert_bins = expert_actions // self.num_filters
@@ -49,8 +91,6 @@ class PolicyBase(nn.Module, ABC):
                 unique_filters = unique_filter_preds / self.num_filters if self.num_filters is not None else 0
                 metrics['filter_accuracy'] = filter_accuracy
                 metrics['unique_filters'] = unique_filters
-                metrics['accuracy'] = (predicted_actions == expert_actions).float().mean().item()
-                
             else:
                 predicted_bins = predicted_actions
                 expert_bins = expert_actions
@@ -74,7 +114,7 @@ class PolicyBase(nn.Module, ABC):
             })
         return metrics
 
-class FlatActionPolicy(PolicyBase):
+class PureJointPolicy(PolicyBase):
     def __init__(self, core_net, loss_function, num_filters):
         super().__init__()
         self.core_net = core_net
@@ -82,57 +122,152 @@ class FlatActionPolicy(PolicyBase):
         self.num_filters = num_filters
             
     def compute_loss_and_metrics(self, batch: dict, hpGrid=None, compute_metrics=False):
-        x_glob = batch['state']
-        x_bin = batch['bin_states']
-        expert_bins = batch['expert_actions']
+        action_logits = self.core_net(x_glob=batch['state'], x_bin=batch['bin_states'])
         action_masks = batch['action_masks']
+        expert_flat = batch['expert_actions']
         
-        action_logits = self.core_net(x_glob=x_glob, x_bin=x_bin)
+        # Apply mask
         mask_value = torch.finfo(action_logits.dtype).min
-
         action_logits = action_logits.masked_fill(~action_masks, mask_value)
-        loss = self.loss_function(action_logits, expert_bins)
         
+        # Pure Joint Loss
+        loss = self.loss_function(action_logits, expert_flat)
+        
+        # Metrics
         metrics_dict = {}
         if compute_metrics:
-            with torch.no_grad():
-                masked_logits = action_logits.clone()
-                masked_logits[~action_masks] = mask_value
-                pred_bins = masked_logits.argmax(dim=1)
-                
-                # Log Probabilities & Entropy
-                logp = F.log_softmax(action_logits, dim=-1)
-                logp_expert_actions = logp.gather(1, expert_bins.unsqueeze(1)).squeeze(1)
-                
-                p = F.softmax(action_logits, dim=-1)
-                entropy = -(p * logp).sum(dim=-1).mean().item()
-
-                # Margin (Expert vs Next Best)
-                _, num_actions = action_logits.shape
-                z_expert = action_logits.gather(1, expert_bins.unsqueeze(1)).squeeze(1)
-                expert_mask = F.one_hot(expert_bins, num_classes=num_actions).bool()
-                z_max_other = action_logits.masked_fill(expert_mask, float("-inf")).max(dim=1).values
-                margin = (z_expert - z_max_other).mean().item()
-
-                if hpGrid is not None:
-                    heavy_metrics_dict = self._compute_heavy_metrics(pred_bins, expert_bins, hpGrid)
-                
-                metrics_dict.update(heavy_metrics_dict)
-                metrics_dict.update({
-                    'action_margin': margin,
-                    'entropy': entropy,
-                    'logp_expert_action': logp_expert_actions.mean().item(),
-                })
-        
+            metrics_dict = self._compute_standard_metrics(action_logits, expert_flat, action_masks, hpGrid)
+            
         return loss, metrics_dict
     
     def select_action(self, x_glob, x_bin, action_mask=None):
         logits = self.core_net(x_glob=x_glob, x_bin=x_bin)
-        mask_val = torch.finfo(logits.dtype).min
-        logits = logits.masked_fill(~action_mask, mask_val)
-        best_actions = logits.argmax(dim=-1)
-        return best_actions
+        if action_mask is not None:
+            mask_val = torch.finfo(logits.dtype).min
+            logits = logits.masked_fill(~action_mask, mask_val)
+        return logits.argmax(dim=-1)
 
+class PseudoAutoregressivePolicy(PolicyBase):
+    def __init__(self, core_net, num_filters, filter_penalty=5.0):
+        super().__init__()
+        self.core_net = core_net
+        self.num_filters = num_filters
+        self.filter_penalty = filter_penalty
+            
+    def compute_loss_and_metrics(self, batch: dict, hpGrid=None, compute_metrics=False):
+        action_logits = self.core_net(x_glob=batch['state'], x_bin=batch['bin_states'])
+        action_masks = batch['action_masks']
+        expert_flat = batch['expert_actions']
+        
+        # Apply mask
+        mask_value = torch.finfo(action_logits.dtype).min
+        action_logits = action_logits.masked_fill(~action_masks, mask_value)
+        
+        # 1. Reshape into [Batch, Bins, Filters]
+        batch_size = action_logits.size(0)
+        n_bins = action_logits.size(1) // self.num_filters
+        logits_2d = action_logits.view(batch_size, n_bins, self.num_filters)
+        
+        # 2. Extract Targets
+        expert_bins = expert_flat // self.num_filters
+        expert_filters = expert_flat % self.num_filters
+        
+        # 3. Bin Loss (Marginalized over all filters)
+        bin_logits = torch.logsumexp(logits_2d, dim=2) 
+        bin_loss = F.cross_entropy(bin_logits, expert_bins)
+        
+        # 4. Filter Loss (Conditioned explicitly on the expert's bin)
+        batch_idx = torch.arange(batch_size, device=action_logits.device)
+        filter_logits_at_expert_bin = logits_2d[batch_idx, expert_bins, :]
+        filter_loss = F.cross_entropy(filter_logits_at_expert_bin, expert_filters)
+        
+        # 5. Weighted Total Loss
+        loss = bin_loss + (self.filter_penalty * filter_loss)
+        
+        # 6. Metrics
+        metrics_dict = {}
+        if compute_metrics:
+            metrics_dict = self._compute_standard_metrics(action_logits, expert_flat, action_masks, hpGrid)
+            # Add the specific sub-losses to track how the penalty affects training
+            metrics_dict.update({
+                'bin_loss': bin_loss.item(),
+                'filter_loss': filter_loss.item()
+            })
+            
+        return loss, metrics_dict
+    
+    def select_action(self, x_glob, x_bin, action_mask=None):
+        logits = self.core_net(x_glob=x_glob, x_bin=x_bin)
+        if action_mask is not None:
+            mask_val = torch.finfo(logits.dtype).min
+            logits = logits.masked_fill(~action_mask, mask_val)
+        return logits.argmax(dim=-1)
+
+class HybridMarginalPolicy(PolicyBase):
+    def __init__(self, core_net, num_filters, bin_loss_function, filter_loss_function, joint_loss_function, alpha_bin=1.0, beta_filter=5.0, zeta_joint=0.1):
+        # Remember: if using focal loss, increase beta (filter penalty weight). need to balance with the fractional multiplier of focal loss 
+        super().__init__()
+        self.core_net = core_net
+        self.num_filters = num_filters
+        
+        # Loss weighting parameters
+        self.alpha = alpha_bin # Bin weight
+        self.beta = beta_filter   # Filter weight
+        self.zeta = zeta_joint # Joint weight
+                
+        self.bin_loss_function = bin_loss_function
+        self.filter_loss_function = filter_loss_function
+        self.joint_loss_function = joint_loss_function
+            
+    def compute_loss_and_metrics(self, batch: dict, hpGrid=None, compute_metrics=False):
+        action_logits = self.core_net(x_glob=batch['state'], x_bin=batch['bin_states'])
+        action_masks = batch['action_masks']
+        expert_flat = batch['expert_actions']
+        
+        # Apply mask
+        mask_value = torch.finfo(action_logits.dtype).min
+        action_logits = action_logits.masked_fill(~action_masks, mask_value)
+        
+        # 1. Reshape for Marginals
+        batch_size = action_logits.size(0)
+        n_bins = action_logits.size(1) // self.num_filters
+        logits_2d = action_logits.view(batch_size, n_bins, self.num_filters)
+        
+        expert_bins = expert_flat // self.num_filters
+        expert_filters = expert_flat % self.num_filters
+        
+        # 2. Calculate Marginal & Joint Losses
+        bin_logits_marginal = torch.logsumexp(logits_2d, dim=2) 
+        bin_loss = self.bin_loss_function(bin_logits_marginal, expert_bins)
+        
+        filter_logits_marginal = torch.logsumexp(logits_2d, dim=1) 
+        filter_loss = self.filter_loss_function(filter_logits_marginal, expert_filters)
+
+        joint_loss = self.joint_loss_function(action_logits, expert_flat)
+        
+        # 3. Weighted Total Loss
+        total_loss = (self.alpha * bin_loss) + (self.beta * filter_loss) + (self.zeta * joint_loss)
+        
+        # 4. Metrics
+        metrics_dict = {}
+        if compute_metrics:
+            metrics_dict = self._compute_standard_metrics(action_logits, expert_flat, action_masks, hpGrid)
+            # Add specific sub-losses to metrics so you can track them in TensorBoard/WandB
+            metrics_dict.update({
+                'bin_loss': bin_loss.item(),
+                'filter_loss': filter_loss.item(),
+                'joint_loss': joint_loss.item()
+            })
+            
+        return total_loss, metrics_dict
+    
+    def select_action(self, x_glob, x_bin, action_mask=None):
+        logits = self.core_net(x_glob=x_glob, x_bin=x_bin)
+        if action_mask is not None:
+            mask_val = torch.finfo(logits.dtype).min
+            logits = logits.masked_fill(~action_mask, mask_val)
+        return logits.argmax(dim=-1)
+    
 class AutoregressiveActionPolicy(PolicyBase):
     def __init__(self, core_net, num_filters, loss_function=None):
         super().__init__()
@@ -258,3 +393,38 @@ class AutoregressiveQNetWrapper(QNetPolicyBase):
         flat_joint_q_values = q_joint.flatten(start_dim=1)
 
         return flat_joint_q_values
+    
+from blancops.data_processing.constants import FILTER_ALPHA_WEIGHTS
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2.0, reduction='mean', use_alpha=True):
+        """
+        Modulates Cross Entropy loss for imbalanced classes with modulating factor gamma
+        From https://arxiv.org/abs/1708.02002
+        """
+        super().__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        self.use_alpha = use_alpha
+        self.alpha = torch.tensor(FILTER_ALPHA_WEIGHTS, dtype=torch.float32)
+
+    def forward(self, logits, targets):
+        # Get loss = - log(p_t) ; ie, loss for target class
+        ce_loss = F.cross_entropy(logits, targets, reduction='none')
+
+        # Get prob p_t = exp(-ce_loss)
+        p_t = torch.exp(-ce_loss)
+
+        # Apply focal scaling factor: (1 - p_t)^gamma
+        focal_loss = ((1 - p_t) ** self.gamma) * ce_loss
+        if self.use_alpha:
+            self.alpha = self.alpha.to(targets.device)
+            alpha_t = self.alpha[targets]
+            focal_loss = alpha_t * focal_loss
+
+        # Apply reduction
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss

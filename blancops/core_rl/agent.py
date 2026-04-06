@@ -1,4 +1,5 @@
 from random import random
+import json
 import gymnasium as gym
 from collections import defaultdict
 import torch
@@ -202,7 +203,7 @@ class Agent:
         field2nvisits = env.unwrapped.field2maxvisits if field2nvisits is None else field2nvisits
         field2radec = env.unwrapped.field2radec if field2radec is None else field2radec
         
-        hpGrid = None if cfg['data']['bin_method'] != 'healpix' else ephemerides.HealpixGrid(nside=cfg['data']['nside'], is_azel=('azel' in cfg['data']['action_space']))
+        hpGrid = ephemerides.HealpixGrid(nside=cfg['data']['nside'], is_azel=('azel' in cfg['data']['action_space']))
         action_space = cfg['data']['action_space']
 
         with logging_redirect_tqdm():

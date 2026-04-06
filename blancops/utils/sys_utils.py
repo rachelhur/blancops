@@ -38,7 +38,7 @@ def get_workspace_dir() -> Path:
     # 3. Fallback to default
     return Path.home() / ".blancops"
 
-def generate_global_config(output_fn="global_config.json"):
+def generate_src_global_config(output_fn="global_config.json"):
     workspace_dir = get_workspace_dir()
     workspace_dir_str = str(workspace_dir)
     outpath = workspace_dir / "configs" / output_fn

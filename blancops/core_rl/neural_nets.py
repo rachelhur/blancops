@@ -24,26 +24,6 @@ class MLP(nn.Module):
     def forward(self, x_glob, x_bin=None, y_data=None):
         return self.net(x_glob)
 
-class SingleScoreMLP(nn.Module):
-    """
-    Outputs one value for each input vector
-    """
-    def __init__(self, input_dim, hidden_dim, activation=None):
-        super(SingleScoreMLP, self).__init__()
-        self.activation = nn.ReLU if activation is None else activation
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, 1)
-        )
-    def forward(self, x_glob, x_bin, y_data=None):
-        x_glob = x_glob.unsqueeze(1) # (batch, 1, glob_dim)
-        x_glob_exp = x_glob.expand(-1, x_bin.shape[1], -1) # (batch, n_bins, glob_dim)
-        x = torch.cat((x_glob_exp, x_bin), dim=-1) # (batch, n_bins, glob_dim + bin_dim)
-        return self.net(x).squeeze(-1)
-    
 class ScoreMLP(nn.Module):
     """
     Outputs multiple scores for each input

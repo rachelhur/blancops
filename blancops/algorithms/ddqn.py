@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from blancops.core_rl.neural_nets import MLP, MultiHeadMultiScoreNet, SingleScoreMLP, BinEmbeddingDQN, ScoreMLP
+from blancops.core_rl.neural_nets import MLP, MultiHeadMultiScoreNet, BinEmbeddingDQN, ScoreMLP
 from blancops.math import geometry
 from blancops.algorithms.base import AlgorithmBase
 import logging
@@ -164,7 +164,7 @@ class DDQN(AlgorithmBase):
             expert_actions_squeezed = actions.squeeze(1)
             invalid_expert_mask = ~action_masks[torch.arange(action_masks.size(0)), expert_actions_squeezed]
             if invalid_expert_mask.any():
-                print(f"WARNING: {invalid_expert_mask.sum().item()} expert actions in this batch are masked as INVALID!")
+                logger.debug(f"WARNING: {invalid_expert_mask.sum().item()} expert actions in this batch are masked as INVALID!")
             
             with torch.amp.autocast(device_type='cuda'):
                 q_vals_all = self.policy.core_net(x_glob=state, x_bin=bin_states)
@@ -275,7 +275,7 @@ class DDQN(AlgorithmBase):
     def _compute_metrics(self):
         pass
     # def _calculate_cql_loss(self, q_vals, action_masks, actions, q_current, penalty_choice):
-        # if penalty_choice == 'angular_distance':
+        # if penalty_choice == 'pointing_distance':
         #     q_vals_all_masked = q_vals.clone()
         #     q_vals_all_masked[~action_masks] = -1e9
             
