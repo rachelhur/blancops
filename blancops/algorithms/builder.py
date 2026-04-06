@@ -25,6 +25,15 @@ def get_activation(name):
         raise ValueError(f"Activation {name} not supported.")
     return activations[name]
 
+def get_loss_function(name, reduction='mean', gamma_focal=2, use_alpha_focal=False):
+    if name == 'cross_entropy':
+        loss_function = nn.CrossEntropyLoss(reduction=reduction)
+    elif name == 'focal_loss':
+        loss_function = FocalLoss(gamma=gamma_focal, reduction=reduction, use_alpha=use_alpha_focal)
+    else:
+        raise NotImplementedError
+    return loss_function
+        
 def build_neural_network(config):
     activation_fn = get_activation(config['model']['activation'])
     
@@ -69,9 +78,11 @@ def build_neural_network(config):
 def build_algorithm(config, device):
     core_net = build_neural_network(config).to(device)
     pretrained_path = config['metadata'].get('pretrained_model_path', None)
+    
     if pretrained_path:
         core_net.load_state_dict(torch.load(pretrained_path, map_location=device))
         logger.info(f"Loaded pretrained model from {pretrained_path}")
+        
     optimizer = torch.optim.Adam(core_net.parameters(), lr=config['train']['lr'])
     
     if config['model']['algorithm'] == 'BC':
