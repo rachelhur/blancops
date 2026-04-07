@@ -58,7 +58,9 @@ def build_neural_network(config):
             bin_feat_dim=config['data']['n_bin_features'],
             score_dim=config['data']['num_filters'],
             hidden_dim=config['train']['hidden_dim'],
-            activation=activation_fn
+            activation=activation_fn,
+            nlayers=config['train'].get('num_layers', 3),
+            use_contextual_gating=config['model'].get('use_contextual_gating', False)
         )
     elif config['model']['action_architecture'] == 'autoregressive':
         action_dims = [config['data']['num_filters'], config['data']['nbins']] if not config['model']['bin_first'] else [config['data']['nbins'], config['data']['num_filters']]

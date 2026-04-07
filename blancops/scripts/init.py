@@ -4,7 +4,7 @@ from pathlib import Path
 # import importlib.resources as pkg_resources
 from importlib import resources
 from blancops.data_processing.data_processing import save_DES_bin_and_field_mappings
-from blancops.utils.sys_utils import generate_global_config
+from blancops.utils.sys_utils import generate_src_global_config
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -50,23 +50,30 @@ def main():
         logger.info(f"  [+] Created directory: {dir_path}")
 
     # 2. Copy the default global_config.json out of the package
-    config_dict = {
+    src_config_dict = {
+        "global_config.json": workspace / "blancops" / "configs" / "global_config.json",
+        "template_train_config.json": workspace / "blancops" / "configs" / "template_train_config.json"
+    }
+    ext_config_dict = {
         "global_config.json": workspace / "configs" / "global_config.json",
-        "template_train_config.json": workspace / "configs" / "template_train_config.json"
+        "template_train_config.json": workspace / "configs" / "template_train_config.json"    
     }
     
-    for cfg_name, cfg_dest in config_dict.items():
+    for cfg_name, cfg_dest in src_config_dict.items():
         if cfg_dest.exists() and not args.force:
             logger.warning(f" [!] Config already exists at {cfg_dest}. Use --force to overwrite.")
         else:
             try:
                 # Copy global_config.json from within package to config_dest
-                generate_global_config()
+                generate_src_global_config()
                 config_text = resources.files('blancops.configs').joinpath(cfg_name).read_text()
                 cfg_dest.write_text(config_text)
-                logger.info(f"  [+] Copied default {cfg_name} to: {cfg_dest}")
+                ext_config_dict[cfg_name].write_text(config_text)
+                
+                logger.info(f"  [+] Copied default {cfg_name} to: {ext_config_dict[cfg_name]}")
             except Exception as e:
                 logger.warning(f"  [!] Failed to copy config. Reason: {e}")
+        
 
     # 3. Save lookups for train data - assumes fits file is in train dir already
     try:
