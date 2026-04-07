@@ -396,7 +396,7 @@ class AutoregressiveQNetWrapper(QNetPolicyBase):
     
 from blancops.data_processing.constants import FILTER_ALPHA_WEIGHTS
 class FocalLoss(nn.Module):
-    def __init__(self, gamma=2.0, reduction='mean', use_alpha=True):
+    def __init__(self, gamma=2.0, reduction='mean', alpha=None):
         """
         Modulates Cross Entropy loss for imbalanced classes with modulating factor gamma
         From https://arxiv.org/abs/1708.02002
@@ -404,7 +404,6 @@ class FocalLoss(nn.Module):
         super().__init__()
         self.gamma = gamma
         self.reduction = reduction
-        self.use_alpha = use_alpha
         self.alpha = torch.tensor(FILTER_ALPHA_WEIGHTS, dtype=torch.float32)
 
     def forward(self, logits, targets):
@@ -416,12 +415,37 @@ class FocalLoss(nn.Module):
 
         # Apply focal scaling factor: (1 - p_t)^gamma
         focal_loss = ((1 - p_t) ** self.gamma) * ce_loss
-        if self.use_alpha:
+        if self.alpha is not None:
             self.alpha = self.alpha.to(targets.device)
             alpha_t = self.alpha[targets]
             focal_loss = alpha_t * focal_loss
 
         # Apply reduction
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+        
+class FilterFocalLoss(nn.Module):
+    def __init__(self, gamma=2.0, reduction='mean'):
+        """
+        Focal loss applied only to filter prediction (for use in hybrid marginal policy)
+        """
+        super().__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        self.alpha = torch.tensor(FILTER_ALPHA_WEIGHTS, dtype=torch.float32)
+
+    def forward(self, filter_logits, filter_targets):
+        ce_loss = F.cross_entropy(filter_logits, filter_targets, reduction='none')
+        p_t = torch.exp(-ce_loss)
+        focal_loss = ((1 - p_t) ** self.gamma) * ce_loss
+
+        alpha_t = self.alpha[filter_targets].to(filter_targets.device)
+        focal_loss = alpha_t * focal_loss
+
         if self.reduction == 'mean':
             return focal_loss.mean()
         elif self.reduction == 'sum':

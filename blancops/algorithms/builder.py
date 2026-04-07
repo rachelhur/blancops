@@ -14,7 +14,7 @@ import copy
 import torch
 import torch.nn as nn
 from blancops.core_rl.neural_nets import ScoreMLP, AutoregressiveDiscreteNet
-from blancops.algorithms.policies import AutoregressiveActionPolicy, FlatQNetWrapper, AutoregressiveQNetWrapper, HybridMarginalPolicy, PseudoAutoregressivePolicy, PureJointPolicy
+from blancops.algorithms.policies import AutoregressiveActionPolicy, FilterFocalLoss, FlatQNetWrapper, AutoregressiveQNetWrapper, HybridMarginalPolicy, PseudoAutoregressivePolicy, PureJointPolicy
 from blancops.algorithms.policies import FocalLoss
 from blancops.algorithms.bc import BehaviorCloning
 from blancops.algorithms.ddqn import DDQN
@@ -25,11 +25,14 @@ def get_activation(name):
         raise ValueError(f"Activation {name} not supported.")
     return activations[name]
 
-def get_loss_function(name, reduction='mean', gamma_focal=2, use_alpha_focal=False):
+def get_loss_function(name, reduction='mean', gamma_focal=2, alpha=None):
     if name == 'cross_entropy':
         loss_function = nn.CrossEntropyLoss(reduction=reduction)
     elif name == 'focal_loss':
-        loss_function = FocalLoss(gamma=gamma_focal, reduction=reduction, use_alpha=use_alpha_focal)
+        if alpha == 'filter':
+            loss_function = FilterFocalLoss(gamma=gamma_focal, reduction=reduction)
+        else:
+            loss_function = FocalLoss(gamma=gamma_focal, reduction=reduction, alpha=alpha)
     else:
         raise NotImplementedError
     return loss_function
@@ -86,7 +89,12 @@ def build_algorithm(config, device):
     optimizer = torch.optim.Adam(core_net.parameters(), lr=config['train']['lr'])
     
     if config['model']['algorithm'] == 'BC':
-        loss_function = get_loss_function(config['model']['loss_function'], config['model'].get('reduction', 'mean'), config['model'].get('gamma_focal', 2.0), use_alpha_focal=True)
+        loss_function = get_loss_function(
+            config['model']['loss_function'], 
+            config['model'].get('reduction', 'mean'), 
+            config['model'].get('gamma_focal', 2.0),
+            alpha=config['model'].get('alpha', None)
+            )
         arch = config['model'].get('action_architecture', 'simultaneous')
         
         if config['data']['action_space'] == 'filter':
@@ -101,13 +109,13 @@ def build_algorithm(config, device):
         
         elif arch == 'simultaneous':
             loss_strat = config['model'].get('loss_strategy', 'pure_joint')
-            ce_loss_function = nn.CrossEntropyLoss(reduction='mean')
+            ce_loss_function = get_loss_function('cross_entropy', config['model'].get('reduction', 'mean'))
             
             if loss_strat == 'hybrid_marginal':
                 if config['model'].get('loss_function', None) == 'focal_loss':
-                    joint_loss_function = get_loss_function('focal_loss', use_alpha_focal=False)
+                    joint_loss_function = get_loss_function('focal_loss', alpha=None, gamma_focal=config['model'].get('gamma_focal', 2.0))
                 else:
-                    joint_loss_function = get_loss_function('cross_entropy', config['model'].get('reduction', 'mean'))
+                    joint_loss_function = ce_loss_function
                 policy = HybridMarginalPolicy(
                     core_net=core_net,
                     num_filters=config['data']['num_filters'],
@@ -126,7 +134,7 @@ def build_algorithm(config, device):
                     filter_penalty=config['model'].get('filter_penalty', 5.0)
                 )
             elif loss_strat == 'pure_joint':
-                policy = PureJointPolicy(core_net, nn.CrossEntropyLoss(), config['data']['num_filters'])
+                policy = PureJointPolicy(core_net, ce_loss_function, config['data']['num_filters'])
             else:
                 raise NotImplementedError(f"`{loss_strat}` loss strategy is not implemented.")
         else:
