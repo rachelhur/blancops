@@ -15,7 +15,7 @@ import logging
 from blancops.plotting.plotting import plot_schedule_from_file
 from blancops.core_rl.agent import Agent
 from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config, get_workspace_dir
-from blancops.algorithms.builder import setup_algorithm
+from blancops.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe
 from blancops.core_rl.environments import OfflineBlancoTestingEnv
@@ -205,6 +205,7 @@ def main():
     parser.add_argument('-d', '--specific_days', type=int, nargs='*', default=None, help='Specific days to include in the test dataset')
     parser.add_argument('-f', '--specific_filters', type=str, nargs='*', default=None, help='Specific days to include in the test dataset')
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
+    parser.add_argument('-z', '--start_at_zenith', action='store_true', help='Whether to start evaluation episodes at zenith or not. If False, starts at the first observation of the night.')
     parser.add_argument('--field_choice_method', type=str, default='random', help="Options: random, interp")
     parser.add_argument('--fits_path', type=str, default='../data/decam-exposures-20251211.fits', help='Path to offline dataset file')
     parser.add_argument('--json_path', type=str, default='../data/decam-exposures-20251211.json', help='Path to offline dataset metadata json file')
@@ -272,12 +273,18 @@ def main():
     logger.info("Loading raw data...")
     
     df = load_raw_data_to_dataframe(Path(global_cfg['paths']['TRAIN_DIR']) / Path(global_cfg['files']['DECFITS']))
+    survey_nights_total = df['night'].nunique()
+        
     field2radec_filepath = global_cfg['paths']['TRAIN_DIR'] + global_cfg['files']['FIELD2RADEC']
     with open(field2radec_filepath, 'r') as f:
         FIELD2RADEC = json.load(f)
 
     nside = cfg['data']['nside']
-
+    zscore_stats = torch.load(Path(args.trained_model_dir) / "z_score_stats.pt")
+    rel_norm_stats = torch.load(Path(args.trained_model_dir) / "rel_norm_stats.pt")
+    logger.info(f"Loaded z-score stats: {zscore_stats}")
+    logger.info(f"Loaded rel_norm_stats: {rel_norm_stats}")
+    
     logger.info("Loading test dataset with same config as training dataset...")
     test_dataset = OfflineDataset(
         df=df,
@@ -286,29 +293,24 @@ def main():
         specific_years=args.specific_years,
         specific_months=args.specific_months,
         specific_days=args.specific_days,
-        specific_filters=args.specific_filters
+        specific_filters=args.specific_filters,
+        z_score_stats=zscore_stats,
+        rel_norm_stats=rel_norm_stats
         ) 
+    from scipy.interpolate import CubicSpline
+
+    fwhm_night_interps = []
+    for n, ng in test_dataset._df.groupby('night'):
+        _ts = ng['timestamp'].values
+        _fwhms = ng['fwhm'].values
+        cs = CubicSpline(_ts, _fwhms)
+        # plt.scatter(_ts, _fwhms, s=1)
+        # plt.plot(_ts, cs(_ts), color='red')
+        fwhm_night_interps.append(cs)
+
     
     logger.info("Setting up agent...")
-    algorithm = setup_algorithm(algorithm_name=cfg['model']['algorithm'], 
-                                num_actions=test_dataset.num_actions,
-                                num_filters=test_dataset.num_filters,
-                                n_global_features = test_dataset.states.shape[-1],
-                                n_bin_features=0 if test_dataset.bin_states is None else test_dataset.bin_states.shape[-1],
-                                grid_network=cfg['model']['grid_network'],
-                                loss_fxn=cfg['model']['loss_function'],
-                                hidden_dim=cfg['train']['hidden_dim'], lr=cfg['train']['lr'], lr_scheduler=cfg['train']['lr_scheduler'], 
-                                device=device, lr_scheduler_kwargs=cfg['train']['lr_scheduler_kwargs'], lr_scheduler_epoch_start=cfg['train']['lr_scheduler_epoch_start'], 
-                                lr_scheduler_num_epochs=cfg['train']['lr_scheduler_num_epochs'],
-                                gamma=cfg['model']['gamma'], 
-                                tau=cfg['model']['tau'],
-                                activation=cfg['model']['activation'],
-                                use_contextual_gating=cfg['model'].get('contextual_gating', None),
-                                cql_alpha=cfg['model'].get('cql_alpha', None),
-                                nside=cfg['data']['nside'],
-                                action_space=cfg['data']['action_space']
-                                )
-    
+    algorithm = build_algorithm(cfg, device)
     agent = Agent(
         algorithm=algorithm,
         train_outdir=args.trained_model_dir,
@@ -325,13 +327,20 @@ def main():
 
     # Creat env
     global_pd_nightgroup = test_dataset._df.groupby('night')
+    if not args.start_at_zenith:
+        global_pd_nightgroup = global_pd_nightgroup.apply(lambda x: x.iloc[1:]).reset_index(drop=True).groupby('night')
+    t_survey_arr = np.asarray([test_dataset._df['t_survey'].unique()[0]]).flatten()
     if len(cfg['data']['bin_features']) > 0:
-        zenith_idxs = (test_dataset._df.iloc[test_dataset.next_state_idxs-1].reset_index(drop=True)[test_dataset._df.iloc[test_dataset.next_state_idxs-1].reset_index(drop=True)['object'] == 'zenith']).index.values
-        zenith_bin_states = test_dataset._prenorm_bin_states[zenith_idxs].detach().numpy()
+        night_start_indices = (test_dataset._df.iloc[test_dataset.current_state_idxs].reset_index(drop=True)[test_dataset._df.iloc[test_dataset.current_state_idxs].reset_index(drop=True)['object'] == 'zenith']).index.values
+        if not args.start_at_zenith:
+            night_start_indices += 1
+        night_start_bin_states = test_dataset._prenorm_bin_states[night_start_indices].detach().numpy()
     else:
-        zenith_bin_states = None
+        night_start_bin_states = None
+        
     env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, \
-                   zenith_bin_states=zenith_bin_states)
+                   zenith_bin_states=night_start_bin_states, z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, t_survey_arr=t_survey_arr, survey_nights_total=survey_nights_total,
+                   fwhm_night_interps=fwhm_night_interps)
     
     # Plot predicted action for each state
     cur_idxs = test_dataset.current_state_idxs
