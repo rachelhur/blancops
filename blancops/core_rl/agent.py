@@ -377,38 +377,59 @@ class Agent:
         s_filter_visits = info.get('s_filter_visits', None)
         max_s_filter_visits = info.get('max_s_filter_visits', None)
 
+        # 1. Filter out fields that have reached their visit limit
         if (s_filter_visits is not None) and (max_s_filter_visits is not None) and (filter_idx >= 0):
             field_ids_in_bin = [fid for fid in fields_in_bin if s_filter_visits[fid, filter_idx] < max_s_filter_visits[fid, filter_idx]]
         else:
             field_ids_in_bin = [fid for fid in fields_in_bin if s_visited[fid] < field2nvisits[fid]]
         
-        assert len(field_ids_in_bin) != 0, f"No valid fields left in bin for filter {filter_idx}"
-        
-        # action_mask = info.get('action_mask', None)
+        # Fallback if the chosen bin is actually exhausted for this filter
+        if len(field_ids_in_bin) == 0:
+            return random.choice(fields_in_bin)
 
         if field_choice_method == 'interp':
             with torch.no_grad():
-                glob_state = torch.as_tensor(glob_state, device=self.device, dtype=torch.float32)
-                bin_state = torch.as_tensor(bin_state, device=self.device, dtype=torch.float32)
-                # action_mask = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
-                q_vals = self.algorithm.policy.core_net(glob_state, bin_state).squeeze(0)
-                q_vals = q_vals.cpu().detach().numpy() #TODO - use mask
+                # Ensure tensors have the batch dimension expected by ScoreMLP
+                glob_tensor = torch.as_tensor(glob_state, device=self.device, dtype=torch.float32).unsqueeze(0)
+                bin_tensor = torch.as_tensor(bin_state, device=self.device, dtype=torch.float32).unsqueeze(0)
+                
+                # Get raw joint scores from MLP: shape (1, n_bins * n_filters)
+                raw_scores = self.algorithm.policy.core_net(glob_tensor, bin_tensor)
+                
+                # [FIX 1]: Reshape scores to isolate the active filter's map
+                n_bins = bin_tensor.shape[1]
+                n_filters = raw_scores.shape[-1] // n_bins
+                
+                # Reshape to (n_bins, n_filters) and slice the specific filter
+                q_map = raw_scores.view(n_bins, n_filters)[:, filter_idx].cpu().numpy()
 
-            lon_data = hpGrid.lon
+            # [FIX 2]: Coordinate alignment for interpolation
+            lon_data = hpGrid.lon 
             lat_data = hpGrid.lat
 
-            target_lonlats = np.array([field2radec[fid] for fid in field_ids_in_bin])
+            target_coords = np.array([field2radec[fid] for fid in field_ids_in_bin])
+            
             if hpGrid.is_azel:
+                # Project RA/Dec to local Az/El frame using the current timestamp
                 timestamp = info.get('timestamp')
-                target_lons, target_lats = ephemerides.equatorial_to_topographic(ra=target_lonlats[:, 0], dec=target_lonlats[:, 1], time=timestamp)
+                target_lons, target_lats = ephemerides.equatorial_to_topographic(
+                    ra=target_coords[:, 0], 
+                    dec=target_coords[:, 1], 
+                    time=timestamp
+                )
             else:
-                target_lons = target_lonlats[:, 0]
-                target_lats = target_lonlats[:, 1]
+                target_lons = target_coords[:, 0]
+                target_lats = target_coords[:, 1]
 
-            q_interpolated = interpolate_on_sphere(target_lons, target_lats, lon_data, lat_data, q_vals)
+            # [FIX 3]: Interpolate the score surface matching the correct filter map
+            q_interpolated = interpolate_on_sphere(
+                target_lons, target_lats,  # Target coordinates
+                lon_data, lat_data,        # Bin centers (grid)
+                q_map                      # Filter-specific Q-values
+            )
+            
             best_idx = np.argmax(q_interpolated)
-            best_field = field_ids_in_bin[best_idx]
-            return best_field
+            return field_ids_in_bin[best_idx]
 
         elif field_choice_method == 'random':
             return random.choice(field_ids_in_bin)
