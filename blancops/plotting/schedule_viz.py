@@ -112,10 +112,9 @@ def save_survey_diagnostics(eval_metrics, save_dir, field_lookup, nside, action_
     else:
         bin_radecs = np.array([bin2coord[bid] for bid in bin_nums])
     bin_radecs /= units.deg
-    print(bin_radecs)
 
     # Get field radecs
-    field_radecs = np.array([[field_lookup['ra'][str(field_id)], field_lookup['dec'][str(field_id)]] for field_id in field_ids])
+    field_radecs = np.array([[field_lookup['ra'][field_id], field_lookup['dec'][field_id]] for field_id in field_ids])
     field_radecs /= units.deg
 
     # Plot
@@ -131,7 +130,7 @@ def save_survey_diagnostics(eval_metrics, save_dir, field_lookup, nside, action_
 
     fig.savefig(save_dir / "survey_ra_vs_dec.png")
 
-def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir, grid_network, env, nside, lookup_dirpath, num_actions, action_space, ep_num=0, do_gifs=False):
+def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir, action_architecture, env, nside, lookup_dirpath, num_actions, action_space, ep_num=0, do_gifs=False):
     eval_metrics = eval_metrics[f'ep-{ep_num}']
     night_info = []
     for obs_n_str in observing_night_strs:
@@ -152,7 +151,6 @@ def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir
             os.makedirs(night_dir)
 
         metrics = eval_metrics[f'night-{night_idx}']
-        print(metrics['timestamp'].shape, metrics['glob_observations'].shape)
         if len(metrics['timestamp']) < 2:
             logger.info(f"Night {night_idx} had no viable observations")
             continue
@@ -202,7 +200,7 @@ def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir
         plt.close()
 
         # Plot most frequently visited bin features vs timestamp
-        if grid_network is not None:
+        if action_architecture is not None:
             _bins_vis_tonight = np.array(bin_nums).astype(int)
             _bincounts = np.bincount(_bins_vis_tonight[real_obs_mask], minlength=num_actions)
             _most_common_bin = np.argmax(_bincounts)

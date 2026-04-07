@@ -12,15 +12,12 @@ import os
 import pickle
 import json
 
-from blancops.plotting.plotting import plot_schedule_from_file
 from blancops.core_rl.agent import Agent
 from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config, get_workspace_dir
-from blancops.algorithms.builder import setup_algorithm
+from blancops.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
-from blancops.data_processing.data_processing import load_raw_data_to_dataframe, expand_feature_names_for_cyclic_norm
 from blancops.data_processing.constants import *
 from blancops.core_rl.environments import OnlineBlancoEnv
-from blancops.data_processing.features import get_nautical_twilight
 from blancops.plotting.schedule_viz import *
 
 import logging
@@ -104,10 +101,10 @@ def main():
     # Load lookup tables
     if args.schedule_name in TEST_SUITE_NAMES:
         print(f"Using test suite {args.schedule_name} with predefined lookup tables and observing nights")
-        test_name = args.schedule_name
+        schedule_name = args.schedule_name
         workspace_dir = get_workspace_dir()
-        lookup_dirpath = workspace_dir / "data" / "test_suite" / test_name
-        if test_name == 'gw-followup':
+        lookup_dirpath = workspace_dir / "data" / "test_suite" / schedule_name
+        if schedule_name == 'gw-followup':
             print(f"Using GW followup test suite with predefined observing nights based on {args.observing_nights} set")
             if args.observing_nights[0] == 'good':
                 print('USING GOOD GW FOLLOWUP NIGHTS')
@@ -116,26 +113,26 @@ def main():
                 observing_night_strs = GW_OBSERVING_DATES_BAD
             else:
                 observing_night_strs = args.observing_nights
-        elif test_name == 'healpix-grid':
+        elif schedule_name == 'healpix-grid':
             observing_night_strs = HP_OBSERVING_DATES
-        elif test_name == 'magic-spring':
+        elif schedule_name == 'magic-spring':
             observing_night_strs = MS_OBSERVING_DATES
-        elif test_name == 'delve':
+        elif schedule_name == 'delve':
             observing_night_strs = args.observing_nights
         else:
-            raise ValueError(f"Test suite {test_name} not recognized. Must be one of {TEST_SUITE_NAMES}")
+            raise ValueError(f"Test suite {schedule_name} not recognized. Must be one of {TEST_SUITE_NAMES}")
     else:
         lookup_dirpath = args.field_lookup_dir.resolve()
+        schedule_name = args.schedule_name
 
     for f in ['field_lookup.json', 'field2radec.json']:
         filepath = lookup_dirpath / f
         assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
-    with open(lookup_dirpath / "field_lookup.json", 'r') as f:
-        field_lookup = json.load(f)
+    field_lookup = pd.read_json(lookup_dirpath / "field_lookup.json")
     
-    field2radec = pd.read_json(lookup_dirpath / "field2radec.json")
-    field2radec = field2radec[['ra', 'dec']].to_numpy()
-    field2nvisits = np.array([n for n in field_lookup['n_visits'].values()])
+    # field2radec = pd.read_json(lookup_dirpath / "field2radec.json")
+    field2radec = field_lookup[['ra', 'dec']].to_numpy()
+    field2nvisits = np.array([n for n in field_lookup['n_visits'].values])
 
     # Check that field_lookup has all required columns needed to run environment
     required_columns = ['field_id', 'exptime', 'ra', 'dec', 'n_visits', 'filter'] # 'dithers','object', 'priorities'
@@ -143,24 +140,7 @@ def main():
         assert col in field_lookup.keys(), f"Column '{col}' not found in field_lookup.json"
     
     logger.info("Setting up agent...")
-    algorithm = setup_algorithm(algorithm_name=cfg['model']['algorithm'], 
-                                num_actions=cfg['data']['num_actions'],
-                                num_filters=NUM_FILTERS,
-                                n_global_features = cfg['data']['state_dim'],
-                                n_bin_features=cfg['data']['bin_state_dim'],
-                                grid_network=cfg['model']['grid_network'],
-                                loss_fxn=cfg['model']['loss_function'],
-                                hidden_dim=cfg['train']['hidden_dim'], lr=cfg['train']['lr'], lr_scheduler=cfg['train']['lr_scheduler'], 
-                                device=device, lr_scheduler_kwargs=cfg['train']['lr_scheduler_kwargs'], lr_scheduler_epoch_start=cfg['train']['lr_scheduler_epoch_start'], 
-                                lr_scheduler_num_epochs=cfg['train']['lr_scheduler_num_epochs'],
-                                gamma=cfg['model']['gamma'], 
-                                tau=cfg['model']['tau'],
-                                activation=cfg['model']['activation'],
-                                cql_alpha=cfg['model'].get('cql_alpha', None),
-                                nside=nside,
-                                action_space=action_space
-                                )
-    
+    algorithm = build_algorithm(cfg, device)
     agent = Agent(
         algorithm=algorithm,
         train_outdir=cfg_dir,
@@ -186,7 +166,8 @@ def main():
 
     # Evaluate
     eval_metrics = agent.evaluate(env=env, cfg=cfg, num_episodes=1, field_choice_method=args.field_choice_method, eval_outdir=schedule_outdir,
-              field2nvisits=field2nvisits, field2radec=field2radec)
+              field2nvisits=field2nvisits, field2radec=field2radec, save_SISPI=True, SISPI_fn=schedule_name + ".json", field_lookup=field_lookup)
+    
 
     logger.info("Generating plots...")
     save_survey_diagnostics(eval_metrics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, action_space=action_space)
@@ -197,7 +178,7 @@ def main():
     #     eval_metrics = pickle.load(f)
 
     if not args.no_night_diagnostics:
-        save_nightly_diagnostics(eval_metrics=eval_metrics, observing_night_strs=observing_night_strs, schedule_outdir=schedule_outdir, grid_network=cfg['model']['grid_network'],
+        save_nightly_diagnostics(eval_metrics=eval_metrics, observing_night_strs=observing_night_strs, schedule_outdir=schedule_outdir, action_architecture=cfg['model']['action_architecture'],
                             nside=nside, lookup_dirpath=lookup_dirpath, env=env, num_actions=cfg['data']['num_actions'], action_space=action_space,
                             do_gifs=not args.do_night_gifs)
         

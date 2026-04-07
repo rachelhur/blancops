@@ -188,7 +188,7 @@ class Agent:
         with open(val_metrics_filepath, 'wb') as handle:
             pickle.dump(val_metrics, handle)
     
-    def evaluate(self, env, cfg, num_episodes, field_choice_method='interp', eval_outdir=None, field2nvisits=None, field2radec=None):
+    def evaluate(self, env, cfg, num_episodes, field_choice_method='interp', eval_outdir=None, field2nvisits=None, field2radec=None, field_lookup=None, save_SISPI=False, SISPI_fn="survey_schedule"):
         """Evaluates the agent in an environment for multiple episodes.
         """
         eval_outdir = eval_outdir if eval_outdir is not None else self.train_outdir + 'evaluation/'
@@ -245,8 +245,8 @@ class Agent:
                         else:
                             action = self.choose_action(x_glob=state['global_state'], x_bin=state['bin_state'], action_mask=action_mask, epsilon=None)
                             if 'filter' in action_space:
-                                bin_idx = int(action // self.algorithm.num_filters)
-                                filter_idx = int(action % self.algorithm.num_filters)
+                                bin_idx = int(action // self.algorithm.policy.num_filters)
+                                filter_idx = int(action % self.algorithm.policy.num_filters)
                             else:
                                 bin_idx = action
                                 filter_idx = NO_FILTER_SIGNAL
@@ -403,10 +403,56 @@ class Agent:
             return best_field
 
         elif field_choice_method == 'random':
-            field_id = random.choice(field_ids_in_bin)
-            return field_id
+            return random.choice(field_ids_in_bin)
+    
+    # def choose_field(self, obs, info, field2nvisits, field2radec, hpGrid, field_choice_method, fields_in_bin, filter_idx): 
+    #     """
+    #     Choose field in bin based on interpolated Q-values
+    #     """
+    #     assert len(fields_in_bin) != 0, "The agent is receiving an empty list for `fields_in_bin`. "
+    #     glob_state, bin_state = obs
+    #     s_visited = info.get('s_visited', None)
+    #     s_filter_visits = info.get('s_filter_visits', None)
+    #     max_s_filter_visits = info.get('max_s_filter_visits', None)
+
+    #     if (s_filter_visits is not None) and (max_s_filter_visits is not None) and (filter_idx >= 0):
+    #         field_ids_in_bin = [fid for fid in fields_in_bin if s_filter_visits[fid, filter_idx] < max_s_filter_visits[fid, filter_idx]]
+    #     else:
+    #         field_ids_in_bin = [fid for fid in fields_in_bin if s_visited[fid] < field2nvisits[fid]]
         
-    def save_survey_schedule(self, eval_metrics, save_dir, ep_num=0):
+    #     assert len(field_ids_in_bin) != 0, f"No valid fields left in bin for filter {filter_idx}"
+        
+    #     # action_mask = info.get('action_mask', None)
+
+    #     if field_choice_method == 'interp':
+    #         with torch.no_grad():
+    #             glob_state = torch.as_tensor(glob_state, device=self.device, dtype=torch.float32)
+    #             bin_state = torch.as_tensor(bin_state, device=self.device, dtype=torch.float32)
+    #             # action_mask = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
+    #             q_vals = self.algorithm.policy.core_net(glob_state, bin_state).squeeze(0)
+    #             q_vals = q_vals.cpu().detach().numpy() #TODO - use mask
+
+    #         lon_data = hpGrid.lon
+    #         lat_data = hpGrid.lat
+
+    #         target_lonlats = np.array([field2radec[fid] for fid in field_ids_in_bin])
+    #         if hpGrid.is_azel:
+    #             timestamp = info.get('timestamp')
+    #             target_lons, target_lats = ephemerides.equatorial_to_topographic(ra=target_lonlats[:, 0], dec=target_lonlats[:, 1], time=timestamp)
+    #         else:
+    #             target_lons = target_lonlats[:, 0]
+    #             target_lats = target_lonlats[:, 1]
+
+    #         q_interpolated = interpolate_on_sphere(target_lons, target_lats, lon_data, lat_data, q_vals)
+    #         best_idx = np.argmax(q_interpolated)
+    #         best_field = field_ids_in_bin[best_idx]
+    #         return best_field
+
+    #     elif field_choice_method == 'random':
+    #         field_id = random.choice(field_ids_in_bin)
+    #         return field_id
+        
+    def save_survey_schedule(self, eval_metrics, save_dir, field_lookup, ep_num=0, save_SISPI=False, SISPI_fn="survey_schedule.json"):
         # Use a defaultdict to easily collect lists of arrays for each metric key
         eval_metrics = eval_metrics[f'ep-{ep_num}']
         collected_metrics = defaultdict(list)

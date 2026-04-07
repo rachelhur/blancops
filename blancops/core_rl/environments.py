@@ -1,10 +1,13 @@
 from collections import defaultdict
 from pathlib import Path
+import ephem
 from gymnasium.spaces import Dict, Box, Discrete
 import gymnasium as gym
 import numpy as np
 import pandas as pd
 import math
+
+import torch
 
 from blancops.data_processing.data_processing import expand_feature_names_for_cyclic_norm
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
@@ -104,7 +107,7 @@ class BaseTelescopeEnv(gym.Env, ABC):
         -------
             float: The calculated reward value.
         '''
-        if getattr(self, "reward_func", None) is None:
+        if getattr(self, "_reward_func", None) is None:
             return 1
         return self._reward_func(last_field, next_field)    
 
@@ -208,7 +211,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
 
         # --- OnlineEnv Logic --- #
         if bin_num == WAIT_SIGNAL:
-            print('ENVIRONMENT RECEIVED A WAIT SIGNAL')
+            logger.info('ENVIRONMENT RECEIVED A WAIT SIGNAL')
             self._ts = self._fast_forward(
                 timestamp=self._ts,
                 ras=self._ra_arr,
