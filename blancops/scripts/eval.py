@@ -103,7 +103,7 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 whole=False,
                 compare=False,
                 expert=True,
-                is_azel=action_spaceace=='azel',
+                is_azel=action_space=='azel',
                 mollweide=False,
             )
             plot_schedule_from_file(
@@ -354,7 +354,7 @@ def main():
         agent_bins = agent_actions[ag_mask]
     
     # Get expert times
-    time_idx = np.where(np.array(test_dataset.global_feature_names) == 'time_fraction_since_start')[0]
+    time_idx = np.where(np.array(test_dataset.global_feature_names) == 't_night')[0]
     expert_times = test_dataset.states[test_dataset.next_state_idxs, time_idx].detach().numpy()
     assert len(expert_bins) == len(agent_bins) == len(expert_times), f"Shape mismatch: expert bins {expert_bins.shape}, agent_bins {agent_bins.shape} expert_times {expert_times.shape}"
     
@@ -367,18 +367,21 @@ def main():
     axs[1].plot(expert_times, agent_bins - expert_bins, marker='o', alpha=.5)
     axs[1].set_ylabel('Eval sequence - target sequence \n[bin number]')
     axs[1].set_xlabel('Time since sunrise (normalized)')
-    fig.savefig(eval_outdir + 'eval_and_target_bins.png')
+    fig.savefig(eval_outdir + 'single_step_bins_vs_time.png')
 
     if 'filter' in cfg['data']['action_space']:
+        expert_filters_names = [IDX2FILTER[i] for i in expert_filters]
+        agent_filters_names = [IDX2FILTER[i] for i in agent_filters]
+
         fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
-        axs[0].plot(expert_times, expert_filters, marker='*', alpha=.3, label='true')
-        axs[0].plot(expert_times, agent_filters, marker='o', alpha=.3, label='pred')
+        axs[0].plot(expert_times, expert_filters_names, marker='*', alpha=.3, label='true')
+        axs[0].plot(expert_times, agent_filters_names, marker='o', alpha=.3, label='pred')
         axs[0].legend()
-        axs[0].set_ylabel('bin number')
-        axs[1].plot(expert_times, agent_filters - expert_filters, marker='o', alpha=.5)
-        axs[1].set_ylabel('Eval sequence - target sequence \n[bin number]')
+        axs[0].set_ylabel('filter')
+        axs[1].plot(expert_times, agent_filters_names - expert_filters_names, marker='o', alpha=.5)
+        axs[1].set_ylabel('Filter Index residuals (Agent - Expert)')
         axs[1].set_xlabel('Time since sunrise (normalized)')
-        fig.savefig(eval_outdir + 'eval_and_target_bins.png')
+        fig.savefig(eval_outdir + 'single_step_filters_vs_time.png')
 
     # Roll out policy
     logger.info("Starting evaluation...")
@@ -417,13 +420,10 @@ def main():
             logger.info(f"Night {night_idx} had no viable observations")
             continue
             
-        # 5. The Magic: Slice the Ground Truth data instantly using our mappings
         night_compact_idxs = test_dataset.curr_compact_idxs[night_dl_idxs]
         
-        # - True unnormalized DataFrame rows for this night
         night_df = valid_transitions_df.iloc[night_dl_idxs]
         
-        # - True pre-normalized bin states (no more zenith searching!)
         if test_dataset._prenorm_bin_states is not None:
             expert_bin_states = test_dataset._prenorm_bin_states[night_compact_idxs]
     
@@ -453,57 +453,60 @@ def main():
         fig_b.savefig(night_dir + f'bin_vs_step.png')
         plt.close()
 
-        # Plot state features vs timestamp for first episode
-        fig, axs = plt.subplots(len(test_dataset.global_feature_names), figsize=(10, len(test_dataset.global_feature_names)*5))
-        for i, feature_row in enumerate(metrics['glob_observations'].T[:len(test_dataset.global_feature_names)]):
-            feat_name = test_dataset.global_feature_names[i]
-            agent_data = feature_row.copy()
-            if feat_name == 'airmass':
-                agent_data = 1 / feature_row
-            elif 'sky_brightness' in feat_name:
-                agent_data = (feature_row * SKYBRIGHT_MAX) + SKYBRIGHT_MIN
-            elif feat_name in global_cfg['features']['MAX_NORM_FEATURE_NAMES']:
-                agent_data = feature_row * (np.pi/2)
-            elif feat_name in global_cfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']:
-                agent_data = feature_row * (2*np.pi)
-            else:
-                agent_data = feature_row
+        # # Plot state features vs timestamp for first episode
+        # fig, axs = plt.subplots(len(test_dataset.global_feature_names), figsize=(10, len(test_dataset.global_feature_names)*5))
+        # for i, feature_row in enumerate(metrics['glob_observations'].T[:len(test_dataset.global_feature_names)]):
+        #     feat_name = test_dataset.global_feature_names[i]
+        #     agent_data = feature_row.copy()
+        #     # REVERSE NORMALIZATIONS
+        #     if feat_name in global_cfg['features']['SIN_NORM_FEATURE_NAMES']:
+        #         agent_data = np.arcsin(agent_data)
+        #     elif feat_name in global_cfg['features']['LOG_NORM_FEATURE_NAMES']:
+        #         agent_data = np.exp(agent_data) - 1e-9
+        #     elif feat_name in global_cfg['features']['FRACTIONAL_FEATURE_NAMES']:
+        #         agent_data = agent_data * (2*np.pi)
+        #     elif feat_name in global_cfg['features']['LOCAL_MEAN_Z_SCORE_FEATURE_NAMES']:
+        #         agent_data = agent_data * (2*np.pi)
+        #     else:
+        #         agent_data = agent_data
+        #     if feat_name in global_cfg['features']['Z_SCORE_FEATURE_NAMES']:
+        #         agent_data = agent_data * zscore_stats['global_features']['std'][] + zscore_stats[feat_name]['mean']
 
-            axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
-            axs[i].plot(expert_timestamps[expert_zenith_mask], night_df[feat_name].values[expert_zenith_mask], label='original schedule', marker='o')
-            axs[i].set_title(feat_name)
-            axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
-            axs[i].legend()
-        fig.tight_layout()
-        fig.savefig(night_dir + f'state_features_vs_time.png')
-        plt.close()
+        #     axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
+        #     axs[i].plot(expert_timestamps[expert_zenith_mask], night_df[feat_name].values[expert_zenith_mask], label='original schedule', marker='o')
+        #     axs[i].set_title(feat_name)
+        #     axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
+        #     axs[i].legend()
+        # fig.tight_layout()
+        # fig.savefig(night_dir + f'state_features_vs_time.png')
+        # plt.close()
 
-        # Plot most frequently visited bin features vs timestamp
-        if cfg['model']['grid_network'] is not None:
-            _bins_vis_tonight = metrics['bin'].astype(int)
-            _bincounts = np.bincount(_bins_vis_tonight[agent_zenith_mask], minlength=test_dataset.num_actions)
-            _most_common_bin = np.argmax(_bincounts)
-            normed_feature_names = test_dataset.bin_feature_names
-            fig, axs = plt.subplots(len(normed_feature_names), figsize=(10, len(normed_feature_names)* 5))
-            for i, feat_row in enumerate(metrics['bin_observations'].T[:, _most_common_bin, :]):
-                feat_name = normed_feature_names[i]
-                # unnormalize observations to compare to expert values
-                if feat_name == 'airmass':
-                    agent_data = 1 / feat_row
-                elif feat_name in global_cfg['features']['MAX_NORM_FEATURE_NAMES']:
-                    agent_data = feat_row * (np.pi/2)
-                elif feat_name in global_cfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']:
-                    agent_data = feat_row * (2 * np.pi)
-                else:
-                    agent_data = feat_row
-                axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
-                axs[i].plot(expert_timestamps[expert_zenith_mask], expert_bin_states[expert_zenith_mask, _most_common_bin, i], label='original schedule', marker='o')
-                axs[i].set_title(feat_name)
-                axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
-                axs[i].legend()
-            fig.suptitle(f"Bin {_most_common_bin}: (az, el) = ({test_dataset.hpGrid.lon[_most_common_bin]:.2f}, {test_dataset.hpGrid.lat[_most_common_bin]:.2f}")
-            fig.tight_layout()
-            fig.savefig(night_dir + f'bin_features_vs_time.png')
+        # # Plot most frequently visited bin features vs timestamp
+        # if cfg['model']['action_architecture'] is not None:
+        #     _bins_vis_tonight = metrics['bin'].astype(int)
+        #     _bincounts = np.bincount(_bins_vis_tonight[agent_zenith_mask], minlength=test_dataset.num_actions)
+        #     _most_common_bin = np.argmax(_bincounts)
+        #     normed_feature_names = test_dataset.bin_feature_names
+        #     fig, axs = plt.subplots(len(normed_feature_names), figsize=(10, len(normed_feature_names)* 5))
+        #     for i, feat_row in enumerate(metrics['bin_observations'].T[:, _most_common_bin, :]):
+        #         feat_name = normed_feature_names[i]
+        #         # unnormalize observations to compare to expert values
+        #         if feat_name == 'airmass':
+        #             agent_data = 1 / feat_row
+        #         elif feat_name in global_cfg['features']['SIN_NORM_FEATURE_NAMES']:
+        #             agent_data = feat_row * (np.pi/2)
+        #         elif feat_name in global_cfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']:
+        #             agent_data = feat_row * (2 * np.pi)
+        #         else:
+        #             agent_data = feat_row
+        #         axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
+        #         axs[i].plot(expert_timestamps[expert_zenith_mask], expert_bin_states[expert_zenith_mask, _most_common_bin, i], label='original schedule', marker='o')
+        #         axs[i].set_title(feat_name)
+        #         axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
+        #         axs[i].legend()
+        #     fig.suptitle(f"Bin {_most_common_bin}: (az, el) = ({test_dataset.hpGrid.lon[_most_common_bin]:.2f}, {test_dataset.hpGrid.lat[_most_common_bin]:.2f}")
+        #     fig.tight_layout()
+        #     fig.savefig(night_dir + f'bin_features_vs_time.png')
 
 
         # Plot static bin and field radec scatter plots

@@ -65,6 +65,7 @@ NORMALIZATION CONSTANTS
 
 SKYBRIGHT_MAX = 23
 SKYBRIGHT_MIN = 17
+FWHM_MAX = 8
 
 """
 
@@ -72,7 +73,7 @@ IMPLEMENTED GRID NETWORK NAMES
 
 """
 
-GRID_NETWORKS = ['single_bin_scorer', 'multi_dim_scorer', 'multi_head_scorer', 'autoregressive']
+ACTION_ARCHITECTURES = ['simultaneous', 'multi_head_scorer', 'autoregressive']
 
 """
 
@@ -99,3 +100,16 @@ DEPLOYMENT CONSTS
 """
 
 DEPLOYMENT_OBSERVING_DATES = ['2026-06-23-half1', '2026-06-24-half1']
+
+
+"""
+
+MODEL CONSTANTS
+
+"""
+
+import numpy as np
+
+# Focal loss weights
+FILTER_COUNTS_ORDERED = np.array([20574, 18450, 17312, 15984, 16221]) # entire train dataset
+FILTER_ALPHA_WEIGHTS = 1 / FILTER_COUNTS_ORDERED * len(FILTER_COUNTS_ORDERED) / np.sum(1/FILTER_COUNTS_ORDERED)

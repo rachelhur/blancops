@@ -21,6 +21,18 @@ import warnings
 import logging
 logger = logging.getLogger(__name__)
 
+def calculate_t_survey(survey_night_indices, survey_nights_max):
+    t_survey = survey_night_indices / survey_nights_max
+    if type(t_survey) == torch.Tensor or type(t_survey) == np.ndarray:
+        assert t_survey.min() >= 0 and t_survey.max() <= 1, "t_survey should be between 0 and 1"
+    return t_survey    
+
+def calculate_urgency(filter_counts_arr, filter_counts_max, survey_night_indices, survey_nights_max):
+    survey_progress = filter_counts_arr / filter_counts_max
+    t_survey = calculate_t_survey(survey_night_indices, survey_nights_max)
+    urgency = np.clip((1 - survey_progress) / (1 - t_survey + 1e-9), a_min=0.01, a_max=100.0)
+    return urgency
+
 def get_nautical_twilight(timestamp, event_type='set', horizon='-10', buffer_in_seconds=10):
     # local_noon_dt = night_dt.replace(hour=16, minute=0, second=0, tzinfo=timezone.utc)
     # obs = ephemerides.blanco_observer(time=local_noon_dt.timestamp())
@@ -80,47 +92,116 @@ def normalize_timestamp(timestamp, sunset_timestamp, sunrise_timestamp):
 
 def normalize_noncyclic_features(state, 
                                 state_feature_names,
-                                max_norm_feature_names,
-                                ang_distance_norm_feature_names,
-                                do_inverse_norm, do_max_norm, do_ang_distance_norm,
+                                sin_norm_feature_names,
+                                log_norm_feature_names,
+                                fractional_norm_feature_names,
+                                z_score_feature_names,
+                                local_mean_z_score_feature_names,
+                                do_sin_norm, do_log_norm, do_fractional_norm, do_z_score_norm, do_local_mean_z_score,
                                 fix_nans=True,
-                                do_debug=False):
+                                train_state_idxs=None,
+                                z_stats=None,
+                                rel_stats=None,
+                                do_debug=True):
     is_torch = torch.is_tensor(state)
     
     if do_debug:
-        assert (state != np.isnan).any()
+        if is_torch:
+            assert not torch.isnan(state).any(), "NaNs detected in input state"
+        else:
+            assert not np.isnan(state).any(), "NaNs detected in input state"
 
-    airmass_mask = np.array(['airmass' == feat for feat in state_feature_names], dtype=bool)
-    skybright_mask = np.array(['sky_brightness' in feat for feat in state_feature_names], dtype=bool)
-    max_norm_mask = np.array([any(max_feat == feat for max_feat in max_norm_feature_names) for feat in state_feature_names], dtype=bool)
-    ang_distance_mask = np.array([any(dist_feat == feat for dist_feat in ang_distance_norm_feature_names) for feat in state_feature_names], dtype=bool)
+    rel_mask = np.array(['rel_' in feat_name for feat_name in state_feature_names], dtype=bool)
+    
+    rel_norm_mask = np.array([any(norm_feat == feat for norm_feat in local_mean_z_score_feature_names) for feat in state_feature_names], dtype=bool)
+    sin_norm_mask = np.array([any(norm_feat in feat for norm_feat in sin_norm_feature_names) for feat in state_feature_names], dtype=bool) & ~rel_mask
+    log_norm_mask = np.array([any(norm_feat == feat for norm_feat in log_norm_feature_names) for feat in state_feature_names], dtype=bool) & ~rel_mask
+    fractional_mask = np.array([any(norm_feat == feat for norm_feat in fractional_norm_feature_names) for feat in state_feature_names], dtype=bool) & ~rel_mask
+    z_score_mask = np.array([
+        any(feat == norm_feat or feat.endswith(f"_{norm_feat}") for norm_feat in z_score_feature_names) 
+        for feat in state_feature_names
+        ], dtype=bool) & ~rel_mask
+    
+    for m_name, m in zip(['z_score', 'fractional_norm', 'log_norm', 'sin_norm', 'local_mean_z_score'],
+                         [z_score_mask, fractional_mask, log_norm_mask, sin_norm_mask, rel_norm_mask]
+                         ):
+        logger.debug(f"{m_name} will be applied to features: {[feat for feat, mask in zip(state_feature_names, m) if mask]}")
+    
+    sin_func = np.sin
+    log_func = np.log
     if is_torch:
-        airmass_mask = torch.tensor(airmass_mask, dtype=torch.bool, device=state.device)
-        max_norm_mask = torch.tensor(max_norm_mask, dtype=torch.bool, device=state.device)
-        ang_distance_mask = torch.tensor(ang_distance_mask, dtype=torch.bool, device=state.device)
+        sin_norm_mask = torch.tensor(sin_norm_mask, dtype=torch.bool, device=state.device)
+        log_norm_mask = torch.tensor(log_norm_mask, dtype=torch.bool, device=state.device)
+        fractional_mask = torch.tensor(fractional_mask, dtype=torch.bool, device=state.device)
+        rel_norm_mask = torch.tensor(rel_norm_mask, dtype=torch.bool, device=state.device)
+        z_score_mask = torch.tensor(z_score_mask, dtype=torch.bool, device=state.device)
+        sin_func = torch.sin
+        log_func = torch.log
 
-    if do_inverse_norm and (airmass_mask.sum()) > 0:
-        assert (state[..., airmass_mask] >= 1).all()
-        state[..., airmass_mask] = 1 / state[..., airmass_mask]
-    if do_inverse_norm and (skybright_mask.sum()) > 0:
-        assert (state[..., skybright_mask] >= 1).all()
-        state[..., skybright_mask] = (state[..., skybright_mask] - SKYBRIGHT_MIN) / SKYBRIGHT_MAX
-    if do_max_norm and (max_norm_mask.sum() > 0):
-        state[..., max_norm_mask] = state[..., max_norm_mask] / (np.pi / 2)
-        assert (state[..., max_norm_mask] <= 1).all()
-        assert (state[..., max_norm_mask] >= -1).all()
-    if do_ang_distance_norm and (ang_distance_mask.sum() > 0):
-        assert (state[..., ang_distance_mask] >= 0).all(), f"Max/min is {(state[..., ang_distance_mask]).max(), (state[..., ang_distance_mask]).min()}"
-        assert (state[..., ang_distance_mask] <= 2*np.pi).all(), f"Max/min is {(state[..., ang_distance_mask]).max(), (state[..., ang_distance_mask]).min()}"
-        state[..., ang_distance_mask] = state[..., ang_distance_mask] / (2*np.pi)
-        assert (state[..., ang_distance_mask] >= -1).all(), f"Max/min is {(state[..., ang_distance_mask]).max(), (state[..., ang_distance_mask]).min()}"
-        assert (state[..., ang_distance_mask] <= 1).all(), f"Max/min is {(state[..., ang_distance_mask]).max(), (state[..., ang_distance_mask]).min()}"
+    if do_sin_norm and (sin_norm_mask.sum() > 0):
+        state[..., sin_norm_mask] = sin_func(state[..., sin_norm_mask])
+        assert (state[..., sin_norm_mask] <= 1).all()
+        assert (state[..., sin_norm_mask] >= -1).all()
+    if do_log_norm and (log_norm_mask.sum()) > 0:
+        state[..., log_norm_mask] = log_func(state[..., log_norm_mask] + 1e-9)
+    if do_fractional_norm and fractional_mask.sum() > 0:
+        state[..., fractional_mask] = 2 * (state[..., fractional_mask] - .5)
+
+    z_stats_out = {}
+    if do_z_score_norm and (z_score_mask.sum() > 0):
+        if z_stats is not None: # inference mode
+            mean = z_stats['mean'].detach().numpy()
+            std = z_stats['std'].detach().numpy()
+        else: # train mode
+            if train_state_idxs is not None:
+                train_z_states = state[train_state_idxs][..., z_score_mask]
+            else:
+                raise ValueError("Must pass train_state_idxs during normalization in training mode to perform z-score normalization")
+            train_data_flat = train_z_states.reshape(-1, train_z_states.shape[-1])
+
+            if is_torch:
+                # torch.nanmean is available in PyTorch 1.11+
+                mean = torch.nanmean(train_data_flat, dim=0)
+                var = torch.nanmean((train_data_flat - mean)**2, dim=0)
+                std = torch.clamp(torch.sqrt(var), min=1e-6)
+            else:
+                mean = np.nanmean(train_data_flat, axis=0)
+                std = np.clip(np.nanstd(train_data_flat, axis=0), a_min=1e-6, a_max=None)
+                    
+            z_stats_out = {'mean': mean, 'std': std}
+        state[..., z_score_mask] = (state[..., z_score_mask] - mean) / std
+        
+    rel_stats_out = {}
+    if do_local_mean_z_score and (rel_norm_mask.sum() > 0):
+        if rel_stats is not None:
+            std = rel_stats['std'].detach().numpy()
+        else:
+            if train_state_idxs is None:
+                raise ValueError("Must pass train_state_idxs to compute global std for rel normalization")
+            train_rel_states = state[train_state_idxs][..., rel_norm_mask]
+            train_rel_flat = train_rel_states.reshape(-1, train_rel_states.shape[-1])
+            
+            if is_torch:
+                mean = torch.nanmean(train_rel_flat, dim=0)
+                var = torch.nanmean((train_rel_flat - mean)**2, dim=0)
+                std = torch.clamp(torch.sqrt(var), min=1e-6)
+            else:
+                mean = np.nanmean(train_rel_flat, axis=0)
+                std = np.clip(np.nanstd(train_rel_flat, axis=0), a_min=1e-6, a_max=None)
+                
+            rel_stats_out = {'std': std}
+            
+        state[..., rel_norm_mask] = state[..., rel_norm_mask] / std
+        
     if fix_nans:
         if is_torch:
             state[torch.isnan(state)] = 1.2
         else:
             state[np.isnan(state)] = 1.2
-    return state
+    return state, z_stats_out, rel_stats_out
+    
+def time_until_set():
+    pass
     
 def get_sun_and_moon_positions(time):
     sun_radec = ephemerides.get_source_ra_dec('sun', time=time)
@@ -128,6 +209,22 @@ def get_sun_and_moon_positions(time):
     moon_radec = ephemerides.get_source_ra_dec('moon', time=time)
     moon_azel = ephemerides.equatorial_to_topographic(ra=moon_radec[0], dec=moon_radec[1], time=time)
     return sun_radec, sun_azel, moon_radec, moon_azel
+
+def get_moon_phase(time):
+    observer = ephemerides.blanco_observer(time=time)
+    moon = ephem.Moon()
+    moon.compute(observer)
+    moon_phase = moon.phase / 100
+    return np.float32(moon_phase)
+
+def get_relative_survey_progress_features(feature_dict, el_mask):
+    for filt in FILTER2IDX.keys():
+        for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
+            raw_key = f"{s_feat_name}_{filt}"
+            if raw_key in feature_dict:
+                valid_cols = np.where(el_mask, feature_dict[raw_key], np.nan)
+                feature_dict[f"rel_{raw_key}"] = get_relative_feature(valid_cols, el_mask)
+    return feature_dict
 
 def get_zenith_features(original_df):
     """
@@ -164,6 +261,30 @@ def get_zenith_features(original_df):
 
     return zenith_df
 
+def backfill_zenith_states(df):
+    df['fwhm'] = df.groupby('night')['fwhm'].bfill()
+    df['night_idx'] = df.groupby('night')['night_idx'].bfill()
+    df['t_survey'] = df.groupby('night')['t_survey'].bfill()
+    for f in FILTER2IDX.keys():
+        df[f'raw_survey_progress_{f}'] = df.groupby('night')[f'raw_survey_progress_{f}'].bfill()
+        df[f'survey_progress_{f}'] = df.groupby('night')[f'survey_progress_{f}'].bfill()
+        df[f'urgency_{f}'] = df.groupby('night')[f'urgency_{f}'].bfill()
+    return df
+
+def normalize_times(time_series):
+    sunset_ts = get_nautical_twilight(time_series.median(), event_type='set')
+    sunrise_ts = get_nautical_twilight(time_series.median(), event_type='rise')
+    total_time = sunrise_ts - sunset_ts
+
+    time_series = (time_series - sunset_ts) / total_time
+    assert all(time_series.values > 0) and all(time_series.values < 1), "Time fractions should be between 0 and 1"
+    return time_series
+    
+def get_lst(datetime_np64):
+    t_arr = Time(datetime_np64, format='datetime64', scale='utc')
+    lst_obj = t_arr.sidereal_time('apparent', longitude="-70:48:23.49")  # Blanco longitude
+    return lst_obj.radian, lst_obj.hour # for debugging
+    
 def calculate_global_features(df, field2name, hpGrid, 
                       base_global_feature_names, cyclical_feature_names, do_cyclical_norm):
     """Processes and filters the dataframe to return a new dataframe with added columns for current global state features"""
@@ -178,41 +299,40 @@ def calculate_global_features(df, field2name, hpGrid,
     # 2. Get coords in radians
     df.loc[:, ['ra', 'dec', 'az', 'zd', 'ha']] *= units.deg
     df['el'] = np.pi/2 - df['zd'].values
-
+    
+    # 2b. Back fill for zenith states (assume no change between zenith state and next state)
+    df = backfill_zenith_states(df)
+    
     # 3. Vectorized LST
     if 'lst' in base_global_feature_names:
-        t_arr = Time(df['datetime'].values, format='datetime64', scale='utc')
-        lst_obj = t_arr.sidereal_time('apparent', longitude="-70:48:23.49")  # Blanco longitude
-        df['lst'] = lst_obj.radian
-        df['lst_hours'] = lst_obj.hour # for debugging
+        df['lst'], df['lst_hours'] = get_lst(df['datetime'].values)
 
-    timestamps = df['timestamp'].values
-    indices = df.index
-    ra_arr = df['ra'].values
-    dec_arr = df['dec'].values
-    filt_arr = df['filter'].values
 
     # 4. Get time dependent features (sun and moon pos)
-    for idx, time in tqdm(zip(indices, timestamps), total=len(timestamps), desc='Calculating sun and moon ra/dec and az/el'):
+    timestamps = df['timestamp'].values
+    sun_ras, sun_decs, sun_azs, sun_els = [], [], [], []
+    moon_ras, moon_decs, moon_azs, moon_els = [], [], [], []
+    moon_phases = []
+    
+    for time in tqdm(timestamps, total=len(timestamps), desc='Calculating sun and moon ra/dec and az/el'):
         sun_radec, sun_azel, moon_radec, moon_azel = get_sun_and_moon_positions(time=time)
-        df.loc[idx, ['sun_ra', 'sun_dec']] = sun_radec
-        df.loc[idx, ['sun_az', 'sun_el']] = sun_azel
-        df.loc[idx, ['moon_ra', 'moon_dec']] = moon_radec
-        df.loc[idx, ['moon_az', 'moon_el']] = moon_azel
+        sun_ras.append(sun_radec[0]); sun_decs.append(sun_radec[1]); sun_azs.append(sun_azel[0]); sun_els.append(sun_azel[1])
+        moon_ras.append(moon_radec[0]); moon_decs.append(moon_radec[1]); moon_azs.append(moon_azel[0]); moon_els.append(moon_azel[1])
+        moon_phases.append(get_moon_phase(time=time))
 
+    df['sun_ra'], df['sun_dec'], df['sun_az'], df['sun_el'] = sun_ras, sun_decs, sun_azs, sun_els
+    df['moon_ra'], df['moon_dec'], df['moon_az'], df['moon_el'] = moon_ras, moon_decs, moon_azs, moon_els
+    df['moon_phase'] = moon_phases
+        
     # Use first and last observation in night of offline dataset as time start and end
-    def normalize_times(time_series):
-        sunset_ts = get_nautical_twilight(time_series.median(), event_type='set')
-        sunrise_ts = get_nautical_twilight(time_series.median(), event_type='rise')
-        total_time = sunrise_ts - sunset_ts
 
-        time_series = (time_series - sunset_ts) / total_time
-        assert all(time_series.values > 0) and all(time_series.values < 1), "Time fractions should be between 0 and 1"
-        return time_series
+    
+    ra_arr = df['ra'].values
+    dec_arr = df['dec'].values
     
     # Using nautical twilight for time start and end
-    df['time_fraction_since_start'] = df.groupby('night')['timestamp'].transform(normalize_times)
-    assert all(df['time_fraction_since_start'].values > 0) and all(df['time_fraction_since_start'].values < 1), "Time fractions should be between 0 and 1"  
+    df['t_night'] = df.groupby('night')['timestamp'].transform(normalize_times)
+    assert all(df['t_night'].values > 0) and all(df['t_night'].values < 1), "Time fractions should be between 0 and 1"  
 
     # 6. Add bin and field id columns to dataframe
     df['field_id'] = df['object'].map({v: k for k, v in field2name.items()})
@@ -235,6 +355,11 @@ def calculate_global_features(df, field2name, hpGrid,
             if feat_name == 'filter_wave':
                 df['filter_wave'] = df['filter'].map(FILTER2WAVE)
                 df['filter_wave'] = df['filter_wave'].fillna(ZENITH_WAVELENGTH) / FILTERWAVENORM # zenith "filter" set to 0, then normalize
+            elif feat_name == 'filter_idx':
+                df['filter_idx'] = df['filter'].map(FILTER2IDX)
+            elif feat_name.startswith('is_filter_'):
+                filt_str = feat_name.split('_')[-1]
+                df[feat_name] = (df['filter'] == filt_str).astype(np.float32)
             elif 'sky_brightness' in feat_name:
                 if not sky_bright_done:
                     for filt in FILTER2WAVE.keys():
@@ -247,7 +372,8 @@ def calculate_global_features(df, field2name, hpGrid,
     # Normalize periodic features here and add as df cols
     if do_cyclical_norm:
         for feat_name in base_global_feature_names:
-            if any(string in feat_name and 'frac' not in feat_name and 'bin' not in feat_name for string in cyclical_feature_names):
+            if any(feat_name.endswith(string) for string in cyclical_feature_names):
+            # if any(string in feat_name and 'frac' not in feat_name and 'bin' not in feat_name for string in cyclical_feature_names):
                 logger.info(f'Applying cyclical norm to {feat_name}')
                 df[f'{feat_name}_cos'] = np.cos(df[feat_name].values)
                 df[f'{feat_name}_sin'] = np.sin(df[feat_name].values)
@@ -258,16 +384,21 @@ def calculate_global_features(df, field2name, hpGrid,
         df[cols] = df[cols].astype(np_bit)
     return df
 
+def get_relative_feature(feat_arr, el_mask):
+    valid_cols = np.where(el_mask, feat_arr, np.nan)
+    return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
+
+def get_delta_az_el(bin_azs, bin_els, target_az, target_el):
+    azs = (bin_azs - target_az + np.pi) % (2 * np.pi) - np.pi
+    els = bin_els - target_el
+    return azs, els
+
 def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names, 
-                                   bin_feature_names, cyclical_feature_names, do_cyclical_norm, night2fieldvisits,
+                                   bin_feature_names, cyclical_feature_names, do_cyclical_norm, do_local_mean_z_score, night2fieldvisits,
                                    night2filtervisithistory, fieldfilter2maxvisits, field2radec, field2maxvisits, action_space,
                                    pt_az=None, pt_el=None, pt_ra=None, pt_dec=None, pt_filter=None, timestamps=None):
     """
     Calculate bin features dynamically based on requested feature names.
-    
-    This version:
-    1. Only calculates features that are present in base_bin_feature_names
-    2. Dynamically constructs the output arrays based on which features are requested
     """
     timestamps = pt_df['timestamp'].values
     assert all(np.diff(timestamps) > 0)
@@ -275,11 +406,7 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
     n_bins = len(hpGrid.idx_lookup)
     
     # History based features
-    history_based_features = [
-        "num_unvisited_fields",
-        "num_incomplete_fields",
-        "min_tiling",
-    ]
+    history_based_features = ["num_unvisited_fields", "num_incomplete_fields", "min_tiling"]
 
     do_history_based_features = any(
         hist_feat in base_feat
@@ -287,40 +414,49 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
         for hist_feat in history_based_features
         )
 
-    # Instantaenous features
-    do_angular_distance_to_pointing = "angular_distance_to_pointing" in base_bin_feature_names
-    do_ha = "ha" in base_bin_feature_names
+    # FEATURE FLAGS
+    do_pointing_distance = "pointing_distance" in base_bin_feature_names
+    do_rel_ha = "rel_ha" in base_bin_feature_names
+    do_ha = "ha" in base_bin_feature_names or do_rel_ha
     do_airmass = "airmass" in base_bin_feature_names
-    do_moon_dist = "moon_distance" in base_bin_feature_names
     do_ra = "ra" in base_bin_feature_names
     do_dec = "dec" in base_bin_feature_names
     do_az = "az" in base_bin_feature_names
     do_el = "el" in base_bin_feature_names
-    do_coords = do_ra or do_dec or do_az or do_el
+    do_rel_moon_distance = "rel_moon_distance" in base_bin_feature_names
+    do_moon_dist = "moon_distance" in base_bin_feature_names or do_rel_moon_distance
+    do_delta_az = "delta_az" in base_bin_feature_names
+    do_delta_el = "delta_el" in base_bin_feature_names
+    do_coords = do_ra or do_dec or do_az or do_el or do_local_mean_z_score or do_delta_az or do_delta_el or do_ha
     
-    # Initialize arrays only for features we need
+    # PRE-ALLOCATE IN MEMORY
     calculated_features = {}
-    
-    # Pre-allocate
-    if do_ha:
-        calculated_features['ha'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+    if do_ha or do_rel_ha:
         logger.debug(f"Calculating ha for {n_timestamps} timestamps and {n_bins} bins")
+        calculated_features['ha'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+    if do_rel_ha:
+        calculated_features['rel_ha'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+        do_ha = True
     if do_airmass:
         calculated_features['airmass'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
         logger.debug(f"Calculating airmass for {n_timestamps} timestamps and {n_bins} bins")
-    if do_moon_dist:
+    if do_moon_dist or do_rel_moon_distance:
         calculated_features['moon_distance'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
         logger.debug(f"Calculating moon distance for {n_timestamps} timestamps and {n_bins} bins")
-    if do_ra or do_dec:
+    if do_ra or do_dec or (do_coords and not hpGrid.is_azel):
         calculated_features['ra'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # az or ra
         calculated_features['dec'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # az or ra
         logger.debug(f"Calculating ra/dec for {n_timestamps} timestamps and {n_bins} bins")
-    if do_az or do_el:
+    if do_coords:
         calculated_features['az'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # el or dec
         calculated_features['el'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # el or dec
         logger.debug(f"Calculating az/el for {n_timestamps} timestamps and {n_bins} bins")
-    if do_angular_distance_to_pointing:
-        calculated_features['angular_distance_to_pointing'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+        if do_delta_az :
+            calculated_features['delta_az'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+        if do_delta_el:
+            calculated_features['delta_el'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+    if do_pointing_distance or do_delta_az or do_delta_el:
+        calculated_features['pointing_distance'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
         if hpGrid.is_azel:
             target_lons = pt_df['az'].values
             target_lats = pt_df['el'].values
@@ -330,71 +466,118 @@ def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names,
     normed_features = {}
     if do_cyclical_norm:
         for feat_name in calculated_features.keys():
-            if any(cyc_feat in feat_name for cyc_feat in cyclical_feature_names):
+            if any(feat_name == cyc_feat or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in cyclical_feature_names):
                 normed_features[f"{feat_name}_cos"] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
                 normed_features[f"{feat_name}_sin"] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
     calculated_features.update(normed_features)
+    
+    # Speedup for loop by creating references to arrays in calculated_features dict    
+    ha_arr = calculated_features.get('ha')
+    airmass_arr = calculated_features.get('airmass')
+    moon_dist_arr = calculated_features.get('moon_distance')
+    pointing_dist_arr = calculated_features.get('pointing_distance')
+    delta_az_arr = calculated_features.get('delta_az')
+    delta_el_arr = calculated_features.get('delta_el')
+    ra_arr = calculated_features.get('ra')
+    dec_arr = calculated_features.get('dec')
+    az_arr = calculated_features.get('az')
+    el_arr = calculated_features.get('el')
 
-    # ------------ #
-
-    # --- Calculate per-timestamp features --- #
     lon, lat = hpGrid.lon, hpGrid.lat
+
+    if do_coords or do_local_mean_z_score:
+        if hpGrid.is_azel:
+            if az_arr is not None: az_arr[:] = lon  # Broadcasts to all timestamps instantly
+            if el_arr is not None or do_local_mean_z_score: el_arr[:] = lat
+        else:
+            if ra_arr is not None or do_local_mean_z_score: ra_arr[:] = lon
+            if dec_arr is not None or do_local_mean_z_score: dec_arr[:] = lat
+        
+    # CALCULATE PER TIMESTAMP FEATURES
     for i, time in tqdm(enumerate(timestamps), total=n_timestamps, desc='Calculating bin features for all healpix bins and timestamps'):
         if do_ha:
-            ha_i = hpGrid.get_hour_angle(time=time)
-            calculated_features['ha_cos'][i], calculated_features['ha_sin'][i] = np.cos(ha_i), np.sin(ha_i)
-            calculated_features['ha'][i] = ha_i
+            ha_arr[i] = hpGrid.get_hour_angle(time=time)
         if do_airmass:
-            calculated_features['airmass'][i] = hpGrid.get_airmass(time)
+            airmass_arr[i] = hpGrid.get_airmass(time)
         if do_moon_dist:
-            calculated_features['moon_distance'][i] = hpGrid.get_source_angular_separations('moon', time=time)
-        if do_angular_distance_to_pointing:
-            calculated_features['angular_distance_to_pointing'][i] = hpGrid.get_angular_separations(lon=target_lons[i], lat=target_lats[i])
-        
+            moon_dist_arr[i] = hpGrid.get_source_angular_separations('moon', time=time)
+        if do_pointing_distance:
+            pointing_dist_arr[i] = hpGrid.get_angular_separations(lon=target_lons[i], lat=target_lats[i])
+        if do_delta_az or do_delta_el:
+            delta_az_arr[i], delta_el_arr[i] = get_delta_az_el(lon, lat, target_lons[i], target_lats[i])
+            
         # Coordinate transformations
-        if do_coords:
+        if do_coords or do_local_mean_z_score: # need elevaation to do delta_norm
             if hpGrid.is_azel:
-                if 'az' in calculated_features: calculated_features['az'][i] = lon
-                if 'el' in calculated_features: calculated_features['el'][i] = lat
                 # ONLY calculate ra/dec if they were actually requested
                 if do_ra or do_dec: 
-                    ra_i, dec_i = ephemerides.topographic_to_equatorial(az=lon, el=lat, time=time)
-                    calculated_features['ra'][i], calculated_features['dec'][i] = ra_i, dec_i
+                    ra_arr[i], dec_arr[i] = ephemerides.topographic_to_equatorial(az=lon, el=lat, time=time)
                     # if do_cyclical_norm:
                     #     calculated_features['ra_cos'][i], calculated_features['ra_sin'][i] = np.cos(ra_i), np.sin(ra_i)
             else:
-                if 'ra' in calculated_features: calculated_features['ra'][i] = lon
-                if 'dec' in calculated_features: calculated_features['dec'][i] = lat
-                if do_az or do_el:
-                    az_i, el_i = ephemerides.equatorial_to_topographic(ra=lon, dec=lat, time=time)
-                    calculated_features['az'][i], calculated_features['el'][i] = az_i, el_i
-
+                if do_az or do_el or do_local_mean_z_score:
+                    az_arr[i], el_arr[i] = ephemerides.equatorial_to_topographic(ra=lon, dec=lat, time=time)
+        
+    # CYCLICAL NORMALIZATIONS
     calc_feature_names = list(calculated_features.keys())
     for cyclical_feat in cyclical_feature_names:
         for feat_name in calc_feature_names:
-            if cyclical_feat in feat_name:
-                calculated_features.update({
-                    f"{feat_name}_cos": np.cos(calculated_features[feat_name]),
-                    f"{feat_name}_sin": np.sin(calculated_features[feat_name])
-                })
-
-    # Calculate night-based features if needed
+            is_exact_match = (feat_name == cyclical_feat)
+            is_suffix_match = feat_name.endswith(f"_{cyclical_feat}")
+            is_rel_feat = feat_name.startswith("rel_")
+            
+            if (is_exact_match or is_suffix_match) and not is_rel_feat:
+                calculated_features[f"{feat_name}_cos"] = np.cos(calculated_features[feat_name])
+                calculated_features[f"{feat_name}_sin"] = np.sin(calculated_features[feat_name])   
+                     
+    # CALCULATE SURVEY HISTORY FEATURES
     if do_history_based_features:
-        logger.info("Calculating history-based features. This may take a while...")
+        logger.info("Calculating history-based features...")
         calculated_night_history_features = calculate_history_dependent_bin_features(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, 
                                                                                      night2visithistory=night2fieldvisits, night2filtervisithistory=night2filtervisithistory,
                                                                                      field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, action_space=action_space,
                                                                                      requested_features=bin_feature_names)
         calculated_features = calculated_features | calculated_night_history_features
-    
-    bin_states = np.array([calculated_features.get(key, np.full(shape=(n_timestamps, n_bins), fill_value=np.nan)) for key in bin_feature_names])
-    bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
-    assert (bin_states != np.nan).all()
 
+    # rel NORM
+    if do_local_mean_z_score:
+        el_mask = calculated_features['el'] > 0
+        # MOON
+        if do_rel_moon_distance:
+            calculated_features['rel_moon_distance'] = get_relative_feature(calculated_features['moon_distance'], el_mask)
+        if do_rel_ha:
+            calculated_features['rel_ha'] = get_relative_feature(calculated_features['ha'], el_mask)
+        # SURVEY HISTORY
+        if do_history_based_features:
+            calculated_features |= get_relative_survey_progress_features(calculated_features, el_mask)
+            # for filt in FILTER2IDX.keys():
+            #     for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
+            #         raw_key = f"{s_feat_name}_{filt}"
+            #         if raw_key in calculated_features:
+            #             calculated_features[f"rel_{raw_key}"] = get_relative_feature(calculated_features[raw_key], el_mask)
+                        
     # Make sure there are no missing columns
-    missing_keys = set(bin_feature_names) - set(calculated_features.keys())
-    assert not missing_keys, f"Missing features: {missing_keys}"
-
+    # missing_keys = set(bin_feature_names) - set(calculated_features.keys())
+    # assert not missing_keys, f"Missing features: {missing_keys}"
+        
+    final_arrays = []
+    for key in bin_feature_names:
+        if key in calculated_features:
+            # .pop() transfers the memory and deletes it from the dictionary instantly
+            final_arrays.append(calculated_features.pop(key))
+            assert not np.isnan(final_arrays[-1]).any(), f"NaN values found in calculated feature {key}: {final_arrays[-1]}"
+        else:
+            raise ValueError(f"Requested feature '{key}' was not calculated by the pipeline.")
+    assert len(final_arrays) == len(bin_feature_names), "Number of final arrays should match number of requested bin features"
+            
+    bin_states = np.array(final_arrays)
+    bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
+    
+    # bin_states = np.array([calculated_features.get(key, np.full(shape=(n_timestamps, n_bins), fill_value=np.nan)) for key in bin_feature_names])
+    # bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
+    # assert (bin_states != np.nan).all()
+    assert not np.isnan(bin_states).any()
+    
     return bin_states
 
 def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2visithistory, 

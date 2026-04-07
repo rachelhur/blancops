@@ -18,7 +18,7 @@ from blancops.utils.sys_utils import setup_logger, get_device, seed_everything
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe 
 from blancops.data_processing.offline_dataset import OfflineDataset
 from blancops.utils.sys_utils import save_config, load_global_config, dict_to_nested, get_workspace_dir
-from blancops.plotting.training_viz import plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
+from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 
 import argparse
 import logging
@@ -147,6 +147,7 @@ def main():
 
     plot_bin_membership(train_dataset, fig_outdir)
     plot_global_feature_distributions(train_dataset, fig_outdir)
+    plot_bin_feature_distributions(train_dataset, fig_outdir)
 
     trainloader, valloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, \
                                                               random_seed=cfg['metadata']['seed'])

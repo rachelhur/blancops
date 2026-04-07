@@ -41,28 +41,58 @@ def get_workspace_dir() -> Path:
 def generate_src_global_config(output_fn="global_config.json"):
     workspace_dir = get_workspace_dir()
     workspace_dir_str = str(workspace_dir)
-    outpath = workspace_dir / "configs" / output_fn
+    outpath = workspace_dir / "blancops" / "configs" / output_fn
+    # Contains 
+    # (1) Substrings of features that follow respective normalization schemes (if turned on in cfg file)
+    # (2) All features implemented so far
+    # (3) Train data/lookup paths
     config_data = {
         "features": {
-            "CYCLICAL_FEATURE_NAMES": [
+            "CYCLICAL_FEATURE_NAMES": [ # sin/cos transform
                 "ra", "az", "ha", "lst"
             ],
-            "MAX_NORM_FEATURE_NAMES": [
+            "SIN_NORM_FEATURE_NAMES": [ # sin transform only
                 "el", "dec"
             ],
-            "INVERSE_NORM_FEATURES_NAMES": [
-                "airmass"
+            "LOG_NORM_FEATURE_NAMES": [ # log transform
+                "fwhm",
+                "urgency"
+                # "urgency_r",
+                # "urgency_i",
+                # "urgency_z",
+                # "urgency_Y",
             ],
-            "ANG_DISTANCE_NORM_FEATURE_NAMES": [
+            "FRACTIONAL_FEATURE_NAMES": [ # transform = 2 * (value - .5) (features in [0,1] are transformed to [-1,1])
+                'moon_phase',
+                't_night', # unit seconds
+                't_survey', # unit nights
+                'survey_num_visits_done',
+            ],
+            "Z_SCORE_NORM_FEATURE_NAMES": [
+                'airmass',
+                "pointing_distance",
                 "moon_distance",
-                "angular_distance_to_pointing"
+                'sky_brightness',
+                'fwhm',
+                'delta_az', # delta relative to pointing
+                'delta_el',
+                'urgency'
+            ],
+            "LOCAL_MEAN_Z_SCORE_FEATURE_NAMES": [ # transform: ( value - mean(timestamp) ) / entire train data std
+                'rel_num_unvisited_fields',
+                'rel_num_incomplete_fields',
+                'rel_min_tiling',
+                'rel_moon_distance',
+                'rel_ha'
             ],
             "GLOBAL_FEATURES": [
-                "time_fraction_since_start", 
+                "t_night",
+                "t_survey",
                 "lst", 
-                "ra", 
-                "dec", 
-                "az", 
+                # "ra", # remove to avoid memorization?
+                # "dec", 
+                # "az",
+                "ha",
                 "el", 
                 "airmass", 
                 "ha", 
@@ -74,47 +104,83 @@ def generate_src_global_config(output_fn="global_config.json"):
                 "moon_dec", 
                 "moon_az", 
                 "moon_el",
-                "filter_wave", 
-                # "sky_brightness_u",
+                "filter_wave",
+                "filter_idx",
                 "sky_brightness_g",
                 "sky_brightness_r",
                 "sky_brightness_i",
                 "sky_brightness_z",
                 "sky_brightness_Y",
+                "survey_num_unvisited_fields", # ie, survey progress dim
+                "survey_num_incomplete_fields", # ie, survey progress dim
+                "survey_min_tiling", # survey progress 
+                "is_filter_g",
+                "is_filter_r",
+                "is_filter_i",
+                "is_filter_z",
+                "is_filter_Y",
+                "urgency_g",
+                "urgency_r",
+                "urgency_i",
+                "urgency_z",
+                "urgency_Y",
+                "moon_phase",
+                "fwhm",
             ],
             "BIN_FEATURES": [
-                "ha", 
-                "airmass", 
-                "moon_distance", 
-                "az", 
+                # "ha",
+                "rel_ha",
+                "time_till_set",
+                "airmass",
+                "moon_distance",
+                "rel_moon_distance",
+                "is_rising",
+                "delta_az",
+                "delta_el",
+                # "az", 
                 "el", 
-                "ra", 
-                "dec",
-                "angular_distance_to_pointing", 
+                # "ra", 
+                # "dec",
+                "pointing_distance", 
                 "night_num_unvisited_fields",
                 "night_num_incomplete_fields", 
                 "night_min_tiling",
                 "survey_num_unvisited_fields", 
-                # "survey_num_unvisited_fields_u",
-                "survey_num_unvisited_fields_r", 
+                "survey_num_unvisited_fields_r", # ie, survey progress dim
                 "survey_num_unvisited_fields_g",
                 "survey_num_unvisited_fields_i", 
                 "survey_num_unvisited_fields_z",
                 "survey_num_unvisited_fields_Y", 
                 "survey_num_incomplete_fields",
-                # "survey_num_incomplete_fields_u", 
-                "survey_num_incomplete_fields_r",
+                "survey_num_incomplete_fields_r", # ie, survey progress dim
                 "survey_num_incomplete_fields_g", 
                 "survey_num_incomplete_fields_i",
                 "survey_num_incomplete_fields_z", 
                 "survey_num_incomplete_fields_Y",
                 "survey_min_tiling", 
-                # "survey_min_tiling_u", 
-                "survey_min_tiling_r",
+                "survey_min_tiling_r", # survey progress 
                 "survey_min_tiling_g", 
                 "survey_min_tiling_i", 
                 "survey_min_tiling_z",
-                "survey_min_tiling_Y"
+                "survey_min_tiling_Y",
+                "rel_survey_num_unvisited_fields", # ie, survey progress dim
+                "rel_survey_num_unvisited_fields_r", # ie, survey progress dim
+                "rel_survey_num_unvisited_fields_g",
+                "rel_survey_num_unvisited_fields_i", 
+                "rel_survey_num_unvisited_fields_z",
+                "rel_survey_num_unvisited_fields_Y", 
+                "rel_survey_num_incomplete_fields", # ie, survey progress dim
+                "rel_survey_num_incomplete_fields_r", # ie, survey progress dim
+                "rel_survey_num_incomplete_fields_g", 
+                "rel_survey_num_incomplete_fields_i",
+                "rel_survey_num_incomplete_fields_z", 
+                "rel_survey_num_incomplete_fields_Y",
+                "rel_survey_min_tiling", 
+                "rel_survey_min_tiling_r", # survey progress 
+                "rel_survey_min_tiling_g", 
+                "rel_survey_min_tiling_i", 
+                "rel_survey_min_tiling_z",
+                "rel_survey_min_tiling_Y",
             ]
         },
         "files": {
@@ -126,7 +192,8 @@ def generate_src_global_config(output_fn="global_config.json"):
             "NIGHT2FIELDVISITS": "night2fieldhistory.pkl",
             "NIGHT2FILTERVISITS": "night2filterhistory.pkl",
             "FIELD2FILTERS": "field2filters.pkl",
-            "FIELDFILTER2MAXVISITS": "fieldfilter2nvisits.pkl"
+            "FIELDFILTER2MAXVISITS": "fieldfilter2nvisits.pkl",
+            "FILTER_TARGET_COUNTS": "target_counts_per_filter.pkl"
         },
         "paths": {
             "TRAIN_DIR": f"{workspace_dir_str}/data/train/",

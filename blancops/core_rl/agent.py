@@ -370,7 +370,8 @@ class Agent:
         """
         Choose field in bin based on interpolated Q-values
         """
-        assert len(fields_in_bin) != 0, "The agent is receiving an empty list for `fields_in_bin`. "
+        assert len(fields_in_bin) != 0, "The agent is receiving an empty list for `fields_in_bin`."
+        
         glob_state, bin_state = obs
         s_visited = info.get('s_visited', None)
         s_filter_visits = info.get('s_filter_visits', None)

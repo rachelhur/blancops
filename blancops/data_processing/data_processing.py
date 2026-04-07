@@ -1,4 +1,5 @@
 import pandas as pd
+from blancops.data_processing.features import calculate_t_survey, calculate_urgency
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.utils.sys_utils import get_workspace_dir
 import numpy as np
@@ -53,18 +54,7 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
     with open(outdir / gcfg['files']['FIELD2NAME'], "w") as f:
         json.dump(field2name, f)
 
-    # new_df = df.groupby(['field_id']).agg(
-    #     ra=('ra', 'mean'),
-    #     dec=('dec', 'mean'),
-    #     n_visits=('ra', 'count')           # Replaces your field2nvisits logic
-    # ).reset_index()
-
-    # ra_arr, dec_arr = new_df['ra'].values, new_df['dec'].values
-    # field2radec = {str(fid): (ra_arr[fid], dec_arr[fid]) for fid in new_df['field_id'].values}
-    # with open(outdir + 'field2radec.json', 'w') as f:
-    #     json.dump(field2radec, f, indent=2)
-
-    # 4. field2radec: Save mapping from field id to its respective ra, dec, defined by mean of tilings
+    # field2radec: Save mapping from field id to its respective ra, dec, defined by mean of tilings
     field2radec = {int(fid): (g.loc[:, ['ra', 'dec']]).mean(axis=0).values.tolist() for fid, g in df.groupby('field_id')}
     with open(outdir / gcfg['files']['FIELD2RADEC'], "w") as f:
         json.dump(field2radec, f)
@@ -127,9 +117,33 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
     with open(outdir / gcfg['files']['NIGHT2FIELDVISITS'], 'wb') as f:
         pickle.dump(night2fieldhistory, f)
 
+    filter_target_counts = np.empty(shape=len(FILTER2IDX), dtype=int)
+    # night2survey_progress = {}
+    
+    for f, idx in FILTER2IDX.items():
+        # col_name = f'survey_progress_{f}'
+        condition = (df['filter'] == f) & (df['teff'] > 0.3)
+        cum_sum_arr = condition.cumsum()
+        target_counts = int(cum_sum_arr.max())
+        # df['raw_' + col_name] = cum_sum_arr
+        filter_target_counts[idx] = target_counts
+        # df[col_name] = cum_sum_arr / cum_sum_arr.max()
+        # df[f'urgency_{f}'] = np.clip((1 - df[col_name].values) / (1 - df['t_survey'].values  + 1e-9), a_min=0.01, a_max=100.0)
+    with open(outdir / gcfg['files']['FILTER_TARGET_COUNTS'], "wb") as f:
+        pickle.dump(filter_target_counts, f)
+    
+    # for night, grouped in df.groupby('night'):
+    #     night2survey_progress[night] = grouped[[f'survey_progress_{f}' for f in FILTER2IDX.keys()]].values   
+         
+    # raw_survey_progress_history = df[[f'survey_progress_{f}' for f in FILTER2IDX.keys()]].values
+    # with open(outdir / gcfg['files']['TARGET_COUNTS_PER_FILTER'], "wb") as f:
+    #     pickle.dump(filter_target_counts, f)
+    # with open(outdir / gcfg['files']['SURVEY_PROGRESS_HISTORY_PER_FILTER'], "wb") as f:
+    #     pickle.dump(filter_target_counts, f)
+        
     return df
 
-def load_raw_data_to_dataframe(fits_path):
+def load_raw_data_to_dataframe(fits_path, add_survey_progress_cols=True):
     d = fitsio.read(fits_path)
     df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
 
@@ -140,15 +154,27 @@ def load_raw_data_to_dataframe(fits_path):
     df['night'] = df['night'] + (timedelta(days=1) - pd.Timedelta(seconds=1))
     df = df[df['datetime'].dt.year > 2010] # There are some 1970 rows even after selecting propid
 
-    # Add timestamp col
-    # utc = pd.to_datetime(df['datetime'], utc=True)
-    # timestamps = (utc.astype('int64') // 10**9).values
-    # timestamps = [int(t.timestamp()) for t in pd.to_datetime(df['datetime'], utc=True)]
     timestamps = (df['datetime'] - pd.Timestamp("1970-01-01", tz='utc')) // pd.Timedelta("1s")
     df['timestamp'] = timestamps
     df = df.sort_values(by='timestamp').reset_index(drop=True)
+    if add_survey_progress_cols:
+        df = add_cols_to_raw_dataframe(df)
     return df
 
+def add_cols_to_raw_dataframe(df):
+    df['night_idx'] = pd.factorize(df['night'])[0]
+    df['t_survey'] = calculate_t_survey(df['night_idx'].values, df['night_idx'].max() + 1)
+    # df['t_survey'] = df['night_idx']/(df['night_idx'].max() + 1) # normalize to [0, 1]
+    
+    for f in FILTER2IDX.keys():
+        condition = (df['filter'] == f) & (df['teff'] >= 0.3)
+        filter_counts_arr = condition.cumsum()
+        urgency = calculate_urgency(filter_counts_arr, filter_counts_arr.max(), df['night_idx'].values, df['night_idx'].max() + 1)
+        df[f'raw_survey_progress_{f}'] = filter_counts_arr
+        df[f'survey_progress_{f}'] = filter_counts_arr / filter_counts_arr.max()
+        df[f'urgency_{f}'] = urgency
+    return df
+    
 def drop_rows_in_DECam_data(df, objects_to_remove=None, specific_years=None, specific_months=None, specific_days=None, specific_filters=None):
     """Drops nights (1) in year 1970, and (2) with specific objects (ie, SN or GW followup which are observed for long stretches of time)"""
     if objects_to_remove is None:
@@ -244,41 +270,28 @@ def remove_dates(df, specific_years=None, specific_months=None, specific_days=No
     
     return df
 
+# def expand_feature_names_for_cyclic_norm(feature_names, cyclical_feature_names):
+    # # periodic vars first
+    # feature_names = [
+    #     element 
+    #     for feat_name in feature_names
+    #     for element in ([feat_name + '_cos', feat_name + '_sin'] 
+    #                     if any((string == feat_name) or (f"_{string}" in feat_name) for string in cyclical_feature_names)
+    #                     else [feat_name])
+    #     ]
+    # return feature_names
+
 def expand_feature_names_for_cyclic_norm(feature_names, cyclical_feature_names):
-    # periodic vars first
-    feature_names = [
-        element 
-        for feat_name in feature_names
-        for element in ([feat_name + '_cos', feat_name + '_sin'] 
-                        if any(string in feat_name and 'frac' not in feat_name for string in cyclical_feature_names)
-                        else [feat_name])
-        ]
-    return feature_names
-
-# def setup_feature_names(base_global_feature_names, base_bin_feature_names, cyclical_feature_names, nbins, do_cyclical_norm, grid_network):
-#     """
-#     Returns
-#     -------
-#     global_feature_names (list): feature names after circular normalization. If grid_network is None, returns [global_feature_names] + [bin_feature_names]
-#     bin_feature_names (list): feature names after circular normalization but before adding 'bin_{i}_{feat}' prefixes
-#     expanded_global_feature_names
-#     """
-#     if len(base_bin_feature_names) > 0:
-#         prenorm_expanded_bin_feature_names = np.array([ [f'bin_{bin_num}_{bin_feat}'
-#                                         for bin_feat in base_bin_feature_names]
-#                                         for bin_num in range(nbins) ])
-#         prenorm_expanded_bin_feature_names = prenorm_expanded_bin_feature_names.flatten().tolist()
-#     else:
-#         prenorm_expanded_bin_feature_names = []
-
-#     # Replace cyclical features with their cyclical transforms/normalizations if on  
-#     if do_cyclical_norm:
-#         global_feature_names = expand_feature_names_for_cyclic_norm(base_global_feature_names.copy(), cyclical_feature_names)
-#         bin_feature_names = expand_feature_names_for_cyclic_norm(prenorm_expanded_bin_feature_names.copy(), cyclical_feature_names)
-#     else:
-#         global_feature_names = base_global_feature_names
-#         bin_feature_names = prenorm_expanded_bin_feature_names
-#     return global_feature_names, bin_feature_names, prenorm_expanded_bin_feature_names
+    feature_names_out = []
+    for feat_name in feature_names:
+        is_rel_feat = feat_name.startswith('rel_')
+        is_cyclic = any((feat_name == cyc_feat) or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in cyclical_feature_names)
+        
+        if is_cyclic and not is_rel_feat:
+            feature_names_out.extend([f"{feat_name}_cos", f"{feat_name}_sin"])
+        else:
+            feature_names_out.append(feat_name)
+    return feature_names_out
 
 def setup_feature_names(base_global_feature_names, base_bin_feature_names, cyclical_feature_names, do_cyclical_norm):
     # Replace cyclical features with their cyclical transforms/normalizations if on  

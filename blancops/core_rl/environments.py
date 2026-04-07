@@ -14,7 +14,7 @@ from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data_processing.offline_dataset import setup_feature_names
-from blancops.data_processing.features import normalize_timestamp, get_nautical_twilight, normalize_noncyclic_features
+from blancops.data_processing.features import calculate_urgency, get_delta_az_el, get_moon_phase, get_relative_survey_progress_features, get_sun_and_moon_positions, normalize_timestamp, get_nautical_twilight, normalize_noncyclic_features, get_relative_feature
 from blancops.data_processing.constants import *
 from blancops.math import geometry
 
@@ -165,6 +165,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         return next_state, reward, terminated, truncated, info
     
     def _get_slew_time(self, last_fid, current_fid):
+        last_fid = int(last_fid)
         if last_fid == ZENITH_FIELD_ID:
             blanco = ephemerides.blanco_observer(time=self._ts)
             last_pos = np.array(blanco.radec_of('0',  '90'))
@@ -250,30 +251,44 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
 
     def _get_state(self):
         global_state, bin_state = self._global_state, self._bin_state
-        global_state_normed = normalize_noncyclic_features(
+        global_state_normed, _, _ = normalize_noncyclic_features(
                             state=np.array(global_state),
                             state_feature_names=self.state_feature_names,
-                            max_norm_feature_names=self.max_norm_feature_names,
-                            ang_distance_norm_feature_names=self.ang_distance_feature_names,
-                            do_inverse_norm=self.do_inverse_norm,
-                            do_max_norm=self.do_max_norm,
-                            do_ang_distance_norm=self.do_ang_distance_norm,
+                            sin_norm_feature_names=self.sin_norm_feature_names,
+                            log_norm_feature_names=self.log_norm_feature_names,
+                            fractional_norm_feature_names=self.fractional_norm_feature_names,
+                            local_mean_z_score_feature_names=self.local_mean_z_score_feature_names,
+                            z_score_feature_names=self.z_score_feature_names,
+                            do_sin_norm=self.do_sin_norm,
+                            do_log_norm=self.do_log_norm,
+                            do_fractional_norm=self.do_fractional_norm,
+                            do_local_mean_z_score=self.do_local_mean_z_score,
+                            do_z_score_norm=self.do_z_score_norm,
+                            z_stats=self._z_score_stats['global_features'],
+                            rel_stats=self._rel_norm_stats['global_features'],
                             fix_nans=True,
                             do_debug=False
-                        )
+        )
+
         if self.include_bin_features:
-            bin_state_normed = normalize_noncyclic_features(
+            bin_state_normed, _, _ = normalize_noncyclic_features(
                 state=np.array(bin_state), # add axis for function
                 state_feature_names=self.bin_feature_names,
-                max_norm_feature_names=self.max_norm_feature_names,
-                ang_distance_norm_feature_names=self.ang_distance_feature_names,
-                do_inverse_norm=self.do_inverse_norm,
-                do_max_norm=self.do_max_norm,
-                do_ang_distance_norm=self.do_ang_distance_norm,
+                sin_norm_feature_names=self.sin_norm_feature_names,
+                log_norm_feature_names=self.log_norm_feature_names,
+                fractional_norm_feature_names=self.fractional_norm_feature_names,
+                local_mean_z_score_feature_names=self.local_mean_z_score_feature_names,
+                z_score_feature_names=self.z_score_feature_names,
+                do_sin_norm=self.do_sin_norm,
+                do_log_norm=self.do_log_norm,
+                do_fractional_norm=self.do_fractional_norm,
+                do_local_mean_z_score=self.do_local_mean_z_score,
+                do_z_score_norm=self.do_z_score_norm,
+                z_stats=self._z_score_stats['bin_features'],
+                rel_stats=self._rel_norm_stats['bin_features'],
                 fix_nans=True,
-                do_debug=True
+                do_debug=False
             )
-            bin_state_normed = bin_state_normed
         else:
             bin_state_normed = np.array([])
         self._global_state = global_state_normed.astype(np.float32)
@@ -327,13 +342,25 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             ra, dec = new_features['lst'], blanco.lon
             new_features['ra'], new_features['dec'] = ra, dec 
             new_features['filter_wave'] = 0.
+            new_features['filter_idx'] = ZENITH_FILTER_IDX
+            for filt in FILTER2WAVE.keys():
+                new_features[f'is_filter_{filt}'] = 0
         else: # if field_id is real field or is wait signal
             ra = ra_arr[field_id]
             dec = dec_arr[field_id]
             new_features['ra'], new_features['dec'] = ra, dec
-            new_features['filter_wave'] = 0 if (self._bin_num == WAIT_SIGNAL) or (not self.do_filt) else IDX2WAVE[filter_idx] / FILTERWAVENORM
-        # --- OnlineEnv Logic --- #
-        
+            if self._bin_num == WAIT_SIGNAL or (not self.do_filt):
+                new_features['filter_wave'] = 0
+                new_features['filter_idx'] = filter_idx
+            else:
+                new_features['filter_wave'] = 0 if (self._bin_num == WAIT_SIGNAL) or (not self.do_filt) else IDX2WAVE[filter_idx] / FILTERWAVENORM
+                new_features['filter_idx'] = filter_idx
+                self._raw_survey_progress_arr[filter_idx] += 1
+            filt_str = IDX2FILTER[filter_idx]
+            for filt in FILTER2WAVE.keys():
+                new_features[f'is_filter_{filt}'] = filt_str == filt
+      # --- OnlineEnv Logic --- #
+            
         # new_features['ra'], new_features['dec'] = self.field2radec[field_id]
         new_features['az'], new_features['el'] = ephemerides.equatorial_to_topographic(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
         new_features['ha'] = ephemerides.equatorial_to_hour_angle(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
@@ -345,24 +372,37 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         cos_zenith = np.cos(np.pi / 2 - new_features['el'])
         new_features['airmass'] = 1.0 / cos_zenith #if cos_zenith > 0 else 99.0
 
-        new_features['sun_ra'], new_features['sun_dec'] = ephemerides.get_source_ra_dec(source='sun', time=timestamp)
-        new_features['sun_az'], new_features['sun_el'] = ephemerides.equatorial_to_topographic(ra=new_features['sun_ra'], dec=new_features['sun_dec'], time=timestamp)
-        new_features['moon_ra'], new_features['moon_dec'] = ephemerides.get_source_ra_dec(source='moon', time=timestamp)
-        new_features['moon_az'], new_features['moon_el'] = ephemerides.equatorial_to_topographic(ra=new_features['moon_ra'], dec=new_features['moon_dec'], time=timestamp)
-        for filt in FILTER2WAVE.keys():
-            if filt != ZENITH_FILTER:
-                new_features[f'sky_brightness_{filt}'] = estimate_sky_brightness(time=timestamp, ra=ra, dec=dec, band=filt)
+        sun_radec, sun_azel, moon_radec, moon_azel = get_sun_and_moon_positions(timestamp)
+        
+        new_features['sun_ra'], new_features['sun_dec'] = sun_radec
+        new_features['sun_az'], new_features['sun_el'] = sun_azel
+        new_features['moon_ra'], new_features['moon_dec'] = moon_radec
+        new_features['moon_az'], new_features['moon_el'] = moon_azel
+        new_features['moon_phase'] = get_moon_phase(timestamp)
+        if getattr(self, "_fwhm_night_interps", None):
+            new_features['fwhm'] = self._fwhm_night_interps[self._night_idx](timestamp)
+        
+        new_features['t_survey'] = self._t_survey_arr[self._night_idx]
+        for filt, idx in FILTER2IDX.items():
+            sky_bright_filt = estimate_sky_brightness(time=timestamp, ra=ra, dec=dec, band=filt)
+            new_features[f'sky_brightness_{filt}'] = sky_bright_filt
+            new_features[f'survey_progress_{filt}'] = self._raw_survey_progress_arr[idx] / self._filter_target_counts[idx]
+            new_features[f'urgency_{filt}'] = calculate_urgency(
+                filter_counts_arr=self._raw_survey_progress_arr[idx], 
+                filter_counts_max=self._filter_target_counts[idx], 
+                survey_night_indices=self._survey_night_idx,
+                survey_nights_max=self.survey_nights_total)
         if sunrise_ts == sunset_ts:
             raise AssertionError("Sunrise and sunset time is equal. Check night_str argument - it should be a time between sunset and sunrise")
-            # new_features['time_fraction_since_start'] = 0
+            # new_features['t_night'] = 0
         else:
-            new_features['time_fraction_since_start'] = normalize_timestamp(timestamp, sunset_timestamp=sunset_ts, sunrise_timestamp=sunrise_ts)
-
+            new_features['t_night'] = normalize_timestamp(timestamp, sunset_timestamp=sunset_ts, sunrise_timestamp=sunrise_ts)
+        
 
         for feat_name in self.base_global_feature_names:
             if any(string in feat_name and 'frac' not in feat_name for string in self.cyclical_feature_names):
-                new_features.update({f'{feat_name}_cos': np.cos(new_features[feat_name])})
-                new_features.update({f'{feat_name}_sin': np.sin(new_features[feat_name])})
+                new_features[f'{feat_name}_cos'] = np.cos(new_features[feat_name])
+                new_features[f'{feat_name}_sin'] = np.sin(new_features[feat_name])
 
         global_state_features = [new_features.get(feat, np.nan) for feat in self.global_feature_names]
         nan_feats = np.isnan(global_state_features)
@@ -379,8 +419,10 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         if self._bin_num == WAIT_SIGNAL:
             blanco = ephemerides.blanco_observer(time=timestamp)
             pointing_radec = np.array(blanco.radec_of('0',  '90'))
+            pointing_azel = np.array([0, np.pi / 2])
         else:
             pointing_radec = np.array([self._ra_arr[self._field_id], self._dec_arr[self._field_id]])
+            pointing_azel = ephemerides.equatorial_to_topographic(ra=pointing_radec[0], dec=pointing_radec[1], time=timestamp)
         # --- OnlineEnv Logic --- #
 
         if self.hpGrid.is_azel:
@@ -395,10 +437,11 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             current_lon, current_lat = pointing_radec[0], pointing_radec[1]
         
         # One-shot calculations
-        features['angular_distance_to_pointing'] = self.hpGrid.get_angular_separations(lon=current_lon, lat=current_lat)
+        features['pointing_distance'] = self.hpGrid.get_angular_separations(lon=current_lon, lat=current_lat)
         features['ha'] = self.hpGrid.get_hour_angle(time=timestamp)
         features['airmass'] = self.hpGrid.get_airmass(timestamp)
         features['moon_distance'] = self.hpGrid.get_source_angular_separations('moon', time=timestamp)
+        features['delta_az'], features['delta_el'] = get_delta_az_el(features['az'], features['el'], pointing_azel[0], pointing_azel[1])
         
         if self._has_historical_features:
             sentinel_val = AZEL_BIN_FEAT_SENTINEL if self.hpGrid.is_azel else RADEC_BIN_FEAT_SENTINEL
@@ -508,6 +551,13 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             # FEATURE VALIDATION CHECK
             self._validate_bin_features(features, sentinel_val)
 
+        # GET "RELATIVE" FEATURES
+        el_mask = features['el'] > 0
+        features['rel_ha'] = get_relative_feature(features['ha'], el_mask=el_mask)
+        features['rel_moon_distance'] = get_relative_feature(features['moon_distance'], el_mask=el_mask)
+        if self._has_historical_features:
+            features |= get_relative_survey_progress_features(features, el_mask)
+        
         # Normalize periodic features here and add as df cols
         if self.do_cyclical_norm:
             for feat_name in self.base_bin_feature_names:
@@ -517,8 +567,18 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                         features[f'{feat_name}_sin'] = np.sin(features[feat_name])
                     else:
                         raise ValueError(f"{feat_name} was not calculated in _calculate_bin_features. Is this feature implemented?")
+                    
+        final_arrays = []
+        for key in self.bin_feature_names:
+            if key in features:
+                final_arrays.append(features.pop(key))
+                assert not np.isnan(final_arrays[-1]).any(), f"NaN values found in calculated feature {key}: {final_arrays[-1]}"
+            else:
+                raise ValueError(f"Requested feature '{key}' was not calculated by the pipeline.")
+            
+        assert len(final_arrays) == len(self.bin_feature_names), "Number of final arrays should match number of requested bin features"
         
-        bin_states = np.array([features.get(key, np.nan) for key in self.bin_feature_names])
+        bin_states = np.array(final_arrays)
         bin_states = rearrange(bin_states, 'nfeats nbins -> nbins nfeats')
         # bin_state = np.vstack([features.get(feat_name, np.full(self.nbins, np.nan, dtype=np.float32)) for feat_name in self.bin_feature_names]).T
         # assert (bin_state != np.nan).all()
@@ -581,8 +641,8 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         # Define observation space 
         self.observation_space = gym.spaces.Dict(
             {
-                "global_state": gym.spaces.Box(-2, 2, shape=(self.state_dim,), dtype=np.float32),
-                "bin_state": gym.spaces.Box(-2, 2, shape=bin_state_shape, dtype=np.float32),
+                "global_state": gym.spaces.Box(-1e5, 1e5, shape=(self.state_dim,), dtype=np.float32),
+                "bin_state": gym.spaces.Box(-1e5, 1e5, shape=bin_state_shape, dtype=np.float32),
             }
         )
 
@@ -592,7 +652,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             {
                 "bin": gym.spaces.Discrete(self.nbins - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_BIN_NUM])),
                 "field_id": gym.spaces.Discrete(len(self._fids) - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_FIELD_ID])),
-                "filter_idx": gym.spaces.Discrete(NUM_FILTERS - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_FIELD_ID]))
+                "filter_idx": gym.spaces.Discrete(NUM_FILTERS - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_FILTER_IDX]))
             }
         )       
 
@@ -627,8 +687,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                 valid_field_bins = self.hpGrid.ang2idx(lon=fields_az[sel_valid_fields], lat=fields_el[sel_valid_fields])
             else:
                 valid_field_bins = self.hpGrid.ang2idx(lon=self._ra_arr[sel_valid_fields], lat=self._dec_arr[sel_valid_fields])
-            
-            valid_bin_mask = np.array([b is not None for b in valid_field_bins], dtype=bool)
+            valid_bin_mask = np.array(valid_field_bins) != None
             clean_bins = np.array(valid_field_bins)[valid_bin_mask].astype(int)
 
             # 5. Mask Construction
@@ -657,12 +716,13 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         elif (field_id is None) or getattr(self, 'field_lookup', None) is None:
             return 90.0
         return self.field_lookup['exptime'].values[int(field_id)]
-
+    
 class OfflineBlancoTestingEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
     """
-    def __init__(self, gcfg, cfg, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None):
+    def __init__(self, gcfg, cfg, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None, fwhm_night_interps=None, z_score_stats=None, rel_norm_stats=None,
+                 t_survey_arr=None, survey_nights_total=None):
         """
         Args
         ----
@@ -673,23 +733,35 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         
         # Assign static attributes
         self.exp_time = exp_time
-        self.cyclical_feature_names = gcfg['features']['CYCLICAL_FEATURE_NAMES']
-        self.max_norm_feature_names = gcfg['features']['MAX_NORM_FEATURE_NAMES']
-        self.ang_distance_feature_names = gcfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']
+
         self.do_cyclical_norm = cfg['data']['do_cyclical_norm']
-        self.do_max_norm = cfg['data']['do_max_norm']
-        self.do_inverse_norm = cfg['data']['do_inverse_norm']
-        self.do_ang_distance_norm = cfg['data']['do_ang_distance_norm']
+        self.do_sin_norm = cfg['data']['do_sin_norm']
+        self.do_log_norm = cfg['data']['do_log_norm']
+        self.do_fractional_norm = cfg['data']['do_fractional_norm']
+        self.do_z_score_norm = cfg['data']['do_z_score_norm']
+        self.do_local_mean_z_score = cfg['data']['do_local_mean_z_score']
+        self.cyclical_feature_names = gcfg['features']['CYCLICAL_FEATURE_NAMES'] if self.do_cyclical_norm else []
+        self.sin_norm_feature_names = gcfg['features']['SIN_NORM_FEATURE_NAMES'] if self.do_sin_norm else []
+        self.log_norm_feature_names = gcfg['features']['LOG_NORM_FEATURE_NAMES'] if self.do_log_norm else []
+        self.fractional_norm_feature_names = gcfg['features']['FRACTIONAL_FEATURE_NAMES'] if self.do_fractional_norm else []
+        self.z_score_feature_names = gcfg['features']['Z_SCORE_NORM_FEATURE_NAMES'] if self.do_z_score_norm else []
+        self.local_mean_z_score_feature_names = gcfg['features']['LOCAL_MEAN_Z_SCORE_FEATURE_NAMES'] if self.do_local_mean_z_score else []
+
         self.include_bin_features = len(cfg['data']['bin_features']) > 0
         self.action_space = cfg['data']['action_space']
         nside = cfg['data']['nside']
         self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.action_space))
         self.nbins = len(self.hpGrid.idx_lookup)
-        self._grid_network = cfg['model']['grid_network']
+        self._action_architecture = cfg['model']['action_architecture']
         self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
         self.do_filt = 'filter' in self.action_space
-        
+        self._fwhm_night_interps = fwhm_night_interps
+        self._rel_norm_stats = rel_norm_stats if rel_norm_stats is not None else torch.load(Path(cfg['metadata']['outdir']) / "rel_norm_stats.pt")
+        self._z_score_stats = z_score_stats if z_score_stats is not None else torch.load(Path(cfg['metadata']['outdir']) / "z_score_stats.pt")
+        logger.debug(f"Loaded rel_norm_stats: {self._rel_norm_stats}")
+        logger.debug(f"Loaded z_score_stats: {self._z_score_stats}")
+        self._t_survey_arr = t_survey_arr
         # Get field lookup tables
         with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2RADEC'], 'r') as f:
             self.field2radec = json.load(f)
@@ -716,6 +788,8 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
                 self.night2filtvisithistory = pickle.load(f)
             with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS'], 'rb') as f:
                 self.fieldfilter2maxvisits = pickle.load(f)
+            with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FILTER_TARGET_COUNTS'], 'rb') as f:
+                self._filter_target_counts = pickle.load(f)
 
             self.nfilters = NUM_FILTERS
             self.idx2filter = {v: k for k, v in FILTER2IDX.items()}
@@ -739,13 +813,14 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
                                 do_cyclical_norm=self.do_cyclical_norm,
                                 )
         
-        if self._grid_network is None:
+        if self._action_architecture is None:
             self.state_feature_names = self.global_feature_names + self.bin_feature_names
-        elif self._grid_network in GRID_NETWORKS:
+        elif self._action_architecture in ACTION_ARCHITECTURES:
             self.state_feature_names = self.global_feature_names
         
         self.global_pd_nightgroup = global_pd_nightgroup
         self.zenith_bin_states = zenith_bin_states
+        self.survey_nights_total = survey_nights_total
 
         self.max_nights = max_nights
         if max_nights is None:
@@ -784,6 +859,8 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         self._night_start_ts = global_first_row['timestamp']
         self._field_id = global_first_row['field_id']
         self._bin_num = global_first_row['bin']
+        self._survey_night_idx = global_first_row['night_idx']
+        
         self._global_state = [global_first_row[feat_name] for feat_name in self.global_feature_names]
 
         # Get field visit counts at start of night
@@ -794,7 +871,10 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         if self.do_filt:
             self._s_filter_visits_cur = self.night2filtvisithistory[night].copy()
             self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-
+            self._global_urgency_arr = np.array([global_first_row[f'urgency_{filt_name}'] for filt_name in FILTER2IDX.keys()], dtype=np.float32)
+            self._raw_survey_progress_arr = np.array([global_first_row[f"raw_survey_progress_{filt}"] for filt in FILTER2IDX.keys()], dtype=np.float32)
+            
+                                         
         if self.include_bin_features:
             global_night_df = self.global_pd_nightgroup.get_group(night).copy()
             zenith_bin_state_tonight = self.zenith_bin_states[self._night_idx] # shape (nbins, nfeats)
@@ -814,34 +894,6 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         else:
             self._bin_state = np.array([])
         self._update_action_masks()
-        # self._update_action_masks(self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
-        #                                           hpGrid=self.hpGrid, visited=self._s_visits_cur)
-    # def _update_action_masks(self, timestamp, field2maxvisits, field_ids, ras, decs, hpGrid, visited):
-    #     # Mask fields which are completed 
-    #     mask_completed_fields = np.array([visited[fid] < field2maxvisits[fid] for fid in field_ids], dtype=bool) #TODO can probably track visits without repeating this operation
-    #     fields_az, fields_el = ephemerides.equatorial_to_topographic(ra=ras, dec=decs, time=timestamp)
-    #     # Mask fields below horizon
-    #     mask_fields_below_horizon = fields_el > 0
-    #     sel_valid_fields = mask_completed_fields & mask_fields_below_horizon
-    #     # Get bins which are below horizon, masking completed bins
-    #     valid_fids = field_ids[sel_valid_fields]
-    #     if hpGrid.is_azel:
-    #         valid_field_bins = hpGrid.ang2idx(lon=fields_az[sel_valid_fields], lat=fields_el[sel_valid_fields])
-    #     else:
-    #         valid_field_bins = hpGrid.ang2idx(lon=ras[sel_valid_fields], lat=decs[sel_valid_fields])
-    #     self._valid_fields_per_bin = defaultdict(list)
-    #     action_mask = np.zeros(shape=self.nbins, dtype=bool)
-    #     for fid, bin_idx in zip(valid_fids, valid_field_bins):
-    #         if bin_idx is not None:
-    #             b = int(bin_idx)
-    #             action_mask[b] = True
-    #             self._valid_fields_per_bin[b].append(fid)
-
-    #     if 'filter' in self.action_space:
-    #         action_mask = np.repeat(action_mask[:, np.newaxis], NUM_FILTERS, axis=1).flatten() #TODO 2. in todoist
-    #     self._action_mask = action_mask
-    #     return action_mask
-    
 class OnlineBlancoEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
@@ -850,23 +902,31 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         """
         """
         # Assign static attributes
-        self.cyclical_feature_names = gcfg['features']['CYCLICAL_FEATURE_NAMES']
-        self.max_norm_feature_names = gcfg['features']['MAX_NORM_FEATURE_NAMES']
-        self.ang_distance_feature_names = gcfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']
         self.do_cyclical_norm = cfg['data']['do_cyclical_norm']
-        self.do_max_norm = cfg['data']['do_max_norm']
-        self.do_inverse_norm = cfg['data']['do_inverse_norm']
-        self.do_ang_distance_norm = cfg['data']['do_ang_distance_norm']
+        self.do_sin_norm = cfg['data']['do_sin_norm']
+        self.do_log_norm = cfg['data']['do_log_norm']
+        self.do_fractional_norm = cfg['data']['do_fractional_norm']
+        self.do_z_score_norm = cfg['data']['do_z_score_norm']
+        self.do_local_mean_z_score = cfg['data']['do_local_mean_z_score']
+        
+        self.cyclical_feature_names = gcfg['features']['CYCLICAL_FEATURE_NAMES'] if self.do_cyclical_norm else []
+        self.sin_norm_feature_names = gcfg['features']['SIN_NORM_FEATURE_NAMES'] if self.do_sin_norm else []
+        self.log_norm_feature_names = gcfg['features']['LOG_NORM_FEATURE_NAMES'] if self.do_log_norm else []
+        self.fractional_norm_feature_names = gcfg['features']['FRACTIONAL_FEATURE_NAMES'] if self.do_fractional_norm else []
+        self.z_score_feature_names = gcfg['features']['Z_SCORE_NORM_FEATURE_NAMES'] if self.do_z_score_norm else []
+        self.local_mean_z_score_feature_names = gcfg['features']['LOCAL_MEAN_Z_SCORE_FEATURE_NAMES'] if self.do_local_mean_z_score else []
+        
         self.include_bin_features = len(cfg['data']['bin_features']) > 0
         self.action_space = cfg['data']['action_space']
         nside = cfg['data']['nside']
-        self.hpGrid = None if cfg['data']['bin_method'] != 'healpix' else ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.action_space))
+        self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.action_space))
         self.nbins = len(self.hpGrid.idx_lookup)
-        self._grid_network = cfg['model']['grid_network']
+        self._action_architecture = cfg['model']['action_architecture']
         self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
         self.horizon = horizon
         self.max_nights = max(len(observing_night_strs), max_nights) - 1
+        self._z_score_stats = torch.load(Path(cfg['metadata']['outdir']) / "z_score_stats.pt")    
         
         self._night_info = []
         for obs_n_str in observing_night_strs:
@@ -926,9 +986,9 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                                 cyclical_feature_names=self.cyclical_feature_names,
                                 do_cyclical_norm=self.do_cyclical_norm,
                                 )
-        if self._grid_network is None:
+        if self._action_architecture is None:
             self.state_feature_names = self.global_feature_names + self.bin_feature_names
-        elif self._grid_network in GRID_NETWORKS:
+        elif self._action_architecture in ACTION_ARCHITECTURES:
             self.state_feature_names = self.global_feature_names
         else:
             raise NotImplementedError
@@ -960,8 +1020,8 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         # global features
         night_dt, night_portion = self._night_info[self._night_idx]
         # night_ts = night_dt.timestamp()
-        self._sunset_ts = math.ceil(get_nautical_twilight(night_dt, 'set', self.horizon))
-        self._sunrise_ts = math.ceil(get_nautical_twilight(night_dt, 'rise', self.horizon))
+        self._sunset_ts = math.ceil(get_nautical_twilight(night_dt.timestamp(), 'set', self.horizon))
+        self._sunrise_ts = math.ceil(get_nautical_twilight(night_dt.timestamp(), 'rise', self.horizon))
         self._field_id = ZENITH_FIELD_ID
         self._bin_num = ZENITH_BIN_NUM
         self._filter_idx = ZENITH_FILTER_IDX
@@ -981,22 +1041,21 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                                                              ra_arr=self._ra_arr, dec_arr=self._dec_arr)
 
         # Get field visit counts at start of night
-
         if self.do_filt:
             self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
 
         self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
         if self.include_bin_features:
             self._max_n_visits_arr = np.zeros_like(self._n_visits_cur)
+            self._in_n_plan = self._max_n_visits_arr > 0
             self._bin_state = self._calculate_bin_features(timestamp=self._ts)
             #self._max_n_visits_arr = np.bincount(self._fids[night_fids], minlength=self.nfields)
-            self._in_n_plan = self._max_n_visits_arr > 0
 
             if self.do_filt:
                 self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
                 # np.add.at(self._max_n_filter_visits_arr, (0, 0), 1)
 
-            if self._grid_network in GRID_NETWORKS:
+            if self._action_architecture in ACTION_ARCHITECTURES:
                 A, B = self.nbins, self.bin_state_dim
                 self._bin_state = np.array(self._bin_state).reshape((A, B))
         else:
@@ -1021,9 +1080,10 @@ class OnlineBlancoEnv(BaseBlancoEnv):
             test_timestamp += step_size
             _, fields_el = ephemerides.equatorial_to_topographic(ra=incomplete_ras, dec=incomplete_decs, time=test_timestamp)
             fields_el = np.atleast_1d(fields_el)
-            airmass = 1 / np.cos(90 * units.deg - fields_el[fields_el > 0])
+            cos_zenith = np.cos(90 * units.deg - fields_el[fields_el > 0])
+            airmass = 1 / np.clip(cos_zenith, a_min=1e-5, a_max=None)
             if np.any(airmass < self._airmass_limit):
-                print(f"TIMESTAMP FAST FORWARDING {self._night_end_ts - test_timestamp}")
+                logger.info(f"TIMESTAMP FAST FORWARDING {self._night_end_ts - test_timestamp}")
                 return test_timestamp
         # If fields never above horizon, return sunrise time
         return min(test_timestamp, self._night_end_ts)
