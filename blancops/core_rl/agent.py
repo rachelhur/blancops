@@ -322,7 +322,14 @@ class Agent:
             pickle.dump(eval_metrics, handle)
             logger.info(f'eval_metrics.pkl saved in {eval_outdir}')
         
-        self.save_survey_schedule(eval_metrics, eval_outdir)
+        self.save_survey_schedule(
+            eval_metrics=eval_metrics, 
+            save_dir=eval_outdir, 
+            field_lookup=field_lookup,
+            save_SISPI=save_SISPI,
+            SISPI_fn=SISPI_fn
+            )
+
         return eval_metrics
 
     def choose_action(self, x_glob, x_bin, action_mask, epsilon):
