@@ -28,7 +28,7 @@ class ScoreMLP(nn.Module):
     """
     Outputs multiple scores for each input
     """
-    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, use_contextual_gating=False, activation=None):
+    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, nlayers=3, use_contextual_gating=False, activation=None):
         super(ScoreMLP, self).__init__()
         self.score_dim = score_dim
         self.activation = nn.ReLU if activation is None else activation
@@ -39,13 +39,21 @@ class ScoreMLP(nn.Module):
                 nn.Sigmoid()
                 )
         input_dim = global_dim + bin_feat_dim
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, score_dim)
-        )
+        
+        layers = []
+        if nlayers < 0:
+            raise ValueError("Number of layers cannot be less than 1")
+        if nlayers == 1:
+            layers.append(nn.Linear(input_dim, score_dim))
+        else:
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(self.activation())
+            for _ in range(nlayers - 2):
+                layers.append(nn.Linear(hidden_dim, hidden_dim))
+                layers.append(self.activation())
+            layers.append(nn.Linear(hidden_dim, score_dim))
+        self.net = nn.Sequential(*layers)
+
     def forward(self, x_glob, x_bin, y_data=None):
         batch_size, n_bins, _ = x_bin.shape
         x_glob = x_glob.unsqueeze(1) # (batch, 1, glob_dim)
