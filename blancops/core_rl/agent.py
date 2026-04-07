@@ -494,11 +494,13 @@ class Agent:
             schedule[k] = v[sel_valid_obs]
 
         # Save schedule
+        schedule_path = Path(save_dir) / "survey_schedule.csv"
         df = pd.DataFrame(data={k: pd.Series(v) for k, v in schedule.items()})
         df['agent_filter'] = df['agent_filter'].map(IDX2FILTER)
-        df.to_csv(Path(save_dir) / "survey_schedule.csv", index=False)
+        df.to_csv(schedule_path, index=False)
+        if save_SISPI:
+            write_SISPI_from_schedule_csv(schedule_path, Path(save_dir) / SISPI_fn, field_lookup=field_lookup, filter_override_val='CaHK')
         return schedule
-    
 
     def choose_filter(self, filter2wave=None):
         if filter2wave is None:
@@ -514,3 +516,73 @@ class Agent:
         normalized_waves = np.array(list(filter2wave.values())) / 1000
         filter_wave = random.choice(normalized_waves)
         return filter_wave
+
+from collections import OrderedDict
+
+EMPTY_SISPI_DICT = OrderedDict([
+    ("object",  None),
+    ("seqnum",  None), # 1-indexed
+    ("seqtot",  1),
+    ("seqid",   ""),
+    ("expTime", 90),
+    ("RA",      None),
+    ("dec",     None),
+    ("filter",  None),
+    ("count",   1),
+    ("expType", "object"),
+    ("program", None),
+    ("wait",    "False"),
+    ("propid",  None),
+    ("comment", ""),
+])
+
+SCHEDULE_KEYS = ['agent_timestamp', 'agent_field_id', 'agent_bin_id', 'agent_filter']
+import pandas as pd
+from blancops.math import units
+
+def write_SISPI_from_schedule_csv(schedule_path, outpath, field_lookup, filter_override_val='CaHK', proposer='victorIA', program='magic-spring'):
+    schedule = pd.read_csv(schedule_path)
+
+    ordered_field_ids = schedule['agent_field_id'].values
+    
+    input_dict = {}
+    input_dict['object'] = [str(field_lookup['object'].values[fid]) for fid in ordered_field_ids]
+    input_dict['RA'] = [float(field_lookup['ra'].values[fid] / units.deg) for fid in ordered_field_ids]
+    input_dict['dec'] = [float(field_lookup['dec'].values[fid] / units.deg) for fid in ordered_field_ids]
+    input_dict['filter'] = filter_override_val if filter_override_val is not None else schedule['filter'].to_list()
+    input_dict['program'] = program
+    input_dict['proposer'] = proposer
+    input_dict['count'] = 1
+    input_dict['expTime'] = 90
+    input_dict['expType'] = "object"
+    input_dict['wait'] = "False"
+    input_dict['propid'] = None
+    input_dict['comment'] = ""
+    seqtot = len(ordered_field_ids)
+
+    sispi_list = []
+    
+    for i in range(seqtot):
+        obs = EMPTY_SISPI_DICT.copy()
+        
+        current_obs = {}
+        
+        # Iterate through your config and check the type of each value
+        for key, value in input_dict.items():
+            if isinstance(value, (list, tuple)):
+                # If it is a list or tuple, grab the i-th element
+                current_obs[key] = value[i]
+            else:
+                # If it is a constant (string, int, float), use it as-is
+                current_obs[key] = value
+                
+        # Add the sequence numbers explicitly
+        current_obs["seqnum"] = 1 #i + 1
+        current_obs["seqtot"] = 1
+        
+        # Update and append
+        obs.update(current_obs)
+        sispi_list.append(obs)
+    
+    with open(outpath, 'w') as f:
+        json.dump(sispi_list, f, indent=4)
