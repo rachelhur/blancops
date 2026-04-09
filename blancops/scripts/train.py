@@ -56,8 +56,10 @@ def get_args():
     parser.add_argument('--data.specific_filters', type=str, nargs='*', default=None, help='Specific filters to include in the dataset')
     # parser.add_argument('--include_default_features', action='store_true', help='Whether to include default features in the dataset')
     parser.add_argument('--data.do_cyclical_norm', action='store_true', help='Whether to apply cyclical normalization to the features')
-    parser.add_argument('--data.do_max_norm', action='store_true', help='Whether to apply max normalization to the features')
-    parser.add_argument('--data.do_inverse_norm', action='store_true', help='Whether to include inverse normalizations to features')
+    parser.add_argument('--data.do_log_norm', action='store_true', help='Whether to apply cyclical normalization to the features')
+    parser.add_argument('--data.do_fractional_norm', action='store_true')
+    parser.add_argument('--data.do_local_mean_z_score', action='store_true')
+    parser.add_argument('--data.do_z_score_norm', action='store_true')
     parser.add_argument('--data.bin_features', type=str, nargs='*', default=[], help='Bin feautures to include')
 
     # Training hyperparameters
