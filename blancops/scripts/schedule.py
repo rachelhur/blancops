@@ -97,18 +97,36 @@ def main():
     # Seed and get device
     seed_everything(args.seed)
     device = get_device()
-
+    s_visits_cur = None
+    fieldfilter2nvisits = None
+    
+    def get_fieldfilter_nvisits(df):
+        fieldfilter2nvisits = np.zeros(shape=(len(field_lookup), len(FILTER2IDX)), dtype=np.int32)
+        filt_idxs = df['agent_filter'].map(FILTER2IDX)
+        np.add.at(fieldfilter2nvisits, (df['agent_field_id'].values, filt_idxs), 1)
+        return fieldfilter2nvisits
+    
     # Load lookup tables
     if args.schedule_name in TEST_SUITE_NAMES:
         print(f"Using test suite {args.schedule_name} with predefined lookup tables and observing nights")
         schedule_name = args.schedule_name
         workspace_dir = get_workspace_dir()
         lookup_dirpath = workspace_dir / "data" / "test_suite" / schedule_name
+        for f in ['field_lookup.json', 'field2radec.json']:
+            filepath = lookup_dirpath / f
+            assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
+
+        field_lookup = pd.read_json(lookup_dirpath / "field_lookup.json")
+        field2radec = field_lookup[['ra', 'dec']].to_numpy()
+        field2nvisits = np.array([n for n in field_lookup['n_visits'].values])
+        
         if schedule_name == 'gw-followup':
             print(f"Using GW followup test suite with predefined observing nights based on {args.observing_nights} set")
             if args.observing_nights[0] == 'good':
                 print('USING GOOD GW FOLLOWUP NIGHTS')
                 observing_night_strs = GW_OBSERVING_DATES_GOOD
+            elif args.observing_nights[0] == 'DD-night':
+                observing_night_strs = DD_NIGHT
             elif args.observing_nights[0] == 'bad':
                 observing_night_strs = GW_OBSERVING_DATES_BAD
             else:
@@ -117,6 +135,13 @@ def main():
             observing_night_strs = HP_OBSERVING_DATES
         elif schedule_name == 'magic-spring':
             observing_night_strs = MS_OBSERVING_DATES
+            if args.load_obs_history:
+                visit_history_df = pd.read_csv(lookup_dirpath / "fake_night_2_observations.csv")
+                fid_visit_history = visit_history_df['agent_field_id'].values
+                
+                fieldfilter2nvisits = get_fieldfilter_nvisits(visit_history_df)
+                observing_night_strs = MS_OBSERVING_DATES[1:]
+                s_visits_cur = np.bincount(fid_visit_history, minlength=len(field_lookup))
         elif schedule_name == 'delve':
             observing_night_strs = args.observing_nights
         else:
@@ -128,9 +153,8 @@ def main():
     for f in ['field_lookup.json', 'field2radec.json']:
         filepath = lookup_dirpath / f
         assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
+
     field_lookup = pd.read_json(lookup_dirpath / "field_lookup.json")
-    
-    # field2radec = pd.read_json(lookup_dirpath / "field2radec.json")
     field2radec = field_lookup[['ra', 'dec']].to_numpy()
     field2nvisits = np.array([n for n in field_lookup['n_visits'].values])
 
@@ -161,7 +185,8 @@ def main():
     # Creat env
 
     env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, data_dir=lookup_dirpath, field2radec=field2radec,
-                    observing_night_strs=observing_night_strs, horizon=sun_horizon, max_nights=args.max_nights, airmass_limit=args.airmass_lim)
+                    observing_night_strs=observing_night_strs, horizon=sun_horizon, max_nights=args.max_nights, airmass_limit=args.airmass_lim,
+                    s_visits_cur=s_visits_cur, s_filter_visits_cur=fieldfilter2nvisits)
     # field2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
 
     # Evaluate
@@ -171,7 +196,9 @@ def main():
 
     logger.info("Generating plots...")
     save_survey_diagnostics(eval_metrics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, action_space=action_space)
-    save_gifs(schedule_path=schedule_outdir / 'survey_schedule.csv', save_dir=schedule_outdir, do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, action_space=action_space, nside=nside, field2radec_filepath=lookup_dirpath / "field2radec.json")
+    save_gifs(schedule_path=schedule_outdir / 'full_survey_schedule.csv', save_dir=schedule_outdir, 
+              do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, action_space=action_space, nside=nside, 
+              field2radec_filepath=lookup_dirpath / "field2radec_plot.json")
 
     # # Load results
     # with open(schedule_outdir / 'eval_metrics.pkl', 'rb') as f:

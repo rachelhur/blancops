@@ -128,7 +128,7 @@ def generate_src_global_config(output_fn="global_config.json"):
                 "fwhm",
             ],
             "BIN_FEATURES": [
-                # "ha",
+                "ha", # memorizing?
                 "rel_ha",
                 "time_till_set",
                 "airmass",
@@ -137,10 +137,10 @@ def generate_src_global_config(output_fn="global_config.json"):
                 "is_rising",
                 "delta_az",
                 "delta_el",
-                # "az", 
+                "az", # memorizing? 
                 "el", 
-                # "ra", 
-                # "dec",
+                "ra", # memorizing? 
+                "dec", # memorizing?
                 "pointing_distance", 
                 "night_num_unvisited_fields",
                 "night_num_incomplete_fields", 

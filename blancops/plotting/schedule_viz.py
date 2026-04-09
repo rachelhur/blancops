@@ -151,7 +151,7 @@ def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir
             os.makedirs(night_dir)
 
         metrics = eval_metrics[f'night-{night_idx}']
-        if len(metrics['timestamp']) < 2:
+        if len(metrics['timestamp']) < 1:
             logger.info(f"Night {night_idx} had no viable observations")
             continue
 
