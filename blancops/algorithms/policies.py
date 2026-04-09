@@ -24,6 +24,12 @@ class PolicyBase(nn.Module, ABC):
     def select_action(self, x_glob, x_bin, action_mask=None):
         pass
 
+    def _compute_slew_distance(self, predicted_bins, expert_bins, hpGrid):
+        predicted_coords = np.array((hpGrid.lon[predicted_bins], hpGrid.lat[predicted_bins]))
+        expert_coords = np.array((hpGrid.lon[expert_bins], hpGrid.lat[expert_bins]))
+        ang_seps = geometry.angular_separation(predicted_coords, expert_coords)
+        return ang_seps.mean()
+    
     def _compute_standard_metrics(self, action_logits, expert_flat, action_masks, hpGrid=None):
         """
         Universally calculates entropy, margin, and physical metrics for any flat action policy.
@@ -125,13 +131,18 @@ class PureJointPolicy(PolicyBase):
         action_logits = self.core_net(x_glob=batch['state'], x_bin=batch['bin_states'])
         action_masks = batch['action_masks']
         expert_flat = batch['expert_actions']
+        exp_slew_dists = batch.get('slew_dists', None)
         
         # Apply mask
         mask_value = torch.finfo(action_logits.dtype).min
         action_logits = action_logits.masked_fill(~action_masks, mask_value)
         
         # Pure Joint Loss
-        loss = self.loss_function(action_logits, expert_flat)
+        # Pure Joint Loss - Dynamically route based on the loss function's signature
+        if exp_slew_dists is not None and isinstance(self.loss_function, SlewDistanceFocalLoss):
+            loss = self.loss_function(action_logits, expert_flat, exp_slew_dists)
+        else:
+            loss = self.loss_function(action_logits, expert_flat)
         
         # Metrics
         metrics_dict = {}
@@ -452,3 +463,30 @@ class FilterFocalLoss(nn.Module):
             return focal_loss.sum()
         else:
             return focal_loss
+
+from blancops.math import units
+class SlewDistanceFocalLoss(nn.Module):
+    def __init__(self, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+        self.scale = 1 / units.deg
+
+    def forward(self, logits, targets, expert_slew_distances=None):
+        """
+        expert_slew_distances: Tensor of shape (Batch,) containing the physical 
+                               angular distance (in degrees or radians) of the expert's action.
+        """
+        ce_loss = F.cross_entropy(logits, targets, reduction='none')
+        p_t = torch.exp(-ce_loss)
+        
+        focal_loss = ((1 - p_t) ** self.gamma) * ce_loss
+        
+        # Explicitly scale the loss by the physical magnitude of the slew
+        # We add 1.0 to ensure 0-degree slews don't completely zero out the loss
+        distance_weights = expert_slew_distances * self.scale + 1.0 
+        focal_loss = distance_weights * focal_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        return focal_loss

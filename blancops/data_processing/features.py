@@ -307,7 +307,6 @@ def calculate_global_features(df, field2name, hpGrid,
     if 'lst' in base_global_feature_names:
         df['lst'], df['lst_hours'] = get_lst(df['datetime'].values)
 
-
     # 4. Get time dependent features (sun and moon pos)
     timestamps = df['timestamp'].values
     sun_ras, sun_decs, sun_azs, sun_els = [], [], [], []

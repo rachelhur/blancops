@@ -20,6 +20,8 @@ from blancops.data_processing.data_processing import *
 
 # Get the logger associated with this module's name (e.g., 'my_module')
 import logging
+
+from blancops.math import geometry
 logger = logging.getLogger(__name__)
 
 def reward_func_v0():
@@ -165,6 +167,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             include_bin_features=include_bin_features, 
             action_space=action_space,
             )
+        self.slew_distances = self._construct_slew_distances(self._df)
         
         logger.info(f"States shape: {states.shape}, Actions shape: {self.actions.shape}, Rewards shape: {self.rewards.shape}, Dones shape: {self.dones.shape}, Action masks shape: {self.action_masks.shape}")
         logger.info(f"Bin states shape: {bin_states.shape if bin_states is not None else None}")
@@ -278,7 +281,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         dones = self._construct_dones(num_transitions=num_transitions, next_state_idxs=next_state_idxs, current_state_idxs=current_state_idxs)
         # action_masks = self._construct_action_masks(state_df=df, action_space=action_space, num_transitions=num_transitions, state_idxs=state_idxs)
         action_masks = self._construct_action_masks(state_df=df, action_space=action_space, num_states=len(state_idxs), state_idxs=state_idxs)
-        
         states = torch.as_tensor(states, dtype=torch.float32)
         actions = torch.as_tensor(actions, dtype=torch.int32)
         rewards = torch.as_tensor(rewards, dtype=torch.float32)
@@ -352,7 +354,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         bin_indices = self.hpGrid.ang2idx(lon=lonlat[:, 0], lat=lonlat[:, 1])
 
         if 'filter' not in action_space:
-            return bin_indices
+            actions = bin_indices
         elif ('radec' not in action_space) and ('azel' not in action_space):
             filter_series = next_state_df['filter']
             filter_indices = filter_series.map(FILTER2IDX).values.astype(np.int32)
@@ -366,7 +368,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 "nan filter values found in next_state_df. There should not be any zenith states in next_state_df"
             filter_indices = filter_indices.astype(np.int32)
             actions = (bin_indices * NUM_FILTERS) + filter_indices
-            return actions
+        return actions
 
     def _construct_rewards(self, df, next_state_idxs, reward_choice='teff_rate'):
         assert reward_choice in ['teff_rate', 'expert_actions'], 'reward_choice must be teff_rate or expert_actions'
@@ -377,6 +379,26 @@ class OfflineDataset(torch.utils.data.Dataset):
             next_state_df = df.iloc[next_state_idxs]
             rewards = np.ones(len(next_state_df), dtype=np.float32)
         return rewards
+    
+    def _construct_slew_distances(self, df):
+        curr_bids = df.iloc[self.current_state_idxs]['bin'].values.copy()
+        next_bids = df.iloc[self.next_state_idxs]['bin'].values.copy()
+        z_mask = curr_bids == -1
+        if self.hpGrid.is_azel:
+            curr_bids[z_mask] = self.hpGrid.ang2idx(lon=0, lat=np.pi/2) # map zenith bins to zenith bin        
+        else:
+            z_idxs = np.where(z_mask)[0]
+            z_df_idxs = self.current_state_idxs[z_idxs]
+            z_timestamps = df.iloc[z_df_idxs]['timestamp'].values
+            for i, t in zip(z_idxs, z_timestamps):
+                z_ra, z_dec = ephemerides.topographic_to_equatorial(lon=0, lat=np.pi/2, time=t)
+                curr_bids[i] = self.hpGrid.ang2idx(lon=z_ra, lat=z_dec)
+                
+        curr_coords = np.array((self.hpGrid.lon[curr_bids], self.hpGrid.lat[curr_bids]))
+        next_coords = np.array((self.hpGrid.lon[next_bids], self.hpGrid.lat[next_bids]))
+        slew_dists = geometry.angular_separation(curr_coords, next_coords)
+        slew_dists = torch.as_tensor(slew_dists, dtype=torch.float32)
+        return slew_dists
 
     def _construct_action_masks(self, state_df, action_space, num_states, state_idxs):
         """
@@ -424,32 +446,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         logger.debug(f"z-score stats: {z_stats_dict}")
         logger.debug(f"relative norm stats: {rel_stats_dict}")
 
-        
-    # def _save_to_cache(self):
-    #     """Packs the tensors into a dictionary and saves to disk."""
-    #     logger.info(f"Saving processed dataset to {self._cache_path}")
-    #     cache_dict = {
-    #         'states': self.states,
-    #         'bin_states': self.bin_states,
-    #         'actions': self.actions,
-    #         'action_masks': self.action_masks,
-    #         'rewards': self.rewards,
-    #         'dones': self.dones
-    #     }
-    #     torch.save(cache_dict, self._cache_path)
-
-    # def _load_from_cache(self):
-    #     """Loads the pre-compiled tensors directly into memory."""
-    #     logger.info(f"Loading processed dataset from {self._cache_path}")
-    #     cache_dict = torch.load(self._cache_path, weights_only=True) # weights_only=True is safer and faster
-        
-    #     self.states = cache_dict['states']
-    #     self.bin_states = cache_dict['bin_states']
-    #     self.actions = cache_dict['actions']
-    #     self.action_masks = cache_dict['action_masks']
-    #     self.rewards = cache_dict['rewards']
-    #     self.dones = cache_dict['dones']
-        
     def __len__(self):
         return self.num_transitions
 
@@ -475,7 +471,8 @@ class OfflineDataset(torch.utils.data.Dataset):
                 self.action_masks[c_idx],
                 self.action_masks[n_idx] if not is_done else torch.zeros_like(self.action_masks[0]),
                 torch.as_tensor(0), # placeholder for bin state since not used in this case
-                torch.as_tensor(0)
+                torch.as_tensor(0),
+                self.slew_distances[idx]
             )
         elif self._action_architecture in ACTION_ARCHITECTURES:
             transition = (
@@ -487,7 +484,8 @@ class OfflineDataset(torch.utils.data.Dataset):
                 self.action_masks[c_idx],
                 self.action_masks[n_idx] if not is_done else torch.zeros_like(self.action_masks[0]),
                 self.bin_states[c_idx], # shape (nstates, nbins, nfeatures)
-                self.bin_states[n_idx] if not is_done else torch.zeros_like(self.bin_states[0])
+                self.bin_states[n_idx] if not is_done else torch.zeros_like(self.bin_states[0]),
+                self.slew_distances[idx]
             )
         return transition
     
@@ -528,21 +526,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         
         train_dataset = Subset(self, self.train_transition_idxs.tolist())
         val_dataset = Subset(self, self.val_transition_idxs.tolist())
-        
-        # # Randomly sample whole nights for the validation set
-        # num_val_nights = max(1, int(self.n_nights * val_split))
-        # val_nights = np.random.choice(self.unique_nights, size=num_val_nights, replace=False)
-        # logger.info(f'Choosing {num_val_nights} nights for validation out of {self.n_nights} nights. Specifically, {np.sort(val_nights)}')
-        
-        # transition_nights = self._df.iloc[self.next_state_idxs - 1]['night']
-            
-        # val_mask = np.isin(transition_nights, val_nights)
-        
-        # train_indices = np.where(~val_mask)[0].tolist()
-        # val_indices = np.where(val_mask)[0].tolist()
-        
-        # train_dataset = Subset(self, train_indices)
-        # val_dataset = Subset(self, val_indices)
         
         train_loader = DataLoader(
             train_dataset,

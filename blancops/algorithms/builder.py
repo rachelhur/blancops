@@ -14,7 +14,7 @@ import copy
 import torch
 import torch.nn as nn
 from blancops.core_rl.neural_nets import ScoreMLP, AutoregressiveDiscreteNet
-from blancops.algorithms.policies import AutoregressiveActionPolicy, FilterFocalLoss, FlatQNetWrapper, AutoregressiveQNetWrapper, HybridMarginalPolicy, PseudoAutoregressivePolicy, PureJointPolicy
+from blancops.algorithms.policies import AutoregressiveActionPolicy, FilterFocalLoss, FlatQNetWrapper, AutoregressiveQNetWrapper, HybridMarginalPolicy, PseudoAutoregressivePolicy, PureJointPolicy, SlewDistanceFocalLoss
 from blancops.algorithms.policies import FocalLoss
 from blancops.algorithms.bc import BehaviorCloning
 from blancops.algorithms.ddqn import DDQN
@@ -28,11 +28,12 @@ def get_activation(name):
 def get_loss_function(name, reduction='mean', gamma_focal=2, alpha=None):
     if name == 'cross_entropy':
         loss_function = nn.CrossEntropyLoss(reduction=reduction)
+    elif name == 'focal_loss_filter':
+        loss_function = FilterFocalLoss(gamma=gamma_focal, reduction=reduction)
+    elif name == 'focal_loss_slew':
+        loss_function = SlewDistanceFocalLoss(gamma=gamma_focal, reduction=reduction)
     elif name == 'focal_loss':
-        if alpha == 'filter':
-            loss_function = FilterFocalLoss(gamma=gamma_focal, reduction=reduction)
-        else:
-            loss_function = FocalLoss(gamma=gamma_focal, reduction=reduction, alpha=alpha)
+        loss_function = FocalLoss(gamma=gamma_focal, reduction=reduction, alpha=alpha)
     else:
         raise NotImplementedError
     return loss_function

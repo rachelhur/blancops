@@ -87,6 +87,7 @@ MS_OBSERVING_DATES = ['2026-04-09-half1', '2026-04-10-half1', '2026-04-11-half1'
                       '2026-05-09-half1', '2026-05-10-half1', '2026-06-08-half1', '2026-06-09-half1']
 HP_OBSERVING_DATES = ['2026-04-09-full', '2026-04-10-full', '2026-04-11-full', '2026-04-12-full', \
                       '2026-05-09-full', '2026-05-10-full', '2026-06-08-full', '2026-06-09-full']
+DD_NIGHT = ['2026-04-10-half2']
 GW_OBSERVING_DATES_GOOD = ['2026-02-10-full', '2026-02-11-full', '2026-02-12-full', '2026-02-13-full', \
                            '2026-02-14-full', '2026-02-15-full', '2026-02-16-full', '2026-02-17-full']
 GW_OBSERVING_DATES_BAD = ['2026-05-09-full', '2026-05-10-full', '2026-05-11-full', '2026-05-12-full', \
