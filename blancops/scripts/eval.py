@@ -18,7 +18,7 @@ from blancops.utils.sys_utils import seed_everything, load_global_config, load_m
 from blancops.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.data_processing import load_raw_data_to_dataframe
-from blancops.core_rl.environments import OfflineBlancoTestingEnv
+from blancops.environment.offline_env import OfflineBlancoTestingEnv
 from blancops.data_processing.offline_dataset import OfflineDataset
 from blancops.data_processing.constants import *
 from blancops.math import units
@@ -381,13 +381,16 @@ def main():
     if 'filter' in cfg['data']['action_space']:
         expert_filters_names = [IDX2FILTER[i] for i in expert_filters]
         agent_filters_names = [IDX2FILTER[i] for i in agent_filters]
+        filter_residuals = agent_filters - expert_filters
 
         fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
         axs[0].plot(expert_times, expert_filters_names, marker='*', alpha=.3, label='true')
         axs[0].plot(expert_times, agent_filters_names, marker='o', alpha=.3, label='pred')
         axs[0].legend()
         axs[0].set_ylabel('filter')
-        axs[1].plot(expert_times, agent_filters_names - expert_filters_names, marker='o', alpha=.5)
+        for filt in FILTER2IDX.keys():
+            m = expert_filters_names == filt
+            axs[1].plot(expert_times[m], filter_residuals[m], marker='o', alpha=.5, label='expert chose {filt}')
         axs[1].set_ylabel('Filter Index residuals (Agent - Expert)')
         axs[1].set_xlabel('Time since sunrise (normalized)')
         fig.savefig(eval_outdir + 'single_step_filters_vs_time.png')

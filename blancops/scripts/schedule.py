@@ -17,7 +17,7 @@ from blancops.utils.sys_utils import seed_everything, load_global_config, load_m
 from blancops.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data_processing.constants import *
-from blancops.core_rl.environments import OnlineBlancoEnv
+from blancops.environment.online_env import OnlineBlancoEnv
 from blancops.plotting.schedule_viz import *
 
 import logging
@@ -39,6 +39,7 @@ def main():
     parser.add_argument('-f', '--field_lookup_dir', type=Path, default=None, required=False, help='relative path to field lookup dir')
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
     parser.add_argument('-c', '--field_choice_method', type=str, default='random', help="Options: random, interp")
+    parser.add_argument('--load_obs_history', action='store_true', help='A csv file with column `agent_field_id` defined by field_lookup_dir')
     parser.add_argument('--sun_horizon', type=float, default=-12, help="Sun horizon in degrees for determining night start/end. Default is -12.")
     parser.add_argument('--airmass_lim', type=float, default=1.2, help="The agent will only observe if there exist *any* fields below the airmass_lim")
     parser.add_argument('--no_night_diagnostics', action='store_false', help="Whether to skip generating nightly diagnostics plots" )
