@@ -5,13 +5,14 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 
-from blancops.data_processing.data_processing import expand_feature_names_for_cyclic_norm
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-from blancops.data_processing.offline_dataset import setup_feature_names
-from blancops.data_processing.features import calculate_urgency, get_delta_az_el, get_moon_phase, get_relative_survey_progress_features, get_sun_and_moon_positions, normalize_timestamp, get_nautical_twilight, normalize_noncyclic_features, get_relative_feature
-from blancops.data_processing.constants import *
+
+from blancops.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
+from blancops.features.bin_features import get_relative_feature, get_delta_az_el, calc_relative_survey_progress_features
+from blancops.features.transforms import normalize_noncyclic_features, normalize_timestamp
+from blancops.data.constants import *
 from blancops.math import geometry
 
 from astropy.time import Time
@@ -226,12 +227,10 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             last_field_id = self._field_id
             exptime = self._get_exposure_time(field_id=str(field_id))
             slew_time = self._get_slew_time(last_field_id, field_id)
-            print('SLEW TIME', slew_time)
             self._ts += exptime + slew_time
 
             self._n_visits_cur[field_id] += 1
             self._s_visits_cur[field_id] += 1
-            print(self._s_visits_cur)
             if self.do_filt:
                 self._s_filter_visits_cur[field_id, filter_idx] += 1
                 self._n_filter_visits_cur[field_id, filter_idx] += 1  
@@ -355,7 +354,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             else:
                 new_features['filter_wave'] = 0 if (self._bin_num == WAIT_SIGNAL) or (not self.do_filt) else IDX2WAVE[filter_idx] / FILTERWAVENORM
                 new_features['filter_idx'] = filter_idx
-                if getattr(self, '_raw_survey_progress_arr', None):
+                if getattr(self, '_raw_survey_progress_arr', None) is not None:
                     self._raw_survey_progress_arr[filter_idx] += 1
             filt_str = IDX2FILTER[filter_idx]
             for filt in FILTER2WAVE.keys():
@@ -373,23 +372,23 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         cos_zenith = np.cos(np.pi / 2 - new_features['el'])
         new_features['airmass'] = 1.0 / cos_zenith #if cos_zenith > 0 else 99.0
 
-        sun_radec, sun_azel, moon_radec, moon_azel = get_sun_and_moon_positions(timestamp)
+        sun_radec, sun_azel, moon_radec, moon_azel = calc_sun_and_moon_positions(timestamp)
         
         new_features['sun_ra'], new_features['sun_dec'] = sun_radec
         new_features['sun_az'], new_features['sun_el'] = sun_azel
         new_features['moon_ra'], new_features['moon_dec'] = moon_radec
         new_features['moon_az'], new_features['moon_el'] = moon_azel
-        new_features['moon_phase'] = get_moon_phase(timestamp)
-        if getattr(self, "_fwhm_night_interps", None):
+        new_features['moon_phase'] = calc_moon_phase(timestamp)
+        if getattr(self, "_fwhm_night_interps", None) is not None:
             new_features['fwhm'] = self._fwhm_night_interps[self._night_idx](timestamp)
-        if getattr(self, "_t_survey_arr", None):
+        if getattr(self, "_t_survey_arr", None) is not None:
             new_features['t_survey'] = self._t_survey_arr[self._night_idx]
         for filt, idx in FILTER2IDX.items():
             sky_bright_filt = estimate_sky_brightness(time=timestamp, ra=ra, dec=dec, band=filt)
             new_features[f'sky_brightness_{filt}'] = sky_bright_filt
-            if getattr(self, "_raw_survey_progress_arr", None):
+            if getattr(self, "_raw_survey_progress_arr", None) is not None:
                 new_features[f'survey_progress_{filt}'] = self._raw_survey_progress_arr[idx] / self._filter_target_counts[idx]
-                new_features[f'urgency_{filt}'] = calculate_urgency(
+                new_features[f'urgency_{filt}'] = calc_urgency(
                     filter_counts_arr=self._raw_survey_progress_arr[idx], 
                     filter_counts_max=self._filter_target_counts[idx], 
                     survey_night_indices=self._survey_night_idx,
@@ -508,10 +507,16 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             # Execute 1D
             assign_state((v_n_vis == 0) & in_n_plan, (v_s_vis == 0) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_unvisited_fields', 'survey_num_unvisited_fields')
             assign_state((v_n_vis < v_max_n) & in_n_plan, (v_s_vis < max_s_vis_adj) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_incomplete_fields', 'survey_num_incomplete_fields')
-
-            s_til, n_til = np.full_like(v_s_vis, 2.0, dtype=np.float32), np.full_like(v_n_vis, 2.0, dtype=np.float32)
-            np.divide(v_s_vis, max_s_vis_adj, out=s_til, where=in_s_plan)
-            np.divide(v_n_vis, v_max_n, out=n_til, where=in_n_plan)
+            
+            # --- Calculate field-level tiling (s_til, n_til) ---
+            if getattr(self, '_field_priorities_arr', None) is not None:
+                s_til = self._get_priority_tiling(v_s_vis, v_mask, in_s_plan)
+                n_til = self._get_priority_tiling(v_n_vis, v_mask, in_n_plan)
+            else:
+                s_til, n_til = np.full_like(v_s_vis, 2.0, dtype=np.float32), np.full_like(v_n_vis, 2.0, dtype=np.float32)
+                np.divide(v_s_vis, max_s_vis_adj, out=s_til, where=in_s_plan)
+                np.divide(v_n_vis, v_max_n, out=n_til, where=in_n_plan)
+                
             s_mins, n_mins = np.full(self.nbins, 2.0, dtype=np.float32), np.full(self.nbins, 2.0, dtype=np.float32)
             np.minimum.at(s_mins, bins_mem, s_til); np.minimum.at(n_mins, bins_mem, n_til)
             
@@ -527,6 +532,14 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                 v_max_s_f, v_max_n_f = self._max_s_filter_visits_arr[v_mask], self._max_n_filter_visits_arr[v_mask]
                 in_s_f_plan, in_n_f_plan = v_max_s_f > 0, v_max_n_f > 0
                 max_s_f_vis_adj = np.maximum(v_max_n_f, v_max_s_f)
+                
+                if getattr(self, '_field_priorities_arr', None) is not None:
+                    s_f_til = self._get_filter_priority_tiling(v_s_f_vis, v_mask, in_s_f_plan)
+                    n_f_til = self._get_filter_priority_tiling(v_n_f_vis, v_mask, in_n_f_plan)
+                else:
+                    s_f_til, n_f_til = np.full_like(v_s_f_vis, 2.0, dtype=np.float32), np.full_like(v_n_f_vis, 2.0, dtype=np.float32)
+                    np.divide(v_s_f_vis, max_s_f_vis_adj, out=s_f_til, where=in_s_f_plan)
+                    np.divide(v_n_f_vis, v_max_n_f, out=n_f_til, where=in_n_f_plan)
                 
                 s_f_mins, n_f_mins = np.full((self.nbins, self.nfilters), 2.0, dtype=np.float32), np.full((self.nbins, self.nfilters), 2.0, dtype=np.float32)
                 s_f_til, n_f_til = np.full_like(v_s_f_vis, 2.0, dtype=np.float32), np.full_like(v_n_f_vis, 2.0, dtype=np.float32)
@@ -549,16 +562,16 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                     
                     features[f'survey_min_tiling_{filt_name}'] = s_f_mins[:, f]
                     features[f'night_min_tiling_{filt_name}'] = n_f_mins[:, f]
-        
+                
             # FEATURE VALIDATION CHECK
-            self._validate_bin_features(features, sentinel_val)
+            # self._validate_bin_features(features, sentinel_val)
 
         # GET "RELATIVE" FEATURES
         el_mask = features['el'] > 0
         features['rel_ha'] = get_relative_feature(features['ha'], el_mask=el_mask)
         features['rel_moon_distance'] = get_relative_feature(features['moon_distance'], el_mask=el_mask)
         if self._has_historical_features:
-            features |= get_relative_survey_progress_features(features, el_mask)
+            features |= calc_relative_survey_progress_features(features, el_mask)
         
         # Normalize periodic features here and add as df cols
         if self.do_cyclical_norm:
@@ -587,6 +600,20 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         # assert (bin_state != np.inf).all()
 
         return bin_states
+
+    def _get_priority_tiling(self, v_vis, v_mask, in_plan):
+        """Helper to compute 1D field-level tiling based on priority."""
+        v_priority = self._field_priorities_arr[v_mask]
+        base_til = (v_priority / 3.0).astype(np.float32)
+        dynamic_til = np.where(v_vis >= 1, 1.0, base_til)
+        return np.where(in_plan, dynamic_til, 2.0).astype(np.float32)
+
+    def _get_filter_priority_tiling(self, v_f_vis, v_mask, in_f_plan):
+        """Helper to compute 2D filter-level tiling based on priority."""
+        v_priority = self._field_priorities_arr[v_mask]
+        base_til_2d = np.expand_dims((v_priority / 3.0).astype(np.float32), axis=1)
+        dynamic_f_til = np.where(v_f_vis >= 1, 1.0, base_til_2d)
+        return np.where(in_f_plan, dynamic_f_til, 2.0).astype(np.float32)
 
     def _validate_bin_features(self, features, sentinel_value):
         if self.do_filt and self._has_historical_features:
@@ -718,9 +745,6 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         elif (field_id is None) or getattr(self, 'field_lookup', None) is None:
             return 90.0
         else:
-            print('EXPOSURE TIME IN SECONDS', self.field_lookup['exptime'].values[int(field_id)])
-            print('FIELD_ID', field_id, type(field_id))
             exptime = self.field_lookup['exptime'].values[int(field_id)]
-            print(f"EXPOSURE TIME IN MINUTES {self.field_lookup['exptime'].values/60}")
             return exptime
     

@@ -7,23 +7,15 @@ import pandas as pd
 
 import torch
 
-from blancops.data_processing.data_processing import expand_feature_names_for_cyclic_norm
-from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-from blancops.data_processing.offline_dataset import setup_feature_names
-from blancops.data_processing.features import calculate_urgency, get_delta_az_el, get_moon_phase, get_relative_survey_progress_features, get_sun_and_moon_positions, normalize_timestamp, get_nautical_twilight, normalize_noncyclic_features, get_relative_feature
-from blancops.data_processing.constants import *
-from blancops.math import geometry
+from blancops.data.offline_dataset import setup_feature_names
+from blancops.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
+from blancops.data.constants import *
 
-from blancops.environment.blanco_base import BaseBlancoEnv
-from astropy.time import Time
-from datetime import datetime, timezone, timedelta
+from blancops.environment.base import BaseBlancoEnv
 import pickle
 import json
-from einops import rearrange
-
-from abc import ABC, abstractmethod
 
 import logging
 logger = logging.getLogger(__name__)
@@ -164,8 +156,8 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         global_first_row = self.global_pd_nightgroup.head(1).iloc[self._night_idx]
         night = global_first_row['night']
         self._ts = global_first_row['timestamp']
-        self._sunset_ts = get_nautical_twilight(self._ts+10, 'set') # add 10 seconds just in case timestamp is exactly at twilight
-        self._sunrise_ts = get_nautical_twilight(self._ts+10, 'rise')
+        self._sunset_ts = calc_twilight(self._ts+10, 'set') # add 10 seconds just in case timestamp is exactly at twilight
+        self._sunrise_ts = calc_twilight(self._ts+10, 'rise')
         self._night_end_ts = self.global_pd_nightgroup.tail(1).iloc[self._night_idx]['timestamp']
         self._night_start_ts = global_first_row['timestamp']
         self._field_id = global_first_row['field_id']
@@ -182,7 +174,7 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         if self.do_filt:
             self._s_filter_visits_cur = self.night2filtvisithistory[night].copy()
             self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-            if 'raw_survey_progress_g' in global_first_row.columns:
+            if 'raw_survey_progress_g' in global_first_row.keys():
                 self._global_urgency_arr = np.array([global_first_row[f'urgency_{filt_name}'] for filt_name in FILTER2IDX.keys()], dtype=np.float32)
                 self._raw_survey_progress_arr = np.array([global_first_row[f"raw_survey_progress_{filt}"] for filt in FILTER2IDX.keys()], dtype=np.float32)
             

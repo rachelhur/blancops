@@ -15,7 +15,7 @@ from pathlib import Path
 
 from blancops.math.interpolate import interpolate_on_sphere
 from blancops.ephemerides import ephemerides
-from blancops.data_processing.constants import *
+from blancops.data.constants import *
 import logging
 
 # Get the logger associated with this module's name (e.g., 'my_module')
@@ -206,6 +206,8 @@ class Agent:
         hpGrid = ephemerides.HealpixGrid(nside=cfg['data']['nside'], is_azel=('azel' in cfg['data']['action_space']))
         action_space = cfg['data']['action_space']
 
+        FIELDS_CHOSEN = []
+
         with logging_redirect_tqdm():
             for episode in tqdm(range(num_episodes)):
                 state, info = env.reset()
@@ -258,6 +260,7 @@ class Agent:
                             field_id = self.choose_field(obs=(state['global_state'], state['bin_state']), info=info, field2nvisits=field2nvisits, 
                                                         field2radec=field2radec, hpGrid=hpGrid, field_choice_method=field_choice_method, fields_in_bin=fields_in_bin,
                                                         filter_idx=filter_idx)#, num_filters=self.algorithm.num_filters)
+                            FIELDS_CHOSEN.append(field_id)
                         is_first_wait = (bin_idx == WAIT_SIGNAL) and (last_bin_idx != WAIT_SIGNAL)
                         is_real_obs = bin_idx >= 0
                         if is_first_wait or is_real_obs:
@@ -287,11 +290,11 @@ class Agent:
                             episode_data[current_night_key] = {
                                 'glob_observations': [state['global_state']],
                                 'bin_observations': [state['bin_state']],
-                                'rewards': [reward],
+                                'rewards': [0], # Re-initialize starting reward to 0
                                 'timestamp': [info.get('timestamp')],
-                                'field_id': [field_id],
-                                'bin': [bin_idx],
-                                'filter_idx': [filter_idx]
+                                'field_id': [ZENITH_FIELD_ID],     # Reset to Zenith
+                                'bin': [ZENITH_BIN_NUM],           # Reset to Zenith
+                                'filter_idx': [ZENITH_FILTER_IDX]  # Reset to Zenith
                             }
 
                         # pbar update
@@ -299,7 +302,6 @@ class Agent:
                         pbar.update(1)
                         pbar.set_description(f"Rolling out policy for night {night_idx} step {i}")
             pbar.close()
-
             # Convert all lists in the nested dictionary to numpy arrays
             for night_key, metrics in episode_data.items():
                 for metric_name, values in metrics.items():
@@ -328,7 +330,7 @@ class Agent:
             field_lookup=field_lookup,
             save_SISPI=save_SISPI,
             SISPI_fn=SISPI_fn
-            )
+            )   
 
         return eval_metrics
 
@@ -383,9 +385,8 @@ class Agent:
         else:
             field_ids_in_bin = [fid for fid in fields_in_bin if s_visited[fid] < field2nvisits[fid]]
         
-        # Fallback if the chosen bin is actually exhausted for this filter
-        if len(field_ids_in_bin) == 0:
-            return random.choice(fields_in_bin)
+        assert len(field_ids_in_bin) != 0, "No valid fields are in bin...check environment's output mask."
+        logger.debug(f'Chosen bin contains {len(field_ids_in_bin)} incomplete fields out of {len(fields_in_bin)} fields total')
 
         if field_choice_method == 'interp':
             with torch.no_grad():
@@ -403,10 +404,11 @@ class Agent:
                 # Reshape to (n_bins, n_filters) and slice the specific filter
                 q_map = raw_scores.view(n_bins, n_filters)[:, filter_idx].cpu().numpy()
 
-            # [FIX 2]: Coordinate alignment for interpolation
             lon_data = hpGrid.lon 
             lat_data = hpGrid.lat
 
+            # CHECK
+            # target_coords = np.array([field2radec[fid] for fid in field_ids_in_bin])
             target_coords = np.array([field2radec[fid] for fid in field_ids_in_bin])
             
             if hpGrid.is_azel:
@@ -421,14 +423,16 @@ class Agent:
                 target_lons = target_coords[:, 0]
                 target_lats = target_coords[:, 1]
 
-            # [FIX 3]: Interpolate the score surface matching the correct filter map
             q_interpolated = interpolate_on_sphere(
-                target_lons, target_lats,  # Target coordinates
-                lon_data, lat_data,        # Bin centers (grid)
-                q_map                      # Filter-specific Q-values
+                az=target_lons,
+                el=target_lats,  # Target coordinates
+                az_data=lon_data,
+                el_data=lat_data,        # Bin centers (grid)
+                values=q_map                      # Filter-specific Q-values
             )
             
             best_idx = np.argmax(q_interpolated)
+
             return field_ids_in_bin[best_idx]
 
         elif field_choice_method == 'random':
@@ -480,8 +484,8 @@ class Agent:
     #     elif field_choice_method == 'random':
     #         field_id = random.choice(field_ids_in_bin)
     #         return field_id
-        
-    def save_survey_schedule(self, eval_metrics, save_dir, field_lookup, multinight_movie=True, ep_num=0, save_SISPI=False, SISPI_fn="survey_schedule.json"):
+    @staticmethod
+    def save_survey_schedule(eval_metrics, save_dir, field_lookup, multinight_movie=True, ep_num=0, save_SISPI=False, SISPI_fn="survey_schedule.json"):
         eval_metrics = eval_metrics[f'ep-{ep_num}']
         if multinight_movie:
             schedule_path = Path(save_dir) / "full_survey_schedule.csv"
@@ -521,6 +525,8 @@ class Agent:
             df.to_csv(schedule_path, index=False)
         if save_SISPI:
             for night_key, night_dict in eval_metrics.items():
+                if 'night' not in night_key:
+                    continue
                 collected_metrics = defaultdict(list)
                 schedule_keys = ['bin', 'field_id', 'filter_idx', 'timestamp']
                 # Extract the arrays from each night
@@ -587,13 +593,6 @@ EMPTY_SISPI_DICT = OrderedDict([
 SCHEDULE_KEYS = ['agent_timestamp', 'agent_field_id', 'agent_bin_id', 'agent_filter']
 import pandas as pd
 from blancops.math import units
-
-def round_floats(o):
-    if isinstance(o, float):
-        return round(o, 5)
-    if isinstance(o, dict):
-        return {k: round_floats(v) for k, v in o.items()}
-    
 
 def write_SISPI_from_schedule(schedule_df, out_fn, save_dir, field_lookup, filter_override_val='CaHK', proposer='Cerny', program='magic-spring', dt_series=None,
                               propid='2026A-563105', exptime=720):

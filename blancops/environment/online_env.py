@@ -9,23 +9,15 @@ import math
 
 import torch
 
-from blancops.data_processing.data_processing import expand_feature_names_for_cyclic_norm
-from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-from blancops.data_processing.offline_dataset import setup_feature_names
-from blancops.data_processing.features import calculate_urgency, get_delta_az_el, get_moon_phase, get_relative_survey_progress_features, get_sun_and_moon_positions, normalize_timestamp, get_nautical_twilight, normalize_noncyclic_features, get_relative_feature
-from blancops.data_processing.constants import *
-from blancops.math import geometry
+from blancops.data.offline_dataset import setup_feature_names
 
-from blancops.environment.blanco_base import BaseBlancoEnv
-from astropy.time import Time
+from blancops.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
+from blancops.data.constants import *
+
+from blancops.environment.base import BaseBlancoEnv
 from datetime import datetime, timezone, timedelta
-import pickle
-import json
-from einops import rearrange
-
-from abc import ABC, abstractmethod
 
 import logging
 logger = logging.getLogger(__name__)
@@ -34,8 +26,8 @@ class OnlineBlancoEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
     """
-    def __init__(self, gcfg, cfg, observing_night_strs, data_dir, field2radec, max_nights=0, horizon='-12', airmass_limit=1.4, z_score_stats=None, rel_norm_stats=None,
-                 s_visits_cur=None, s_filter_visits_cur=None):
+    def __init__(self, gcfg, cfg, observing_night_strs, data_dir, max_nights=0, horizon='-12', airmass_limit=1.4, z_score_stats=None, rel_norm_stats=None,
+                 s_visits_cur=None, s_filter_visits_cur=None, field_priorities_arr = None, night1_ts_start=None):
         """
         """
         # Assign static attributes
@@ -68,6 +60,8 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
         self.horizon = horizon
         self.max_nights = max(len(observing_night_strs), max_nights) - 1
+        self.night1_ts_start = night1_ts_start
+        self._field_priorities_arr = field_priorities_arr
         # self._z_score_stats = torch.load(Path(cfg['metadata']['outdir']) / "z_score_stats.pt")
         # self._rel_norm_stats = torch.load(Path(cfg['metadata']['outdir']) / "rel_norm_stats.pt")
         
@@ -85,16 +79,17 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         self.nfilters = len(FILTER2IDX)
 
         self.field_lookup = pd.read_json(Path(data_dir) / "field_lookup.json" )
-        self.field2radec = pd.read_json(Path(data_dir) / "field2radec.json")
+        # self.field2radec = pd.read_json(Path(data_dir) / "field2radec.json")
+        from blancops.data.manager import load_field2radec_as_numpy
+        self.field2radec = load_field2radec_as_numpy(Path(data_dir) / "field2radec.json")
                 
         self._fids = np.unique(self.field_lookup['field_id'].to_numpy())
         self.nfields = len(self._fids)
         assert np.array_equal(self._fids, np.arange(len(self._fids))), "Field IDs must be perfectly sequential and start at 0."
         
-        self._ra_arr = self.field2radec['ra'].values
-        self._dec_arr = self.field2radec['dec'].values
-        print(self._ra_arr.shape)
-        self._max_s_visits_arr = np.bincount(self.field_lookup['field_id'], weights=self.field_lookup['n_visits']).astype(int)
+        self._ra_arr = self.field2radec[:, 0]
+        self._dec_arr = self.field2radec[:, 1]
+        self._max_s_visits_arr = np.bincount(self.field_lookup['field_id'].values, weights=self.field_lookup['n_visits'].values).astype(int)
 
         # Get filter lookup tables
         if self.do_filt:
@@ -105,7 +100,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
             all_filters = self.field_lookup['filter_idx'].values
             all_visits = self.field_lookup['n_visits'].values
 
-            # Vectorized operation: arrays are now all shape (40,)
+            # Vectorized (fielt, filter): max visits
             np.add.at(
                 self.fieldfilter2maxvisits, 
                 (all_fids, all_filters), 
@@ -194,8 +189,8 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         # global features
         night_dt, night_portion = self._night_info[self._night_idx]
         # night_ts = night_dt.timestamp()
-        self._sunset_ts = math.ceil(get_nautical_twilight(night_dt.timestamp(), 'set', self.horizon))
-        self._sunrise_ts = math.ceil(get_nautical_twilight(night_dt.timestamp(), 'rise', self.horizon))
+        self._sunset_ts = math.ceil(calc_twilight(night_dt.timestamp(), 'set', self.horizon))
+        self._sunrise_ts = math.ceil(calc_twilight(night_dt.timestamp(), 'rise', self.horizon))
         self._field_id = ZENITH_FIELD_ID
         self._bin_num = ZENITH_BIN_NUM
         self._filter_idx = ZENITH_FILTER_IDX
@@ -209,7 +204,11 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                 self._night_start_ts += half_night_duration
             else:
                 raise ValueError("Environment arg `observing_night_strs` must be of the form `YY-MM-dd-<night_portion> where night_portion in {'full', 'half1', 'half2'}")
+        if self.night1_ts_start:
+            self._night_start_ts = self.night1_ts_start
+        
         self._ts = self._night_start_ts
+        
         self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
         self._global_state = self._calculate_global_features(field_id=self._field_id, filter_idx=ZENITH_FILTER_IDX, timestamp=self._ts, sunset_ts=self._sunset_ts, sunrise_ts=self._sunrise_ts,
                                                              ra_arr=self._ra_arr, dec_arr=self._dec_arr)
@@ -219,7 +218,6 @@ class OnlineBlancoEnv(BaseBlancoEnv):
             self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
 
         self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
-        print('N VISITS CUR', self._n_visits_cur)
         if self.include_bin_features:
             self._max_n_visits_arr = np.zeros_like(self._n_visits_cur)
             self._in_n_plan = self._max_n_visits_arr > 0
@@ -258,7 +256,6 @@ class OnlineBlancoEnv(BaseBlancoEnv):
             cos_zenith = np.cos(90 * units.deg - fields_el[fields_el > 0])
             airmass = 1 / np.clip(cos_zenith, a_min=1e-5, a_max=None)
             if np.any(airmass < self._airmass_limit):
-                logger.info(f"TIMESTAMP FAST FORWARDING {self._night_end_ts - test_timestamp}")
                 return test_timestamp
         # If fields never above horizon, return sunrise time
         return min(test_timestamp, self._night_end_ts)

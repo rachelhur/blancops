@@ -405,7 +405,7 @@ class AutoregressiveQNetWrapper(QNetPolicyBase):
 
         return flat_joint_q_values
     
-from blancops.data_processing.constants import FILTER_ALPHA_WEIGHTS
+from blancops.data.constants import FILTER_ALPHA_WEIGHTS
 class FocalLoss(nn.Module):
     def __init__(self, gamma=2.0, reduction='mean', alpha=None):
         """

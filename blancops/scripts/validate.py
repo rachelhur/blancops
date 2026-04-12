@@ -13,17 +13,19 @@ import pandas as pd
 import logging
 
 from blancops.plotting.plotting import plot_schedule_from_file
-from blancops.core_rl.agent import Agent
-from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config, get_workspace_dir
-from blancops.algorithms.builder import build_algorithm
+from blancops.rl.agent import Agent
+from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config
+from blancops.rl.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
-from blancops.data_processing.data_processing import load_raw_data_to_dataframe
+from blancops.data.preprocessing import load_raw_data_to_dataframe
+from blancops.data.manager import load_field2radec_as_numpy
 from blancops.environment.offline_env import OfflineBlancoTestingEnv
-from blancops.data_processing.offline_dataset import OfflineDataset
-from blancops.data_processing.constants import *
+from blancops.data.offline_dataset import OfflineDataset
+from blancops.data.constants import *
 from blancops.math import units
+from blancops.data.manager import load_field2radec_as_numpy
 
-from blancops.data_processing.features import get_nautical_twilight
+from blancops.features.global_features import calc_twilight
 import logging
 logger = logging.getLogger(__name__)
 
@@ -206,7 +208,7 @@ def main():
     parser.add_argument('-f', '--specific_filters', type=str, nargs='*', default=None, help='Specific days to include in the test dataset')
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
     parser.add_argument('-z', '--start_at_zenith', action='store_true', help='Whether to start evaluation episodes at zenith or not. If False, starts at the first observation of the night.')
-    parser.add_argument('--field_choice_method', type=str, default='random', help="Options: random, interp")
+    parser.add_argument('--field_choice_method', type=str, default='interp', help="Options: random, interp")
     parser.add_argument('--fits_path', type=str, default='../data/decam-exposures-20251211.fits', help='Path to offline dataset file')
     parser.add_argument('--json_path', type=str, default='../data/decam-exposures-20251211.json', help='Path to offline dataset metadata json file')
     parser.add_argument('--make_gifs', action='store_true', help="Whether to create the set of gifs. Currently can only choose to make all or none.")
@@ -276,8 +278,10 @@ def main():
     survey_nights_total = df['night'].nunique()
         
     field2radec_filepath = global_cfg['paths']['TRAIN_DIR'] + global_cfg['files']['FIELD2RADEC']
-    with open(field2radec_filepath, 'r') as f:
-        FIELD2RADEC = json.load(f)
+    FIELD2RADEC = load_field2radec_as_numpy(field2radec_filepath)
+    
+    # with open(field2radec_filepath, 'r') as f:
+    #     FIELD2RADEC = json.load(f)
 
     nside = cfg['data']['nside']
     zscore_stats = torch.load(Path(args.trained_model_dir) / "z_score_stats.pt")
@@ -397,7 +401,7 @@ def main():
 
     # Roll out policy
     logger.info("Starting evaluation...")
-    agent.evaluate(env=env, cfg=cfg, num_episodes=args.num_episodes, field_choice_method=args.field_choice_method, eval_outdir=eval_outdir)
+    agent.evaluate(env=env, cfg=cfg, num_episodes=args.num_episodes, field_choice_method=args.field_choice_method, eval_outdir=eval_outdir, field2radec=FIELD2RADEC)
     logger.info("Evaluation complete.")
     with open(eval_outdir + 'eval_metrics.pkl', 'rb') as handle:
         eval_metrics = pickle.load(handle)
@@ -440,7 +444,7 @@ def main():
             expert_bin_states = test_dataset._prenorm_bin_states[night_compact_idxs]
     
         # Get plot time axis as hours since sunset
-        sunset = get_nautical_twilight(metrics['timestamp'][0], event_type='set')
+        sunset = calc_twilight(metrics['timestamp'][0], event_type='set')
         
         agent_zenith_mask = metrics['field_id'] != ZENITH_FIELD_ID
         expert_zenith_mask = night_df['field_id'].values != ZENITH_FIELD_ID
@@ -527,8 +531,8 @@ def main():
         agent_bin_radecs = np.array([bin2coord[bin_num] for bin_num in metrics['bin'].astype(int) if bin_num != ZENITH_BIN_NUM])
         orig_bin_radecs = np.array([bin2coord[bin_num] for bin_num in night_df['bin'].values if bin_num != ZENITH_BIN_NUM])
         
-        agent_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in metrics['field_id'].astype(int) if field_id != ZENITH_FIELD_ID])
-        orig_field_radecs = np.array([FIELD2RADEC[str(field_id)] for field_id in night_df['field_id'].values.astype(int) if field_id != ZENITH_FIELD_ID])
+        agent_field_radecs = np.array([FIELD2RADEC[field_id] for field_id in metrics['field_id'].astype(int) if field_id != ZENITH_FIELD_ID])
+        orig_field_radecs = np.array([FIELD2RADEC[field_id] for field_id in night_df['field_id'].values.astype(int) if field_id != ZENITH_FIELD_ID])
         
         if len(orig_field_radecs) != 1:
             # Plot bins

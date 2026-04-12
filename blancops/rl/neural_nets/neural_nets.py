@@ -24,12 +24,12 @@ class MLP(nn.Module):
     def forward(self, x_glob, x_bin=None, y_data=None):
         return self.net(x_glob)
 
-class ScoreMLP(nn.Module):
+class ContextualScoreMLP(nn.Module):
     """
     Outputs multiple scores for each input
     """
     def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, nlayers=3, use_contextual_gating=False, activation=None):
-        super(ScoreMLP, self).__init__()
+        super(ContextualScoreMLP, self).__init__()
         self.score_dim = score_dim
         self.activation = nn.ReLU if activation is None else activation
         self.use_contextual_gating = use_contextual_gating
@@ -68,7 +68,7 @@ class ScoreMLP(nn.Module):
         joint_action_scores = scores.view(batch_size, -1) # flattens last dim (filter) first --> [bin0filter0, bin0filter1, ... bin1filter0, bin1filter1, ... binNfilterM]
         return joint_action_scores 
     
-class MultiHeadMultiScoreNet(nn.Module):
+class MultiHeadMLP(nn.Module):
     def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None, use_contextual_gating=False):
         super().__init__()
         self.activation = nn.ReLU if activation is None else activation
@@ -136,8 +136,8 @@ class StateEncoder(nn.Module):
     
 from torch.distributions import Categorical
 
-class AutoregressiveDiscreteNet(nn.Module):
-    def __init__(self, glob_dim, bin_dim, action_dims, glob_hidden, bin_hidden, nbins, nfilters, bin_out, state_latent_dim, activation=None, hidden_dim=256, emb_dim=None, bin_first=False):
+class BinFilterAutoregressiveNet(nn.Module):
+    def __init__(self, glob_dim, bin_dim, action_dims, glob_hidden, bin_hidden, nbins, nfilters, bin_out, state_latent_dim=256, activation=None, emb_dim=None, bin_first=False):
         """
         Args:
             state_dim (int): Dimension of the input state.
@@ -173,7 +173,7 @@ class AutoregressiveDiscreteNet(nn.Module):
         self.action_heads = nn.ModuleList()
         for i in range(self.num_actions):
             # Input to the i-th head is the state features + embeddings of all prior actions
-            input_dim = hidden_dim + (i * emb_dim)
+            input_dim = state_latent_dim + (i * emb_dim)
             self.action_heads.append(nn.Linear(input_dim, action_dims[i]))
         
 

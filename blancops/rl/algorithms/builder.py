@@ -1,6 +1,6 @@
 import logging
 
-from blancops.data_processing.features import calculate_distance_matrix
+from blancops.features.features import calculate_distance_matrix
 logger = logging.getLogger(__name__)
 
 import torch
@@ -8,16 +8,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from blancops.algorithms.ddqn import DDQN
-from blancops.algorithms.bc import BehaviorCloning
+from blancops.rl.algorithms.ddqn import DDQN
+from blancops.rl.algorithms.bc import BehaviorCloning
 import copy
 import torch
 import torch.nn as nn
-from blancops.core_rl.neural_nets import ScoreMLP, AutoregressiveDiscreteNet
-from blancops.algorithms.policies import AutoregressiveActionPolicy, FilterFocalLoss, FlatQNetWrapper, AutoregressiveQNetWrapper, HybridMarginalPolicy, PseudoAutoregressivePolicy, PureJointPolicy, SlewDistanceFocalLoss
-from blancops.algorithms.policies import FocalLoss
-from blancops.algorithms.bc import BehaviorCloning
-from blancops.algorithms.ddqn import DDQN
+from blancops.rl.neural_nets.neural_nets import ContextualScoreMLP, BinFilterAutoregressiveNet
+from blancops.rl.policies.policies import AutoregressiveActionPolicy, FilterFocalLoss, FlatQNetWrapper, AutoregressiveQNetWrapper, HybridMarginalPolicy, PseudoAutoregressivePolicy, PureJointPolicy, SlewDistanceFocalLoss
+from blancops.rl.policies.policies import FocalLoss
+from blancops.rl.algorithms.bc import BehaviorCloning
+from blancops.rl.algorithms.ddqn import DDQN
 
 def get_activation(name):
     activations = {'relu': nn.ReLU, 'mish': nn.Mish, 'swish': nn.SiLU}
@@ -54,7 +54,7 @@ def build_neural_network(config):
             
     #     )
     if config['model']['action_architecture'] == 'simultaneous':
-        return ScoreMLP(
+        return ContextualScoreMLP(
             global_dim=config['data']['n_global_features'],
             bin_feat_dim=config['data']['n_bin_features'],
             score_dim=config['data']['num_filters'],
@@ -65,7 +65,7 @@ def build_neural_network(config):
         )
     elif config['model']['action_architecture'] == 'autoregressive':
         action_dims = [config['data']['num_filters'], config['data']['nbins']] if not config['model']['bin_first'] else [config['data']['nbins'], config['data']['num_filters']]
-        return AutoregressiveDiscreteNet(
+        return BinFilterAutoregressiveNet(
             glob_dim=config['data']['n_global_features'],
             bin_dim=config['data']['n_bin_features'],
             action_dims=action_dims,

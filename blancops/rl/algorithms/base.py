@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from blancops.core_rl.neural_nets import MLP, BinEmbeddingDQN, ScoreMLP
+from blancops.rl.neural_nets.neural_nets import MLP, BinEmbeddingDQN, ContextualScoreMLP
 from blancops.math import geometry
 
 import logging

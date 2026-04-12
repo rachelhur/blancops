@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 from datetime import timezone
 
-from blancops.data_processing.constants import *
+from blancops.data.constants import *
 from blancops.ephemerides.ephemerides import HealpixGrid
-from blancops.data_processing.features import get_nautical_twilight
+from blancops.features.global_features import calc_twilight
 from blancops.plotting.plotting import plot_schedule_from_file
 from collections import defaultdict
 from blancops.ephemerides.ephemerides import topographic_to_equatorial
@@ -164,7 +164,7 @@ def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir
         bin_nums = metrics['bin']
 
         night_ts = night_dt.timestamp()
-        sunset_time = math.ceil(get_nautical_twilight(night_ts, 'set', env.unwrapped.horizon))
+        sunset_time = math.ceil(calc_twilight(night_ts, 'set', env.unwrapped.horizon))
         timestamps = (timestamps - sunset_time) / 3600
     
         # Plot bins vs timestamp        

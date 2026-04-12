@@ -2,10 +2,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from blancops.core_rl.neural_nets import MLP, AutoregressiveDiscreteNet, MultiHeadMultiScoreNet, BinEmbeddingDQN, ScoreMLP
+from blancops.rl.neural_nets.neural_nets import MLP, BinFilterAutoregressiveNet, MultiHeadMLP, BinEmbeddingDQN, ContextualScoreMLP
 from blancops.math import geometry
-from blancops.algorithms.base import AlgorithmBase
-from blancops.data_processing.constants import ACTION_ARCHITECTURES
+from blancops.rl.algorithms.base import AlgorithmBase
+from blancops.data.constants import ACTION_ARCHITECTURES
 import logging
 logger = logging.getLogger(__name__)
 

@@ -9,14 +9,13 @@ import torch
 
 import time
 
-from blancops.core_rl.agent import Agent
-from blancops.algorithms.builder import build_algorithm
-from blancops.data_processing.constants import ACTION_ARCHITECTURES
+from blancops.rl.agent import Agent
+from blancops.rl.algorithms.builder import build_algorithm
 from blancops.math import geometry
 from blancops.math import units
 from blancops.utils.sys_utils import setup_logger, get_device, seed_everything
-from blancops.data_processing.data_processing import load_raw_data_to_dataframe 
-from blancops.data_processing.offline_dataset import OfflineDataset
+from blancops.data.preprocessing import load_raw_data_to_dataframe 
+from blancops.data.offline_dataset import OfflineDataset
 from blancops.utils.sys_utils import save_config, load_global_config, dict_to_nested, get_workspace_dir
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 
@@ -92,24 +91,30 @@ def get_args():
                         setattr(args, f"{section}.{k}", v)
     return args
 
-def main():
-    args = get_args()
-    cfg = dict_to_nested(vars(args))
-    gcfg = load_global_config()
+def get_results_outdirs(cfg):
+    # Define standard output directories based on the workspace
     workspace = get_workspace_dir()
     
-    # Define standard output directories based on the workspace
     if cfg['metadata']['parent_results_dir'] is None:
         results_outdir = workspace / "experiments" / f"nside{cfg['data']['nside']}" / cfg['metadata']['exp_name']
     else:
         results_outdir = workspace / cfg['metadata']['parent_results_dir'] / cfg['metadata']['exp_name']
     results_outdir.mkdir(parents=True, exist_ok=True)
     fig_outdir = results_outdir / 'figures'
+    return results_outdir, fig_outdir
+
+def main():
+    args = get_args()
+    cfg = dict_to_nested(vars(args))
+    gcfg = load_global_config()
+    exp_outdir, fig_outdir = get_results_outdirs(cfg)    
+    exp_outdir.mkdir(parents=True, exist_ok=True)
     fig_outdir.mkdir(parents=True, exist_ok=True)
-    cfg['metadata']['outdir'] = str(results_outdir)
+
+    cfg['metadata']['outdir'] = str(exp_outdir)
 
     # Set up logging
-    logger = setup_logger(save_dir=results_outdir, logging_filename='training.log')
+    logger = setup_logger(save_dir=exp_outdir, logging_filename='training.log')
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     logging.getLogger("pytorch").setLevel(logging.WARNING)
     logging.getLogger("numpy").setLevel(logging.WARNING)
@@ -117,19 +122,7 @@ def main():
     logging.getLogger("fontconfig").setLevel(logging.WARNING)
     logging.getLogger("cartopy").setLevel(logging.WARNING)
     
-    # Get training configs used more than once
-    batch_size = cfg['train']['batch_size']
-    max_epochs = cfg['train']['max_epochs']
-    lr_scheduler = cfg['train']['lr_scheduler']
-    lr_scheduler_epoch_start = cfg['train']['lr_scheduler_epoch_start']
-    lr_scheduler_num_epochs = cfg['train']['lr_scheduler_num_epochs']
-    for bin_feat in cfg['data']['bin_features']:
-        assert bin_feat in gcfg['features']['BIN_FEATURES'], f"{bin_feat} has not yet been implemented. Check global config file for valid inputs."
-    # assert errors dne before running rest of code
-    if lr_scheduler is not None:
-        assert max_epochs - lr_scheduler_epoch_start - lr_scheduler_num_epochs >= 0, "The number of epochs must be greater than lr_scheduler_epoch_start + lr_scheduler_num_epochs"
-
-    logger.info("Saving results in " + str(results_outdir))
+    logger.info("Saving results in " + str(exp_outdir))
 
     # Seed everything
     seed_everything(cfg['metadata']['seed'])
@@ -147,9 +140,24 @@ def main():
     logger.info("Finished constructing train_dataset.")
     logger.info(f"Train dataset has {train_dataset.n_nights} nights and {train_dataset.num_transitions} transitions")
 
+    #  --- BASIC PLOTTING --- #
     plot_bin_membership(train_dataset, fig_outdir)
     plot_global_feature_distributions(train_dataset, fig_outdir)
     plot_bin_feature_distributions(train_dataset, fig_outdir)
+    #  ---------------------- #
+
+    # Get training configs used more than once
+    batch_size = cfg['train']['batch_size']
+    max_epochs = cfg['train']['max_epochs']
+    lr_scheduler = cfg['train']['lr_scheduler']
+    lr_scheduler_epoch_start = cfg['train']['lr_scheduler_epoch_start']
+    lr_scheduler_num_epochs = cfg['train']['lr_scheduler_num_epochs']
+    for bin_feat in cfg['data']['bin_features']:
+        assert bin_feat in gcfg['features']['BIN_FEATURES'], f"{bin_feat} has not yet been implemented. Check global config file for valid inputs."
+    # assert errors dne before running rest of code
+    if lr_scheduler is not None:
+        assert max_epochs - lr_scheduler_epoch_start - lr_scheduler_num_epochs >= 0, "The number of epochs must be greater than lr_scheduler_epoch_start + lr_scheduler_num_epochs"
+
 
     trainloader, valloader = train_dataset.get_dataloader(batch_size, num_workers=cfg['train']['num_workers'], pin_memory=True if device.type == 'cuda' else False, \
                                                               random_seed=cfg['metadata']['seed'])
@@ -205,7 +213,7 @@ def main():
     algorithm = build_algorithm(cfg, device)
     agent = Agent(
         algorithm=algorithm,
-        train_outdir=str(results_outdir) + '/',
+        train_outdir=str(exp_outdir) + '/',
     )
 
     def check_cfg_dtypes(d):
@@ -224,7 +232,7 @@ def main():
                 logger.debug(f"{k} has value {v} with dtype {type(v)}")
 
     # check_cfg_dtypes(cfg)
-    save_config(config_dict=cfg, outdir=results_outdir)
+    save_config(config_dict=cfg, outdir=exp_outdir)
 
     logger.info("Starting training...")
 
@@ -242,7 +250,7 @@ def main():
     logger.info(f'Total train time = {end_time - start_time}s on {device}')
     logger.info("Training complete.")
     
-    logger.info(f'Results saved in {results_outdir}')
+    logger.info(f'Results saved in {exp_outdir}')
     
 
     # if args.save_to_model_dir:
@@ -255,7 +263,7 @@ def main():
     #     agent.save(filepath=model_dir / 'best_weights.pt')
 
     logger.info("Plotting metrics...")
-    plot_train_metrics(results_outdir, dataset=train_dataset)
+    plot_train_metrics(exp_outdir, dataset=train_dataset)
 
 if __name__ == "__main__":
     main()
