@@ -1,62 +1,54 @@
 import pandas as pd
 from blancops.features.global_features import calc_t_survey, calc_urgency
-from blancops.data_quality.sky_brightness import estimate_sky_brightness
-from blancops.utils.sys_utils import get_workspace_dir
 import numpy as np
-from datetime import timezone, timedelta
-import ephem
-from astropy.time import Time
-import torch
+from datetime import timedelta
+
 
 import fitsio
 from pathlib import Path
-from tqdm import tqdm
 
 from blancops.math import units
-from blancops.ephemerides import ephemerides
 
-import warnings
 import logging
 logger = logging.getLogger(__name__)
 
 from blancops.data.constants import FILTER2IDX
+from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, LOOKUPS
 
 import json
 import pickle
 
-def save_DES_bin_and_field_mappings(fits_path, outdir):
-    if type(outdir) is not Path:
-        outdir = Path(outdir).resolve()
+def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
+    if fits_path is None:
+        fits_path = TRAIN_DATA_PATH
     if type(fits_path) is not Path:
         fits_path = Path(fits_path).resolve()
-    workspace = get_workspace_dir()
-    with open(workspace / "configs" / "global_config.json", "r") as f:
-        gcfg = json.load(f)
-
+    if outdir is None:
+        outdir = TRAIN_DATA_DIR
+    if type(outdir) is not Path:
+        outdir = Path(outdir).resolve()
+    
     # Filter data
-    objects_to_remove = ["guide", "DES vvds","J0'","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "outlier"]
-    df = load_raw_data_to_dataframe(fits_path=fits_path)
-    df = drop_rows_in_DECam_data(
-        df,
-        objects_to_remove=objects_to_remove
-    )
-    assert len(df) > 0, "No observations found for the specified year/month/day/filter selections."
+    df = load_train_data_to_dataframe(fits_path=fits_path)
+    df = drop_rows_in_DECam_data(df)
+    if len(df) > 0:
+        logger.warning("No observations found for the specified year/month/day/filter selections.")
+        raise ValueError
     df = df.sort_values(by='timestamp').reset_index(drop=True)
 
     # Convert degrees to radians and define field_ids
     df['el'] = np.pi/2 - df['zd'].values
     df.loc[:, ['ra', 'dec', 'az', 'el', 'zd']] *= units.deg
     df['field_id'] = pd.factorize(df['object'])[0]
-    # df['field_id'] = df['object'].map({v: k for k, v in field2name.items()})
 
     # field2name: Save mapping from field id to `object` name
     field2name = {fid: g.loc[:, ['object']].values.tolist()[0][0] for fid, g in df.groupby('field_id')}
-    with open(outdir / gcfg['files']['FIELD2NAME'], "w") as f:
+    with open(outdir / LOOKUPS['FIELD2NAME'], "w") as f:
         json.dump(field2name, f)
 
     # field2radec: Save mapping from field id to its respective ra, dec, defined by mean of tilings
     field2radec = {int(fid): (g.loc[:, ['ra', 'dec']]).mean(axis=0).values.tolist() for fid, g in df.groupby('field_id')}
-    with open(outdir / gcfg['files']['FIELD2RADEC'], "w") as f:
+    with open(outdir / LOOKUPS['FIELD2RADEC'], "w") as f:
         json.dump(field2radec, f)
 
     unique_field_ids = np.unique(df['field_id'])
@@ -69,19 +61,19 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
     # 5. field2nvisits
     field2nvisits_default1 = {int(fid): 1 for fid in field2radec.keys()} # make sure fields which never have a good teff are at least present in the field2nvisits mapping
     field2nvisits_default1.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
-    with open(outdir / gcfg['files']['FIELD2MAXVISITS_TRAIN'], "w") as f:
+    with open(outdir / LOOKUPS['FIELD2MAXVISITS_TRAIN'], "w") as f:
         json.dump(field2nvisits_default1, f)
 
     field2nvisits_default0 = {int(fid): 0 for fid in field2radec.keys()}
     field2nvisits_default0.update({int(fid): int(c) for fid, c in zip(unique_field_ids, u_fid_counts)})
-    with open(outdir / gcfg['files']['FIELD2MAXVISITS_EVAL'], "w") as f:
+    with open(outdir / LOOKUPS['FIELD2MAXVISITS_EVAL'], "w") as f:
         json.dump(field2nvisits_default0, f)
 
     # new_df.to_json(outdir + 'field_lookup.json', indent=2, orient='index')
 
     # 7. field2filter: save viable filter visits per field -- #TODO will probably have to also do default0 and default1 like with field2nvisits
     field2filters = {fid: g['filter'].unique() for fid, g in df.groupby('field_id')}
-    with open(outdir / gcfg['files']['FIELD2FILTERS'], "wb") as f:
+    with open(outdir / LOOKUPS['FIELD2FILTERS'], "wb") as f:
         pickle.dump(field2filters, f)
 
     # 7. night2filterhistory: filter visits per field each night
@@ -108,13 +100,13 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
     
     fieldfilter2nvisits = filt_running_counts.copy()
     
-    with open(outdir / gcfg['files']['FIELDFILTER2MAXVISITS'], "wb") as f:
+    with open(outdir / LOOKUPS['FIELDFILTER2MAXVISITS'], "wb") as f:
         pickle.dump(fieldfilter2nvisits, f)
 
-    with open(outdir / gcfg['files']['NIGHT2FILTERVISITS'], "wb") as f:
+    with open(outdir / LOOKUPS['NIGHT2FILTERVISITS'], "wb") as f:
         pickle.dump(night2filterhistory, f)
             
-    with open(outdir / gcfg['files']['NIGHT2FIELDVISITS'], 'wb') as f:
+    with open(outdir / LOOKUPS['NIGHT2FIELDVISITS'], 'wb') as f:
         pickle.dump(night2fieldhistory, f)
 
     filter_target_counts = np.empty(shape=len(FILTER2IDX), dtype=int)
@@ -129,18 +121,9 @@ def save_DES_bin_and_field_mappings(fits_path, outdir):
         filter_target_counts[idx] = target_counts
         # df[col_name] = cum_sum_arr / cum_sum_arr.max()
         # df[f'urgency_{f}'] = np.clip((1 - df[col_name].values) / (1 - df['t_survey'].values  + 1e-9), a_min=0.01, a_max=100.0)
-    with open(outdir / gcfg['files']['FILTER_TARGET_COUNTS'], "wb") as f:
+    with open(outdir / LOOKUPS['FILTER_TARGET_COUNTS'], "wb") as f:
         pickle.dump(filter_target_counts, f)
     
-    # for night, grouped in df.groupby('night'):
-    #     night2survey_progress[night] = grouped[[f'survey_progress_{f}' for f in FILTER2IDX.keys()]].values   
-         
-    # raw_survey_progress_history = df[[f'survey_progress_{f}' for f in FILTER2IDX.keys()]].values
-    # with open(outdir / gcfg['files']['TARGET_COUNTS_PER_FILTER'], "wb") as f:
-    #     pickle.dump(filter_target_counts, f)
-    # with open(outdir / gcfg['files']['SURVEY_PROGRESS_HISTORY_PER_FILTER'], "wb") as f:
-    #     pickle.dump(filter_target_counts, f)
-        
     return df
 
 def add_cols_to_raw_dataframe(df):
@@ -252,7 +235,7 @@ def remove_dates(df, specific_years=None, specific_months=None, specific_days=No
     
     return df
 
-def load_raw_data_to_dataframe(fits_path, add_survey_progress_cols=True):
+def load_train_data_to_dataframe(fits_path, add_survey_progress_cols=True):
     d = fitsio.read(fits_path)
     df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
 

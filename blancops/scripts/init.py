@@ -3,8 +3,7 @@ import argparse
 from pathlib import Path
 # import importlib.resources as pkg_resources
 from importlib import resources
-from blancops.data.data_processing import save_DES_bin_and_field_mappings
-from blancops.utils.sys_utils import generate_src_global_config
+from blancops.data.preprocessing import save_DES_bin_and_field_mappings
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -51,11 +50,9 @@ def main():
 
     # 2. Copy the default global_config.json out of the package
     src_config_dict = {
-        "global_config.json": workspace / "blancops" / "configs" / "global_config.json",
         "template_train_config.json": workspace / "blancops" / "configs" / "template_train_config.json"
     }
     ext_config_dict = {
-        "global_config.json": workspace / "configs" / "global_config.json",
         "template_train_config.json": workspace / "configs" / "template_train_config.json"    
     }
     
@@ -65,7 +62,7 @@ def main():
         else:
             try:
                 # Copy global_config.json from within package to config_dest
-                generate_src_global_config()
+                save_DES_bin_and_field_mappings(fits_path=None, outdir=None)
                 config_text = resources.files('blancops.configs').joinpath(cfg_name).read_text()
                 cfg_dest.write_text(config_text)
                 ext_config_dict[cfg_name].write_text(config_text)

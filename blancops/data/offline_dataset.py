@@ -19,11 +19,15 @@ from blancops.features.bin_features import calculate_bin_features
 from blancops.features.features import *
 from blancops.features.global_features import *
 from blancops.data.constants import *
-from blancops.data.data_processing import *
-
+from blancops.configs.constants import (
+    PATHS, LOOKUPS, TRAIN_DATA_DIR,
+    CYCLICAL_FEATURE_NAMES, SIN_NORM_FEATURE_NAMES, LOG_NORM_FEATURE_NAMES,
+    FRACTIONAL_FEATURE_NAMES, Z_SCORE_NORM_FEATURE_NAMES, LOCAL_MEAN_Z_SCORE_FEATURE_NAMES
+)
+from blancops.configs.enums import Algorithm, Network, LossStrategy
+from blancops.configs.schema import ExperimentConfig
 # Get the logger associated with this module's name (e.g., 'my_module')
 import logging
-
 from blancops.features.global_features import calculate_global_features
 from blancops.math import geometry
 logger = logging.getLogger(__name__)
@@ -31,42 +35,20 @@ logger = logging.getLogger(__name__)
 def reward_func_v0():
     raise NotImplementedError
 
-    
 class OfflineDataset(torch.utils.data.Dataset):
-    def __init__(self, df=None, cfg=None, gcfg=None,
-                 specific_years=None, specific_months=None, specific_days=None, specific_filters=None,
-                 field2maxvisits_path=None, field2radec_path=None, field2name_path=None,
-                 night2filtervisithistory_path=None, fieldfilter2maxvisits=None,
+    def __init__(self, df=None, cfg=None,
+                 years=None, months=None, days=None, filters=None,
                  z_score_stats=None, rel_norm_stats=None
                  ): 
-        assert cfg is not None and gcfg is not None, "Must pass both cfg and gcfg"
 
         # ASSIGN STATIC ATTS
-        do_cyclical_norm = cfg['data'].get('do_cyclical_norm', True)
-        self.do_sin_norm = cfg['data'].get('do_sin_norm', True)
-        self.do_log_norm = cfg['data'].get('do_log_norm', True)
-        self.do_fractional_norm = cfg['data'].get('do_fractional_norm', True)
-        self.do_z_score_norm = cfg['data'].get('do_z_score_norm', True)
-        self.objects_to_remove = ["guide", "DES vvds","J0'","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "(outlier)"]
-        self.reward_choice = cfg['data']['reward_choice']
-        self._calculate_action_mask = cfg['model']['algorithm'] != 'BC' # should be False if using bc (to minimize data processing time), otherwise True
-        self._action_architecture = cfg['model']['action_architecture']
-
-        # GET NORMALIZATION FEATURE NAMES FROM CONFIG
-        self.cyclical_feature_names = gcfg['features']['CYCLICAL_FEATURE_NAMES'] if do_cyclical_norm else []
-        self.sin_norm_feature_names = gcfg['features']['SIN_NORM_FEATURE_NAMES'] if self.do_sin_norm else []
-        self.log_norm_feature_names = gcfg['features']['LOG_NORM_FEATURE_NAMES'] if self.do_log_norm else []
-        self.fractional_norm_feature_names = gcfg['features']['FRACTIONAL_FEATURE_NAMES'] if self.do_fractional_norm else []
-        self.z_score_feature_names = gcfg['features']['Z_SCORE_NORM_FEATURE_NAMES'] if self.do_z_score_norm else []
-        self.local_mean_z_score_feature_names = gcfg['features']['LOCAL_MEAN_Z_SCORE_FEATURE_NAMES']
+        self.reward_choice = cfg.reward.reward_choice
+        self._calculate_action_mask = cfg.model.algorithm != 'bc' # should be False if using bc (to minimize data processing time), otherwise True
 
         # Get other configurations
-        action_space = cfg['data']['action_space']
-        nside = cfg['data']['nside']
-        # logger.info(f'Including the following bin features: {cfg["data"].get("bin_features")}')
-        # logger.info(f'Including the following global features: {cfg["data"]["global_features"]}')
-        include_bin_features = len(cfg['data']['bin_features']) > 0
-        self.include_bin_features = include_bin_features
+        action_space = cfg.data.action_space
+        nside = cfg.data.nside
+        self.include_bin_features = len(cfg.data.bin_features) > 0
 
         # SETUP HPGRID AND ACTION SPACE PARAMS
         self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in action_space))
@@ -84,77 +66,38 @@ class OfflineDataset(torch.utils.data.Dataset):
             raise NotImplementedError
         
         # GET ORDERED, FEATURE NAMES (accounting for cyclic norms as well)
-        self.base_global_feature_names = cfg['data']['global_features'].copy()
-        self.base_bin_feature_names = cfg['data']['bin_features'].copy()
+        self.base_global_feature_names = cfg.data.global_features.copy()
+        self.base_bin_feature_names = cfg.data.bin_features.copy()
         self.global_feature_names, self.bin_feature_names = setup_feature_names(base_global_feature_names=self.base_global_feature_names,
                                                                                 base_bin_feature_names=self.base_bin_feature_names,
-                                                                                cyclical_feature_names=self.cyclical_feature_names,
-                                                                                do_cyclical_norm=do_cyclical_norm,
+                                                                                cyclical_feature_names=CYCLICAL_FEATURE_NAMES,
+                                                                                do_cyclical_norm=cfg.data.do_cyclical_norm,
                                                                                 )
         self.do_local_mean_z_score = any('rel_' in name for name in self.bin_feature_names)
-        
         logger.info(f"Final features names {self.global_feature_names, self.bin_feature_names}")
 
         # LOAD LOOKUP TABLES
-        if field2maxvisits_path is None:
-            field2maxvisits_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2MAXVISITS_TRAIN']
-        if field2radec_path is None:
-            field2radec_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2RADEC']
-        if field2name_path is None:
-            field2name_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELD2NAME']
-        if night2filtervisithistory_path is None:
-            night2filtervisithistory_path = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FILTERVISITS']
-        if fieldfilter2maxvisits is None:
-            fieldfilter2maxvisits = gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS']
-
-        with open(field2name_path, 'r') as f:
-            field2name = json.load(f)
-        with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
-            night2fieldvisits = pickle.load(f)
-        with open(field2radec_path, 'r') as f:
-            field2radec = json.load(f)
-            field2radec = {int(k): v for k, v in field2radec.items()}
-        with open(field2maxvisits_path, 'r') as f:
-            field2maxvisits = json.load(f)
-            field2maxvisits = {int(k): v for k, v in field2maxvisits.items()}
-        with open(night2filtervisithistory_path, 'rb') as f:
-            night2filtervisithistory = pickle.load(f)
-        with open(fieldfilter2maxvisits, 'rb') as f:
-            fieldfilter2maxvisits = pickle.load(f)
+        self.load_lookups()
 
         # PROCESS RAW DATA FRAME INTO GLOBAL FEATURES
-        self._df = drop_rows_in_DECam_data(
-            df,
-            specific_years=cfg['data']['specific_years'] if specific_years is None else specific_years, 
-            specific_months=cfg['data']['specific_months'] if specific_months is None else specific_months, 
-            specific_days=cfg['data']['specific_days'] if specific_days is None else specific_days,
-            specific_filters=cfg['data']['specific_filters'] if specific_filters is None else specific_filters,
-            objects_to_remove=self.objects_to_remove
-            )
-        self._df = calculate_global_features(
-            df=self._df, 
-            field2name=field2name, 
-            hpGrid=self.hpGrid, 
-            base_global_feature_names=self.base_global_feature_names,
-            cyclical_feature_names=self.cyclical_feature_names, 
-            do_cyclical_norm=do_cyclical_norm
-        )
+        self._construct_global_feature_df(df, cfg, years, months, days, filters)
+        
         # PROCESS RAW DATA FRAME INTO BIN FEATURES
-        if include_bin_features:
+        if self.include_bin_features:
             bin_states = calculate_bin_features(
                 pt_df=self._df,
                 hpGrid=self.hpGrid, 
                 base_bin_feature_names=self.base_bin_feature_names, 
                 bin_feature_names=self.bin_feature_names, 
-                cyclical_feature_names=self.cyclical_feature_names, 
-                do_cyclical_norm=do_cyclical_norm,
+                cyclical_feature_names=CYCLICAL_FEATURE_NAMES, 
+                do_cyclical_norm=cfg.data.do_cyclical_norm,
                 do_local_mean_z_score=self.do_local_mean_z_score,
-                field2radec=field2radec,
-                night2fieldvisits=night2fieldvisits,
-                fieldfilter2maxvisits=fieldfilter2maxvisits,
-                night2filtervisithistory=night2filtervisithistory,
-                field2maxvisits=field2maxvisits,
-                action_space=action_space
+                field2radec=self.lookup['field2radec'],
+                night2fieldvisits=self.lookup['night2fieldvisits'],
+                fieldfilter2maxvisits=self.lookup['fieldfilter2maxvisits'],
+                night2filtervisithistory=self.lookup['night2filtervisithistory'],
+                field2maxvisits=self.lookup['field2maxvisits'],
+                action_space=cfg.data.action_space
             )
         else:
             bin_states = None
@@ -168,7 +111,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             = self._construct_transitions(
             df=self._df, 
             bin_states=bin_states,  
-            include_bin_features=include_bin_features, 
+            include_bin_features=self.include_bin_features, 
             action_space=action_space,
             )
         self.slew_distances = self._construct_slew_distances(self._df)
@@ -179,8 +122,8 @@ class OfflineDataset(torch.utils.data.Dataset):
         self._prenorm_bin_states = bin_states
         
         # SPLIT INTO TRAIN AND VAL        
-        val_split = cfg['data'].get('val_split', 0.1)
-        random_seed = cfg['data'].get('random_seed', 42)
+        val_split = 1 - cfg.data.train_val_split
+        random_seed = cfg.train.seed
         self.train_transition_idxs, self.val_transition_idxs = self._determine_split(val_split, random_seed)
         
         # get train indices
@@ -194,36 +137,36 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.states, self.global_zscore_stats, self.global_rel_stats = normalize_noncyclic_features(
             state=states,
             state_feature_names=state_feature_names,
-            sin_norm_feature_names=self.sin_norm_feature_names,
-            log_norm_feature_names=self.log_norm_feature_names,
-            fractional_norm_feature_names=self.fractional_norm_feature_names,
-            local_mean_z_score_feature_names=self.local_mean_z_score_feature_names,
-            z_score_feature_names=self.z_score_feature_names,
-            do_sin_norm=self.do_sin_norm,
-            do_log_norm=self.do_log_norm,
-            do_fractional_norm=self.do_fractional_norm,
-            do_local_mean_z_score=self.do_local_mean_z_score,
-            do_z_score_norm=self.do_z_score_norm,
+            sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
+            log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
+            fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
+            local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
+            z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
+            do_sin_norm=cfg.data.do_sin_norm,
+            do_log_norm=cfg.data.do_log_norm,
+            do_fractional_norm=cfg.data.do_fractional_norm,
+            do_local_mean_z_score=cfg.data.do_local_mean_z_score,
+            do_z_score_norm=cfg.data.do_z_score_norm,
             fix_nans=True,
             z_stats=z_score_stats['global_features'] if z_score_stats is not None else None,
             rel_stats=rel_norm_stats['global_features'] if rel_norm_stats is not None else None,
             train_state_idxs=train_state_idxs
         )
-        if include_bin_features and bin_states is not None:
+        if self.include_bin_features and bin_states is not None:
             logger.debug('Normalizing bin features...')
             self.bin_states, self.bin_zscore_stats, self.bin_rel_stats = normalize_noncyclic_features(
                 state=torch.tensor(bin_states).detach().clone(),
                 state_feature_names=self.bin_feature_names,
-                sin_norm_feature_names=self.sin_norm_feature_names,
-                log_norm_feature_names=self.log_norm_feature_names,
-                fractional_norm_feature_names=self.fractional_norm_feature_names,
-                local_mean_z_score_feature_names=self.local_mean_z_score_feature_names,
-                z_score_feature_names=self.z_score_feature_names,
-                do_sin_norm=self.do_sin_norm,
-                do_log_norm=self.do_log_norm,
-                do_fractional_norm=self.do_fractional_norm,
-                do_local_mean_z_score=self.do_local_mean_z_score,
-                do_z_score_norm=self.do_z_score_norm,
+                sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
+                log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
+                fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
+                local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
+                z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
+                do_sin_norm=cfg.data.do_sin_norm,
+                do_log_norm=cfg.data.do_log_norm,
+                do_fractional_norm=cfg.data.do_fractional_norm,
+                do_local_mean_z_score=cfg.data.do_local_mean_z_score,
+                do_z_score_norm=cfg.data.do_z_score_norm,
                 z_stats=z_score_stats['bin_features'] if z_score_stats is not None else None,
                 rel_stats=rel_norm_stats['bin_features'] if rel_norm_stats is not None else None,
                 fix_nans=True,
@@ -231,11 +174,12 @@ class OfflineDataset(torch.utils.data.Dataset):
             )
         else:
             self.bin_states = None
-        if self.global_zscore_stats:
-            self._save_norm_stats(cfg['metadata']['outdir'])
+        if self.global_zscore_stats or self.global_rel_stats:
+            self._save_norm_stats(Path(cfg.experiments_directory) / cfg.experiment_name)
+        
         # If using flat MLP
-        if self._action_architecture is None:
-            if include_bin_features and self.bin_states is not None:
+        if cfg.model.network == 'mlp':
+            if self.include_bin_features and self.bin_states is not None:
                 # Convert to tensors before manipulating
                 if not isinstance(self.states, torch.Tensor):
                     self.states = torch.as_tensor(self.states, dtype=torch.float32)
@@ -251,22 +195,42 @@ class OfflineDataset(torch.utils.data.Dataset):
                 
             self.bin_state_dim = 0
             self.state_dim = self.states.shape[-1]
-            
-        elif self._action_architecture in ACTION_ARCHITECTURES:
-            self.state_dim = self.states.shape[-1]
-            self.bin_state_dim = self.bin_states.shape[-1] if include_bin_features else 0
         else:
-            raise NotImplementedError
+            self.state_dim = self.states.shape[-1]
+            self.bin_state_dim = self.bin_states.shape[-1] if self.include_bin_features else 0
         
         assert self.states.shape[0] == self.action_masks.shape[0], "States and masks must be 1:1"
         assert self.actions.shape[0] == self.rewards.shape[0] == self.dones.shape[0] == self.num_transitions, \
                 f"Transition arrays shape mismatch: num_transitions {self.num_transitions}, bin_actions {self.actions.shape[0]}, rewards {self.rewards.shape[0]}, dones {self.dones.shape[0]}"
-        if include_bin_features and self._action_architecture in ACTION_ARCHITECTURES:
+        if self.include_bin_features and cfg.model.network != 'mlp':
             assert self.states.shape[0] == self.bin_states.shape[0],\
             f"State arrays shape mismatch: global state shape {self.states.shape[0]}, bin state shape {self.bin_states.shape[0]}"
-            
-            # self._save_to_cache()
+        self.dataset_dims = {'state_dim': self.state_dim,
+                             'bin_state_dim': self.bin_state_dim,
+                             'num_bins': self.nbins,
+                             'num_filters': self.num_filters,
+                             'num_actions': self.num_actions}
+        self.dataset_feature_names = {'global_features': self.global_feature_names,
+                                      'bin_features': self.bin_feature_names
+        }
 
+    def _construct_global_feature_df(self, df, cfg, years, months, days, filters):
+        self._df = drop_rows_in_DECam_data(
+            df,
+            specific_years=cfg.data.years if years is None else years, 
+            specific_months=cfg.data.months if months is None else months, 
+            specific_days=cfg.data.days if days is None else days,
+            specific_filters=cfg.data.filters if filters is None else filters,
+            )
+        self._df = calculate_global_features(
+            df=self._df, 
+            field2name=self.lookup['field2name'], 
+            hpGrid=self.hpGrid, 
+            base_global_feature_names=self.base_global_feature_names,
+            cyclical_feature_names=CYCLICAL_FEATURE_NAMES, 
+            do_cyclical_norm=cfg.data.do_cyclical_norm
+        )
+        
     def _construct_transitions(self, df, bin_states, include_bin_features, action_space):
         """Constructs transition matrix from dataframe"""
         state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact = self._get_state_indices(df)
@@ -434,21 +398,40 @@ class OfflineDataset(torch.utils.data.Dataset):
         
     def _save_norm_stats(self, save_dir):
         """Persists the Z-score means and stds to disk for deployment/inference."""
-        z_path = Path(save_dir) / "z_score_stats.pt"
         z_stats_dict = {
             'global_features': self.global_zscore_stats,
             'bin_features': self.bin_zscore_stats
         }
-        torch.save(z_stats_dict, z_path)
-
-        rel_path = Path(save_dir) / "rel_norm_stats.pt"
         rel_stats_dict = {
             'global_features': self.global_rel_stats,
             'bin_features': self.bin_rel_stats
         }
-        torch.save(rel_stats_dict, rel_path)
-        logger.debug(f"z-score stats: {z_stats_dict}")
-        logger.debug(f"relative norm stats: {rel_stats_dict}")
+        
+        all_stats = {"z_score": z_stats_dict, "rel_norm": rel_stats_dict}
+        
+        save_path = Path(save_dir) / "normalization_stats.json"
+        with open(save_path, 'w') as f:
+            json.dump(all_stats, f, indent=4)
+        
+        logger.info(f"Normalization stats successfully saved to {save_path}")
+
+    # def _save_norm_stats(self, save_dir):
+    #     """Persists the Z-score means and stds to disk for deployment/inference."""
+    #     z_path = Path(save_dir) / "z_score_stats.pt"
+    #     z_stats_dict = {
+    #         'global_features': self.global_zscore_stats,
+    #         'bin_features': self.bin_zscore_stats
+    #     }
+    #     torch.save(z_stats_dict, z_path)
+
+    #     rel_path = Path(save_dir) / "rel_norm_stats.pt"
+    #     rel_stats_dict = {
+    #         'global_features': self.global_rel_stats,
+    #         'bin_features': self.bin_rel_stats
+    #     }
+    #     torch.save(rel_stats_dict, rel_path)
+    #     logger.debug(f"z-score stats: {z_stats_dict}")
+    #     logger.debug(f"relative norm stats: {rel_stats_dict}")
 
     def __len__(self):
         return self.num_transitions
@@ -478,7 +461,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 torch.as_tensor(0),
                 self.slew_distances[idx]
             )
-        elif self._action_architecture in ACTION_ARCHITECTURES:
+        else:
             transition = (
                 self.states[c_idx],
                 self.actions[idx],
@@ -550,30 +533,27 @@ class OfflineDataset(torch.utils.data.Dataset):
         )
         return train_loader, val_loader
 
-    def old_get_dataloader(self, batch_size, num_workers, pin_memory, random_seed, drop_last=True, val_split=.1, return_train_and_val=True):
-        generator = torch.Generator().manual_seed(random_seed)
-    
-        # Split dataset
-        train_size = int(len(self) * (1 - val_split))
-        val_size = len(self) - train_size
-        train_dataset, val_dataset = random_split(self, [train_size, val_size], generator=generator)
-        
-        # Train loader
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size,
-            sampler=RandomSampler(train_dataset, replacement=True, num_samples=10**10),
-            drop_last=drop_last,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            generator=generator
-        )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size,
-            shuffle=False,
-            drop_last=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-        )
-        return train_loader, val_loader
+    def load_lookups(self):
+        """Loads all JSON/Pickle lookup tables."""
+        field2maxvisits_path = TRAIN_DATA_DIR / LOOKUPS['FIELD2MAXVISITS_TRAIN']
+        field2radec_path = TRAIN_DATA_DIR / LOOKUPS['FIELD2RADEC']
+        field2name_path = TRAIN_DATA_DIR / LOOKUPS['FIELD2NAME']
+        night2filtervisithistory_path = TRAIN_DATA_DIR / LOOKUPS['NIGHT2FILTERVISITS']
+        fieldfilter2maxvisits = TRAIN_DATA_DIR / LOOKUPS['FIELDFILTER2MAXVISITS']
+
+        self.lookup = {}
+        with open(field2name_path, 'r') as f:
+            self.lookup['field2name'] = json.load(f)
+        with open(TRAIN_DATA_DIR / LOOKUPS['NIGHT2FIELDVISITS'], 'rb') as f:
+            self.lookup['night2fieldvisits'] = pickle.load(f)
+        with open(field2radec_path, 'r') as f:
+            field2radec = json.load(f)
+            self.lookup['field2radec'] = {int(k): v for k, v in field2radec.items()}
+        with open(field2maxvisits_path, 'r') as f:
+            field2maxvisits = json.load(f)
+            self.lookup['field2maxvisits'] = {int(k): v for k, v in field2maxvisits.items()}
+        with open(night2filtervisithistory_path, 'rb') as f:
+            self.lookup['night2filtervisithistory'] = pickle.load(f)
+        with open(fieldfilter2maxvisits, 'rb') as f:
+            self.lookup['fieldfilter2maxvisits'] = pickle.load(f)
+        return self

@@ -22,7 +22,7 @@ import logging
 logger = logging.getLogger(__name__)
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-class Agent:
+class Trainer:
     """
     A simple, generic agent/wrapper for fitting and evaluating RL algorithms. 
 
@@ -51,16 +51,6 @@ class Agent:
             if not os.path.exists(train_outdir):
                 os.makedirs(train_outdir)
             self.train_outdir = train_outdir
-    
-    def _setup_from_config(self, cfg):
-        # algorithm = setup_algorithm(save_dir=results_outdir, algorithm_name=cfg.get('experiment.algorithm.algorithm_name'), 
-        #                     obs_dim=train_dataset.obs_dim, num_actions=train_dataset.num_actions, loss_fxn=cfg.get('experiment.algorithm.loss_function'),
-        #                     hidden_dim=cfg.get('experiment.training.hidden_dim'), lr=cfg.get('experiment.training.lr'), lr_scheduler=lr_scheduler, 
-        #                     device=device, lr_scheduler_kwargs=lr_scheduler_kwargs, lr_scheduler_epoch_start=lr_scheduler_epoch_start, 
-        #                     lr_scheduler_num_epochs=lr_scheduler_num_epochs, gamma=cfg.get('experiment.algorithm.gamma'), 
-        #                     tau=cfg.get('experiment.algorithm.tau'), activation=cfg.get('experiment.model.activation_function'))
-        raise NotImplementedError
-
         
     def fit(self, num_epochs, batch_size, trainloader, valloader, patience=10, train_log_freq=10, hpGrid=None):
         if len(valloader) == 0:
@@ -188,7 +178,7 @@ class Agent:
         with open(val_metrics_filepath, 'wb') as handle:
             pickle.dump(val_metrics, handle)
     
-    def evaluate(self, env, cfg, num_episodes, field_choice_method='interp', eval_outdir=None, field2nvisits=None, field2radec=None, field_lookup=None, save_SISPI=False, SISPI_fn="survey_schedule"):
+    def evaluate(self, env, cfg, num_episodes, lookups, field_choice_method='interp', eval_outdir=None, save_SISPI=False, SISPI_fn="survey_schedule"):
         """Evaluates the agent in an environment for multiple episodes.
         """
         eval_outdir = eval_outdir if eval_outdir is not None else self.train_outdir + 'evaluation/'
@@ -200,11 +190,11 @@ class Agent:
         episode_rewards = []
         eval_metrics = {}
 
-        field2nvisits = env.unwrapped.field2maxvisits if field2nvisits is None else field2nvisits
-        field2radec = env.unwrapped.field2radec if field2radec is None else field2radec
-        
-        hpGrid = ephemerides.HealpixGrid(nside=cfg['data']['nside'], is_azel=('azel' in cfg['data']['action_space']))
-        action_space = cfg['data']['action_space']
+        field2nvisits = lookups.field2maxvisits
+        field2radec = lookups.field2radec
+
+        hpGrid = ephemerides.HealpixGrid(nside=cfg.data.nside, is_azel=('azel' in cfg.data.action_space))
+        action_space = cfg.data.action_space
 
         FIELDS_CHOSEN = []
 
@@ -327,7 +317,7 @@ class Agent:
         self.save_survey_schedule(
             eval_metrics=eval_metrics, 
             save_dir=eval_outdir, 
-            field_lookup=field_lookup,
+            field_lookup=lookups,
             save_SISPI=save_SISPI,
             SISPI_fn=SISPI_fn
             )   

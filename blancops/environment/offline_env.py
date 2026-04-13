@@ -7,6 +7,8 @@ import pandas as pd
 
 import torch
 
+from blancops.configs.constants import CYCLICAL_FEATURE_NAMES
+from blancops.data.lookup import load_lookup_tables
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data.offline_dataset import setup_feature_names
@@ -24,7 +26,7 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
     """
-    def __init__(self, gcfg, cfg, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None, fwhm_night_interps=None, z_score_stats=None, rel_norm_stats=None,
+    def __init__(self, cfg, lookups, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None, fwhm_night_interps=None, z_score_stats=None, rel_norm_stats=None,
                  t_survey_arr=None, survey_nights_total=None):
         """
         Args
@@ -33,71 +35,37 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
                      static environment parameters and observation data.
         """
         assert cfg is not None, "Either cfg or test_dataset must be passed"
-        
+        self.cfg = cfg
         # Assign static attributes
         self.exp_time = exp_time
-
-        self.do_cyclical_norm = cfg['data']['do_cyclical_norm']
-        self.do_sin_norm = cfg['data']['do_sin_norm']
-        self.do_log_norm = cfg['data']['do_log_norm']
-        self.do_fractional_norm = cfg['data']['do_fractional_norm']
-        self.do_z_score_norm = cfg['data']['do_z_score_norm']
-        self.do_local_mean_z_score = cfg['data']['do_local_mean_z_score']
-        self.cyclical_feature_names = gcfg['features']['CYCLICAL_FEATURE_NAMES'] if self.do_cyclical_norm else []
-        self.sin_norm_feature_names = gcfg['features']['SIN_NORM_FEATURE_NAMES'] if self.do_sin_norm else []
-        self.log_norm_feature_names = gcfg['features']['LOG_NORM_FEATURE_NAMES'] if self.do_log_norm else []
-        self.fractional_norm_feature_names = gcfg['features']['FRACTIONAL_FEATURE_NAMES'] if self.do_fractional_norm else []
-        self.z_score_feature_names = gcfg['features']['Z_SCORE_NORM_FEATURE_NAMES'] if self.do_z_score_norm else []
-        self.local_mean_z_score_feature_names = gcfg['features']['LOCAL_MEAN_Z_SCORE_FEATURE_NAMES'] if self.do_local_mean_z_score else []
-
-        self.include_bin_features = len(cfg['data']['bin_features']) > 0
-        self.action_space = cfg['data']['action_space']
-        nside = cfg['data']['nside']
+        self.lookups = lookups
+        self.include_bin_features = cfg.data.bin_state_dim > 0
+        self.action_space = cfg.data.action_space
+        nside = cfg.data.nside
         self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.action_space))
         self.nbins = len(self.hpGrid.idx_lookup)
-        self._action_architecture = cfg['model']['action_architecture']
-        self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
+        self._has_historical_features = any(sub in main_str for main_str in cfg.data.bin_features 
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
         self.do_filt = 'filter' in self.action_space
         self._fwhm_night_interps = fwhm_night_interps
-        self._rel_norm_stats = rel_norm_stats if rel_norm_stats is not None else torch.load(Path(cfg['metadata']['outdir']) / "rel_norm_stats.pt")
-        self._z_score_stats = z_score_stats if z_score_stats is not None else torch.load(Path(cfg['metadata']['outdir']) / "z_score_stats.pt")
+        self._rel_norm_stats = rel_norm_stats
+        self._z_score_stats = z_score_stats
         logger.debug(f"Loaded rel_norm_stats: {self._rel_norm_stats}")
         logger.debug(f"Loaded z_score_stats: {self._z_score_stats}")
         self._t_survey_arr = t_survey_arr
-        # Get field lookup tables
-        with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2RADEC'], 'r') as f:
-            self.field2radec = json.load(f)
-            self.field2radec = {int(k): v for k, v in self.field2radec.items()}
-        with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2MAXVISITS_EVAL'], 'r') as f:
-            self.field2maxvisits = json.load(f)
-            self.field2maxvisits = {int(fid): int(count) for fid, count in self.field2maxvisits.items()}
-        with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FIELDVISITS'], 'rb') as f:
-            self.night2fieldvisithistory = pickle.load(f)
-
-        self.nfields = len(self.field2maxvisits)
-        self._fids = np.array(list(self.field2maxvisits.keys())).astype(np.int32)
+        self.nfields = len(lookups.field2maxvisits)
+        self._fids = np.array(list(lookups.field2maxvisits.keys())).astype(np.int32)
         assert np.array_equal(self._fids, np.arange(len(self._fids))), "Field IDs must be perfectly sequential and start at 0."
-        self._ra_arr = np.array([self.field2radec[fid][0] for fid in self._fids])
-        self._dec_arr = np.array([self.field2radec[fid][1] for fid in self._fids])
-        self._max_s_visits_arr = np.array([self.field2maxvisits[fid] for fid in self._fids], dtype=np.int32)
+        self._ra_arr = np.array([lookups.field2radec[fid][0] for fid in self._fids])
+        self._dec_arr = np.array([lookups.field2radec[fid][1] for fid in self._fids])
+        self._max_s_visits_arr = np.array([lookups.field2maxvisits[fid] for fid in self._fids], dtype=np.int32)
 
         # Get filter lookup tables
         if self.do_filt:
-            with open(gcfg['paths']['TRAIN_DIR'] + '/' + gcfg['files']['FIELD2FILTERS'], 'rb') as f:
-                self.field2filters = pickle.load(f)
-                self.field2filters = {int(k): v for k, v in self.field2filters.items()}
-            with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['NIGHT2FILTERVISITS'], 'rb') as f:
-                self.night2filtvisithistory = pickle.load(f)
-            with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FIELDFILTER2MAXVISITS'], 'rb') as f:
-                self.fieldfilter2maxvisits = pickle.load(f)
-            with open(gcfg['paths']['TRAIN_DIR'] + gcfg['files']['FILTER_TARGET_COUNTS'], 'rb') as f:
-                self._filter_target_counts = pickle.load(f)
-
             self.nfilters = NUM_FILTERS
             self.idx2filter = {v: k for k, v in FILTER2IDX.items()}
             if self.do_filt: 
-                self._max_s_filter_visits_arr = np.array([self.fieldfilter2maxvisits[fid] for fid in self._fids], dtype=np.int32)
+                self._max_s_filter_visits_arr = np.array([lookups.fieldfilter2maxvisits[fid] for fid in self._fids], dtype=np.int32)
 
         # Bin-space dependent function to get fields in bin
         if not self.hpGrid.is_azel:
@@ -107,18 +75,17 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
             self._nfields_s = np.bincount(self._bins_membership_arr, weights=self._in_s_plan, minlength=self.nbins) # number of fields per bin
             self._active_bins_s = self._nfields_s > 0
 
-        self.base_global_feature_names = cfg['data']['global_features'].copy()
-        self.base_bin_feature_names = cfg['data']['bin_features'].copy()
+        self.base_global_feature_names = cfg.data.global_features
+        self.base_bin_feature_names = cfg.data.bin_features.copy()
         self.global_feature_names, self.bin_feature_names =\
-            setup_feature_names(base_global_feature_names=cfg['data']['global_features'],
-                                base_bin_feature_names=cfg['data']['bin_features'],
-                                cyclical_feature_names=self.cyclical_feature_names,
-                                do_cyclical_norm=self.do_cyclical_norm,
+            setup_feature_names(base_global_feature_names=cfg.data.global_features,
+                                base_bin_feature_names=cfg.data.bin_features,
+                                cyclical_feature_names=CYCLICAL_FEATURE_NAMES,
+                                do_cyclical_norm=cfg.data.do_cyclical_norm,
                                 )
-        
-        if self._action_architecture is None:
+        if cfg.model.network == 'mlp':
             self.state_feature_names = self.global_feature_names + self.bin_feature_names
-        elif self._action_architecture in ACTION_ARCHITECTURES:
+        else:
             self.state_feature_names = self.global_feature_names
         
         self.global_pd_nightgroup = global_pd_nightgroup
@@ -129,8 +96,8 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         if max_nights is None:
             self.max_nights = self.global_pd_nightgroup.ngroups
 
-        self.state_dim = cfg['data']['state_dim']
-        self.bin_state_dim = cfg['data']['bin_state_dim']
+        self.state_dim = cfg.data.state_dim
+        self.bin_state_dim = cfg.data.bin_state_dim
 
         self._setup_action_and_obs_spaces()
         super().__init__()
@@ -167,14 +134,14 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         self._global_state = [global_first_row[feat_name] for feat_name in self.global_feature_names]
 
         # Get field visit counts at start of night
-        self._s_visits_cur = self.night2fieldvisithistory[night][self._fids].copy().astype(np.int32)
+        self._s_visits_cur = self.lookups.night2fieldvisithistory[night][self._fids].copy().astype(np.int32)
         self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
         
         # Get field filter visit counts at start of night
         if self.do_filt:
-            self._s_filter_visits_cur = self.night2filtvisithistory[night].copy()
+            self._s_filter_visits_cur = self.lookups.night2filtervisithistory[night].copy()
             self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-            if 'raw_survey_progress_g' in global_first_row.keys():
+            if 'raw_survey_progress_g' in list(global_first_row.keys()):
                 self._global_urgency_arr = np.array([global_first_row[f'urgency_{filt_name}'] for filt_name in FILTER2IDX.keys()], dtype=np.float32)
                 self._raw_survey_progress_arr = np.array([global_first_row[f"raw_survey_progress_{filt}"] for filt in FILTER2IDX.keys()], dtype=np.float32)
             

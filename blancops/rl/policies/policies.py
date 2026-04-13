@@ -1,5 +1,6 @@
 """
-Wrapper class for policy networks
+Wrapper class for neural networks. Defines different loss strategies, ie, how states are sent to actions and how the loss is calculated. 
+Also defines the standard metrics to calculate for all policies, including astro-specific metrics that should be calculated in a consistent way across all policies.
 """
 
 import torch

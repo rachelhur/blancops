@@ -12,18 +12,22 @@ import json
 import pandas as pd
 import logging
 
+from blancops.configs.schema import load_and_validate
+from blancops.data.lookup import load_lookup_tables
+from blancops.features.normalizations import load_normalization_stats
 from blancops.plotting.plotting import plot_schedule_from_file
-from blancops.rl.agent import Agent
-from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config
-from blancops.rl.algorithms.builder import build_algorithm
+from blancops.rl.trainer import Trainer
+from blancops.rl.registry import build_algorithm
+from blancops.utils.sys_utils import seed_everything
 from blancops.utils.sys_utils import setup_logger, get_device
-from blancops.data.preprocessing import load_raw_data_to_dataframe
+from blancops.data.preprocessing import load_train_data_to_dataframe
 from blancops.data.manager import load_field2radec_as_numpy
 from blancops.environment.offline_env import OfflineBlancoTestingEnv
 from blancops.data.offline_dataset import OfflineDataset
 from blancops.data.constants import *
 from blancops.math import units
 from blancops.data.manager import load_field2radec_as_numpy
+from blancops.configs.constants import TRAIN_DATA_PATH, TRAIN_DATA_DIR, LOOKUPS
 
 from blancops.features.global_features import calc_twilight
 import logging
@@ -35,8 +39,7 @@ import re
 
 from pathlib import Path
 
-def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None, is_azel=False, whole=False, bin2pos_filepath=None, field2radec_filepath=None):
-    bin2pos_filepath=None
+def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None, is_azel=False, whole=False, field2radec_filepath=None):
     # Save timestamps, field_ids, and bin numbers
     action_space = 'azel' if is_azel else 'radec'
     assert os.path.exists(save_dir)
@@ -70,7 +73,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
         plot_type='fieldbin',
         nside=nside,
         fields_file=field2radec_filepath,
-        bins_file=bin2pos_filepath,
         whole=False,
         compare=False,
         expert=False,
@@ -83,7 +85,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
         plot_type='fieldbin',
         nside=nside,
         fields_file=field2radec_filepath,
-        bins_file=bin2pos_filepath,
         whole=False,
         compare=False,
         expert=True,
@@ -101,7 +102,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 plot_type='field',
                 nside=nside,
                 fields_file=field2radec_filepath,
-                bins_file=bin2pos_filepath,
                 whole=False,
                 compare=False,
                 expert=True,
@@ -114,7 +114,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 plot_type='field',
                 nside=nside,
                 fields_file=field2radec_filepath,
-                bins_file=bin2pos_filepath,
                 whole=False,
                 compare=False,
                 expert=False,
@@ -128,7 +127,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
             plot_type='bin',
             nside=nside,
             fields_file=field2radec_filepath,
-            bins_file=bin2pos_filepath,
             whole=False,
             compare=False,
             expert=False,
@@ -144,7 +142,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
             plot_type='bin',
             nside=nside,
             fields_file=field2radec_filepath,
-            bins_file=bin2pos_filepath,
             whole=False,
             compare=True,
             expert=True,
@@ -157,7 +154,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
             plot_type='bin',
             nside=nside,
             fields_file=field2radec_filepath,
-            bins_file=bin2pos_filepath,
             whole=False,
             compare=False,
             expert=True,
@@ -174,7 +170,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 plot_type='bin',
                 nside=nside,
                 fields_file=field2radec_filepath,
-                bins_file=bin2pos_filepath,
                 whole=True,
                 compare=True,
                 expert=True,
@@ -187,7 +182,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
                 plot_type='bin',
                 nside=nside,
                 fields_file=field2radec_filepath,
-                bins_file=bin2pos_filepath,
                 whole=True,
                 compare=True,
                 expert=True,
@@ -200,12 +194,12 @@ def main():
     parser.add_argument('--seed', type=int, default=10, help='Random seed for reproducibility')
     # Test data selection
     # parser.add_argument('--SISPI_file', type=str, help='Path to a SISPI-like json file with a list of fields.')
-    parser.add_argument('-t', '--trained_model_dir', type=str, required=True, help='Directory of the trained model to evaluate')
+    parser.add_argument('-t', '--trained_model_dir', type=Path, required=True, help='Directory of the trained model to evaluate')
     parser.add_argument('-n', '--evaluation_name', type=str, default=None, help='Directory name for this evaluation run')
-    parser.add_argument('-y', '--specific_years', type=int, nargs='*', default=None, help='Specific years to include in the test dataset')
-    parser.add_argument('-m','--specific_months', type=int, nargs='*', default=None, help='Specific months to include in the test dataset')
-    parser.add_argument('-d', '--specific_days', type=int, nargs='*', default=None, help='Specific days to include in the test dataset')
-    parser.add_argument('-f', '--specific_filters', type=str, nargs='*', default=None, help='Specific days to include in the test dataset')
+    parser.add_argument('-y', '--years', type=int, nargs='*', default=None, help='Specific years to include in the test dataset')
+    parser.add_argument('-m','--months', type=int, nargs='*', default=None, help='Specific months to include in the test dataset')
+    parser.add_argument('-d', '--days', type=int, nargs='*', default=None, help='Specific days to include in the test dataset')
+    parser.add_argument('-f', '--filters', type=str, nargs='*', default=None, help='Specific days to include in the test dataset')
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
     parser.add_argument('-z', '--start_at_zenith', action='store_true', help='Whether to start evaluation episodes at zenith or not. If False, starts at the first observation of the night.')
     parser.add_argument('--field_choice_method', type=str, default='interp', help="Options: random, interp")
@@ -218,11 +212,10 @@ def main():
 
     # Parse args
     args = parser.parse_args()
-
     # Get configs
-    global_cfg = load_global_config()
-    cfg = load_model_config(Path(args.trained_model_dir) / "config.json")
-    
+    args.trained_model_dir = args.trained_model_dir.resolve()
+    cfg = load_and_validate(args.trained_model_dir / "resolved_config.yaml")
+
     # Define eval outdir
     evaluation_name = args.evaluation_name
     if getattr(args, 'evaluation_name', None) is None:
@@ -231,15 +224,13 @@ def main():
     else:
         evaluation_name = args.evaluation_name
 
-    outdir_base = Path(cfg['metadata']['outdir'])
-    assert os.path.exists(outdir_base / 'best_weights.pt'), f"There is no best_weights.pt file in {outdir_base}"
-    eval_outdir = os.path.join(outdir_base, evaluation_name)
+    assert os.path.exists(args.trained_model_dir / 'best_weights.pt'), f"There is no best_weights.pt file in {args.trained_model_dir}"
+    eval_outdir = os.path.join(args.trained_model_dir, evaluation_name)
 
     if not os.path.exists(eval_outdir):
         os.makedirs(eval_outdir)
     else:
         while os.path.exists(eval_outdir):
-            # Match any string ending in digits. 
             # Group 1 captures the prefix (e.g., "eval_2026-03-06_")
             # Group 2 captures the number suffix (e.g., "0")
             match = re.search(r"^(.*?)(\d+)$", evaluation_name)
@@ -252,7 +243,7 @@ def main():
                 # Fallback just in case the user provided a custom name without a number
                 evaluation_name = f"{evaluation_name}_1"
                 
-            eval_outdir = os.path.join(outdir_base, evaluation_name)
+            eval_outdir = os.path.join(args.trained_model_dir, evaluation_name)
             
         os.makedirs(eval_outdir)
     eval_outdir += '/'
@@ -274,18 +265,11 @@ def main():
     device = get_device()
     logger.info("Loading raw data...")
     
-    df = load_raw_data_to_dataframe(Path(global_cfg['paths']['TRAIN_DIR']) / Path(global_cfg['files']['DECFITS']))
+    df = load_train_data_to_dataframe(TRAIN_DATA_PATH)
     survey_nights_total = df['night'].nunique()
-        
-    field2radec_filepath = global_cfg['paths']['TRAIN_DIR'] + global_cfg['files']['FIELD2RADEC']
-    FIELD2RADEC = load_field2radec_as_numpy(field2radec_filepath)
     
-    # with open(field2radec_filepath, 'r') as f:
-    #     FIELD2RADEC = json.load(f)
-
-    nside = cfg['data']['nside']
-    zscore_stats = torch.load(Path(args.trained_model_dir) / "z_score_stats.pt")
-    rel_norm_stats = torch.load(Path(args.trained_model_dir) / "rel_norm_stats.pt")
+    nside = cfg.data.nside
+    zscore_stats, rel_norm_stats = load_normalization_stats(args.trained_model_dir)
     logger.info(f"Loaded z-score stats: {zscore_stats}")
     logger.info(f"Loaded rel_norm_stats: {rel_norm_stats}")
     
@@ -293,16 +277,16 @@ def main():
     test_dataset = OfflineDataset(
         df=df,
         cfg=cfg,
-        gcfg=global_cfg,
-        specific_years=args.specific_years,
-        specific_months=args.specific_months,
-        specific_days=args.specific_days,
-        specific_filters=args.specific_filters,
+        years=args.years,
+        months=args.months,
+        days=args.days,
+        filters=args.filters,
         z_score_stats=zscore_stats,
         rel_norm_stats=rel_norm_stats
         ) 
     from scipy.interpolate import CubicSpline
 
+    # GET INTERPOLATED FEATURES
     fwhm_night_interps = []
     for n, ng in test_dataset._df.groupby('night'):
         _ts = ng['timestamp'].values
@@ -312,16 +296,14 @@ def main():
         # plt.plot(_ts, cs(_ts), color='red')
         fwhm_night_interps.append(cs)
 
-    
-    logger.info("Setting up agent...")
     algorithm = build_algorithm(cfg, device)
-    agent = Agent(
+    agent = Trainer(
         algorithm=algorithm,
         train_outdir=args.trained_model_dir,
     )
     agent.load(Path(args.trained_model_dir) / 'best_weights.pt')
 
-    # Initialize environment
+    # REGISTER ENV 
     logger.info("Setting up environment...")
     env_name = 'OfflineDECamTestingEnv-v0'
     gym.register(
@@ -329,23 +311,40 @@ def main():
         entry_point=OfflineBlancoTestingEnv,
     )
 
-    # Creat env
+    # GET INITIAL STATES PER NIGHT FROM DATASET
     global_pd_nightgroup = test_dataset._df.groupby('night')
     if not args.start_at_zenith:
         global_pd_nightgroup = global_pd_nightgroup.apply(lambda x: x.iloc[1:]).reset_index(drop=True).groupby('night')
     t_survey_arr = np.asarray([test_dataset._df['t_survey'].unique()[0]]).flatten()
-    if len(cfg['data']['bin_features']) > 0:
+    if cfg.data.bin_state_dim > 0:
         night_start_indices = (test_dataset._df.iloc[test_dataset.current_state_idxs].reset_index(drop=True)[test_dataset._df.iloc[test_dataset.current_state_idxs].reset_index(drop=True)['object'] == 'zenith']).index.values
         if not args.start_at_zenith:
             night_start_indices += 1
         night_start_bin_states = test_dataset._prenorm_bin_states[night_start_indices].detach().numpy()
     else:
         night_start_bin_states = None
-        
-    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=global_cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, \
-                   zenith_bin_states=night_start_bin_states, z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, t_survey_arr=t_survey_arr, survey_nights_total=survey_nights_total,
-                   fwhm_night_interps=fwhm_night_interps)
     
+    # INITIALIZE ENV
+    field2radec_filepath = TRAIN_DATA_DIR / LOOKUPS['FIELD2RADEC']
+    FIELD2RADEC = load_field2radec_as_numpy(field2radec_filepath)
+    lookups = load_lookup_tables()
+    
+    # env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, \
+    #                zenith_bin_states=night_start_bin_states, z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, t_survey_arr=t_survey_arr, survey_nights_total=survey_nights_total,
+    #                fwhm_night_interps=fwhm_night_interps)
+    logger.debug("Directly instantiating to find bug...")
+    env = OfflineBlancoTestingEnv(
+        cfg=cfg, 
+        lookups=lookups,
+        max_nights=None, 
+        global_pd_nightgroup=global_pd_nightgroup, 
+        zenith_bin_states=night_start_bin_states, 
+        z_score_stats=zscore_stats, 
+        rel_norm_stats=rel_norm_stats, 
+        t_survey_arr=t_survey_arr, 
+        survey_nights_total=survey_nights_total,
+        fwhm_night_interps=fwhm_night_interps
+    )
     # Plot predicted action for each state
     cur_idxs = test_dataset.current_state_idxs
     with torch.no_grad():
@@ -356,7 +355,7 @@ def main():
     exp_mask = test_dataset.actions != ZENITH_BIN_NUM
     ag_mask = agent_actions != ZENITH_BIN_NUM
     # Get expert and agent actions (bin and filter)
-    if 'filter' in cfg['data']['action_space']:
+    if 'filter' in cfg.data.action_space:
         expert_filters = exp_actions[exp_mask] % NUM_FILTERS
         agent_filters = agent_actions[ag_mask] % NUM_FILTERS
         expert_bins = exp_actions[exp_mask] // NUM_FILTERS
@@ -382,7 +381,7 @@ def main():
     axs[1].set_xlabel('Time since sunrise (normalized)')
     fig.savefig(eval_outdir + 'single_step_bins_vs_time.png')
 
-    if 'filter' in cfg['data']['action_space']:
+    if 'filter' in cfg.data.action_space:
         expert_filters_names = [IDX2FILTER[i] for i in expert_filters]
         agent_filters_names = [IDX2FILTER[i] for i in agent_filters]
         filter_residuals = agent_filters - expert_filters
@@ -401,7 +400,7 @@ def main():
 
     # Roll out policy
     logger.info("Starting evaluation...")
-    agent.evaluate(env=env, cfg=cfg, num_episodes=args.num_episodes, field_choice_method=args.field_choice_method, eval_outdir=eval_outdir, field2radec=FIELD2RADEC)
+    agent.evaluate(env=env, cfg=cfg, num_episodes=args.num_episodes, lookups=lookups, field_choice_method=args.field_choice_method, eval_outdir=eval_outdir)
     logger.info("Evaluation complete.")
     with open(eval_outdir + 'eval_metrics.pkl', 'rb') as handle:
         eval_metrics = pickle.load(handle)
@@ -561,10 +560,8 @@ def main():
 
         logger.info(f'Creating schedule gif for {night_idx}th night')
         
-        bin2pos_filepath = global_cfg['paths']['TRAIN_DIR'] + f"nside{nside}_bin2{cfg['data']['action_space']}.json"
-        bin2pos_filepath = bin2pos_filepath.replace("_filter", "")
         save_schedule(night_metrics=metrics, pd_group=night_df, save_dir=night_dir, nside=nside, make_gifs=args.make_gifs, 
-                      is_azel=test_dataset.hpGrid.is_azel, bin2pos_filepath=bin2pos_filepath, field2radec_filepath=field2radec_filepath)
+                      is_azel=test_dataset.hpGrid.is_azel, field2radec_filepath=field2radec_filepath)
         
 if __name__ == "__main__":
     main()

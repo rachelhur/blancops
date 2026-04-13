@@ -5,13 +5,14 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 
+from blancops.configs.constants import CYCLICAL_FEATURE_NAMES, FRACTIONAL_FEATURE_NAMES, LOCAL_MEAN_Z_SCORE_FEATURE_NAMES, LOG_NORM_FEATURE_NAMES, SIN_NORM_FEATURE_NAMES, Z_SCORE_NORM_FEATURE_NAMES
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 
 from blancops.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
 from blancops.features.bin_features import get_relative_feature, get_delta_az_el, calc_relative_survey_progress_features
-from blancops.features.transforms import normalize_noncyclic_features, normalize_timestamp
+from blancops.features.normalizations import normalize_noncyclic_features, normalize_timestamp
 from blancops.data.constants import *
 from blancops.math import geometry
 
@@ -253,16 +254,16 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         global_state_normed, _, _ = normalize_noncyclic_features(
                             state=np.array(global_state),
                             state_feature_names=self.state_feature_names,
-                            sin_norm_feature_names=self.sin_norm_feature_names,
-                            log_norm_feature_names=self.log_norm_feature_names,
-                            fractional_norm_feature_names=self.fractional_norm_feature_names,
-                            local_mean_z_score_feature_names=self.local_mean_z_score_feature_names,
-                            z_score_feature_names=self.z_score_feature_names,
-                            do_sin_norm=self.do_sin_norm,
-                            do_log_norm=self.do_log_norm,
-                            do_fractional_norm=self.do_fractional_norm,
-                            do_local_mean_z_score=self.do_local_mean_z_score,
-                            do_z_score_norm=self.do_z_score_norm,
+                            sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
+                            log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
+                            fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
+                            local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
+                            z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
+                            do_sin_norm=self.cfg.data.do_sin_norm,
+                            do_log_norm=self.cfg.data.do_log_norm,
+                            do_fractional_norm=self.cfg.data.do_fractional_norm,
+                            do_local_mean_z_score=self.cfg.data.do_local_mean_z_score,
+                            do_z_score_norm=self.cfg.data.do_z_score_norm,
                             z_stats=self._z_score_stats['global_features'],
                             rel_stats=self._rel_norm_stats['global_features'],
                             fix_nans=True,
@@ -273,16 +274,16 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             bin_state_normed, _, _ = normalize_noncyclic_features(
                 state=np.array(bin_state), # add axis for function
                 state_feature_names=self.bin_feature_names,
-                sin_norm_feature_names=self.sin_norm_feature_names,
-                log_norm_feature_names=self.log_norm_feature_names,
-                fractional_norm_feature_names=self.fractional_norm_feature_names,
-                local_mean_z_score_feature_names=self.local_mean_z_score_feature_names,
-                z_score_feature_names=self.z_score_feature_names,
-                do_sin_norm=self.do_sin_norm,
-                do_log_norm=self.do_log_norm,
-                do_fractional_norm=self.do_fractional_norm,
-                do_local_mean_z_score=self.do_local_mean_z_score,
-                do_z_score_norm=self.do_z_score_norm,
+                sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
+                log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
+                fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
+                local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
+                z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
+                do_sin_norm=self.cfg.data.do_sin_norm,
+                do_log_norm=self.cfg.data.do_log_norm,
+                do_fractional_norm=self.cfg.data.do_fractional_norm,
+                do_local_mean_z_score=self.cfg.data.do_local_mean_z_score,
+                do_z_score_norm=self.cfg.data.do_z_score_norm,
                 z_stats=self._z_score_stats['bin_features'],
                 rel_stats=self._rel_norm_stats['bin_features'],
                 fix_nans=True,
@@ -387,10 +388,10 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             sky_bright_filt = estimate_sky_brightness(time=timestamp, ra=ra, dec=dec, band=filt)
             new_features[f'sky_brightness_{filt}'] = sky_bright_filt
             if getattr(self, "_raw_survey_progress_arr", None) is not None:
-                new_features[f'survey_progress_{filt}'] = self._raw_survey_progress_arr[idx] / self._filter_target_counts[idx]
+                new_features[f'survey_progress_{filt}'] = self._raw_survey_progress_arr[idx] / self.lookups.target_filter_counts[idx]
                 new_features[f'urgency_{filt}'] = calc_urgency(
                     filter_counts_arr=self._raw_survey_progress_arr[idx], 
-                    filter_counts_max=self._filter_target_counts[idx], 
+                    filter_counts_max=self.lookups.target_filter_counts[idx], 
                     survey_night_indices=self._survey_night_idx,
                     survey_nights_max=self.survey_nights_total)
         if sunrise_ts == sunset_ts:
@@ -401,7 +402,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         
 
         for feat_name in self.base_global_feature_names:
-            if any(string in feat_name and 'frac' not in feat_name for string in self.cyclical_feature_names):
+            if any(string in feat_name and 'frac' not in feat_name for string in CYCLICAL_FEATURE_NAMES):
                 new_features[f'{feat_name}_cos'] = np.cos(new_features[feat_name])
                 new_features[f'{feat_name}_sin'] = np.sin(new_features[feat_name])
 
@@ -574,9 +575,9 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             features |= calc_relative_survey_progress_features(features, el_mask)
         
         # Normalize periodic features here and add as df cols
-        if self.do_cyclical_norm:
+        if self.cfg.data.do_cyclical_norm:
             for feat_name in self.base_bin_feature_names:
-                if any(string in feat_name and 'frac' not in feat_name for string in self.cyclical_feature_names):
+                if any(string in feat_name and 'frac' not in feat_name for string in CYCLICAL_FEATURE_NAMES):
                     if feat_name in features.keys():
                         features[f'{feat_name}_cos'] = np.cos(features[feat_name])
                         features[f'{feat_name}_sin'] = np.sin(features[feat_name])
@@ -702,14 +703,14 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                 mask_visibility = mask_fields_below_horizon # Fallback for offline
 
             if self.do_filt:
-                sel_valid_ff = self._s_filter_visits_cur < self.fieldfilter2maxvisits
+                sel_valid_ff = self._s_filter_visits_cur < self.lookups.fieldfilter2maxvisits
                 sel_valid_ff &= mask_visibility[:, np.newaxis] 
                 sel_valid_fields = sel_valid_ff.any(axis=1)
             else:
-                if isinstance(self.field2maxvisits, dict):
-                    mask_completed_fields = np.array([self._s_visits_cur[fid] < self.field2maxvisits[fid] for fid in self._fids], dtype=bool)
+                if isinstance(self.lookups.field2maxvisits, dict):
+                    mask_completed_fields = np.array([self._s_visits_cur[fid] < self.lookups.field2maxvisits[fid] for fid in self._fids], dtype=bool)
                 else:
-                    mask_completed_fields = self._s_visits_cur < self.field2maxvisits
+                    mask_completed_fields = self._s_visits_cur < self.lookups.field2maxvisits
                 sel_valid_fields = mask_completed_fields & mask_visibility
 
             if self.hpGrid.is_azel:

@@ -12,8 +12,8 @@ import os
 import pickle
 import json
 
-from blancops.rl.agent import Agent
-from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config, get_workspace_dir
+from blancops.rl.trainer import Trainer
+from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config
 from blancops.rl.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.constants import *
@@ -182,7 +182,7 @@ def main():
     
     logger.info("Setting up agent...")
     algorithm = build_algorithm(cfg, device)
-    agent = Agent(
+    agent = Trainer(
         algorithm=algorithm,
         train_outdir=cfg_dir,
     )
