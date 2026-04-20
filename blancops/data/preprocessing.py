@@ -1,5 +1,5 @@
 import pandas as pd
-from blancops.data.features.global_features import calc_t_survey, calc_urgency
+from blancops.data.features.glob_features import calc_t_survey, calc_urgency
 import numpy as np
 from datetime import timedelta
 
@@ -126,6 +126,11 @@ def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
     
     return df
 
+def fits_to_df(fits_path):
+    d = fitsio.read(fits_path)
+    df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
+    return df
+
 def load_train_data_to_dataframe(fits_path, add_survey_progress_cols=True):
     df = fits_to_df(fits_path)
 
@@ -136,6 +141,8 @@ def load_train_data_to_dataframe(fits_path, add_survey_progress_cols=True):
     df['night'] = df['night'] + (timedelta(days=1) - pd.Timedelta(seconds=1))
     df = df[df['datetime'].dt.year > 2010] # There are some 1970 rows even after selecting propid
 
+    df.loc[:, ['ra', 'dec', 'az', 'zd', 'ha']] *= units.deg
+
     timestamps = (df['datetime'] - pd.Timestamp("1970-01-01", tz='utc')) // pd.Timedelta("1s")
     df['timestamp'] = timestamps
     df = df.sort_values(by='timestamp').reset_index(drop=True)
@@ -143,14 +150,11 @@ def load_train_data_to_dataframe(fits_path, add_survey_progress_cols=True):
         df = add_cols_to_raw_dataframe(df)
     return df
 
-def fits_to_df(fits_path):
-    d = fitsio.read(fits_path)
-    df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
-    return df
-
 def add_cols_to_raw_dataframe(df):
     df['night_idx'] = pd.factorize(df['night'])[0]
     df['t_survey'] = calc_t_survey(df['night_idx'].values, df['night_idx'].max() + 1)
+    df['el'] = np.pi/2 - df['zd'].values
+    
     # df['t_survey'] = df['night_idx']/(df['night_idx'].max() + 1) # normalize to [0, 1]
     
     for f in FILTER2IDX.keys():

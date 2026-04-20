@@ -4,10 +4,12 @@ import torch
 from torch.utils.data import DataLoader, RandomSampler, Subset
 from collections import defaultdict
 import gc
+from pathlib import Path
 
 from tqdm import tqdm
 
-from blancops.data.preprocessing import drop_rows_in_DECam_data
+from blancops.data.features.glob_features import calc_inst_teff_rate
+from blancops.data.features.normalizations import normalize_noncyclic_features, setup_feature_names
 from blancops.ephemerides import ephemerides
 import pandas as pd
 import json
@@ -15,21 +17,18 @@ from torch.utils.data import random_split, RandomSampler
 import pickle
 import gc
 
-from blancops.data.features.bin_features import calculate_bin_features
-from blancops.data.features.features import *
-from blancops.data.features.global_features import *
+from blancops.data.features.bin_features import BinFeatureEngineer
+from blancops.data.preprocessing import drop_rows_in_DECam_data
+from blancops.data.features.glob_features import *
 from blancops.data.constants import *
 from blancops.configs.constants import (
     PATHS, LOOKUPS, TRAIN_DATA_DIR,
     CYCLICAL_FEATURE_NAMES, SIN_NORM_FEATURE_NAMES, LOG_NORM_FEATURE_NAMES,
     FRACTIONAL_FEATURE_NAMES, Z_SCORE_NORM_FEATURE_NAMES, LOCAL_MEAN_Z_SCORE_FEATURE_NAMES
 )
-from blancops.configs.enums import Algorithm, Network, LossStrategy
-from blancops.configs.schema import ExperimentConfig
-# Get the logger associated with this module's name (e.g., 'my_module')
-import logging
-from blancops.data.features.global_features import calculate_global_features
+from blancops.data.features.glob_features import GlobalFeatureEngineer
 from blancops.math import geometry
+import logging
 logger = logging.getLogger(__name__)
 
 def reward_func_v0():
@@ -79,26 +78,56 @@ class OfflineDataset(torch.utils.data.Dataset):
         # LOAD LOOKUP TABLES
         self.load_lookups()
 
+        # APPLY SELECTION CRITERIA TO DATA       
+        df = drop_rows_in_DECam_data(
+            df,
+            specific_years=cfg.data.years if years is None else years, 
+            specific_months=cfg.data.months if months is None else months, 
+            specific_days=cfg.data.days if days is None else days,
+            specific_filters=cfg.data.filters if filters is None else filters,
+            )
+    
+        glob_feature_eng = GlobalFeatureEngineer(
+                field2name=self.lookup['field2name'], 
+                hpGrid=self.hpGrid, 
+                base_features=self.base_global_feature_names,
+                cyclical_features=CYCLICAL_FEATURE_NAMES, 
+                do_cyclical_norm=cfg.data.do_cyclical_norm
+                )
+    
         # PROCESS RAW DATA FRAME INTO GLOBAL FEATURES
-        self._construct_global_feature_df(df, cfg, years, months, days, filters)
+        self._df = glob_feature_eng.transform(df)
         
         # PROCESS RAW DATA FRAME INTO BIN FEATURES
         if self.include_bin_features:
-            bin_states = calculate_bin_features(
-                pt_df=self._df,
+            # bin_states = calculate_bin_features(
+            #     pt_df=self._df,
+            #     hpGrid=self.hpGrid, 
+            #     base_bin_feature_names=self.base_bin_feature_names, 
+            #     bin_feature_names=self.bin_feature_names, 
+            #     cyclical_feature_names=CYCLICAL_FEATURE_NAMES, 
+            #     do_cyclical_norm=cfg.data.do_cyclical_norm,
+            #     do_local_mean_z_score=self.do_local_mean_z_score,
+            #     field2radec=self.lookup['field2radec'],
+            #     night2fieldvisits=self.lookup['night2fieldvisits'],
+            #     fieldfilter2maxvisits=self.lookup['fieldfilter2maxvisits'],
+            #     night2filtervisithistory=self.lookup['night2filtervisithistory'],
+            #     field2maxvisits=self.lookup['field2maxvisits'],
+            # )
+            bin_feature_eng = BinFeatureEngineer(
                 hpGrid=self.hpGrid, 
-                base_bin_feature_names=self.base_bin_feature_names, 
-                bin_feature_names=self.bin_feature_names, 
-                cyclical_feature_names=CYCLICAL_FEATURE_NAMES, 
-                do_cyclical_norm=cfg.data.do_cyclical_norm,
-                do_local_mean_z_score=self.do_local_mean_z_score,
+                base_features=self.base_bin_feature_names, 
+                cyclical_features=CYCLICAL_FEATURE_NAMES, 
+                action_space=cfg.data.action_space,
                 field2radec=self.lookup['field2radec'],
                 night2fieldvisits=self.lookup['night2fieldvisits'],
                 fieldfilter2maxvisits=self.lookup['fieldfilter2maxvisits'],
                 night2filtervisithistory=self.lookup['night2filtervisithistory'],
                 field2maxvisits=self.lookup['field2maxvisits'],
-                action_space=cfg.data.action_space
-            )
+                do_cyclical_norm=cfg.data.do_cyclical_norm,
+                do_local_mean_z_score=self.do_local_mean_z_score
+                )
+            bin_states = bin_feature_eng.transform(self._df, requested_features=self.bin_feature_names)
         else:
             bin_states = None
 
@@ -213,23 +242,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.dataset_feature_names = {'global_features': self.global_feature_names,
                                       'bin_features': self.bin_feature_names
         }
-
-    def _construct_global_feature_df(self, df, cfg, years, months, days, filters):
-        self._df = drop_rows_in_DECam_data(
-            df,
-            specific_years=cfg.data.years if years is None else years, 
-            specific_months=cfg.data.months if months is None else months, 
-            specific_days=cfg.data.days if days is None else days,
-            specific_filters=cfg.data.filters if filters is None else filters,
-            )
-        self._df = calculate_global_features(
-            df=self._df, 
-            field2name=self.lookup['field2name'], 
-            hpGrid=self.hpGrid, 
-            base_global_feature_names=self.base_global_feature_names,
-            cyclical_feature_names=CYCLICAL_FEATURE_NAMES, 
-            do_cyclical_norm=cfg.data.do_cyclical_norm
-        )
         
     def _construct_transitions(self, df, bin_states, include_bin_features, action_space):
         """Constructs transition matrix from dataframe"""
@@ -465,7 +477,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         if method=='by_night':
             num_val_nights = max(1, int(self.n_nights * val_split))
             val_nights = np.random.choice(self.unique_nights, size=num_val_nights, replace=False)
-            print(f"VAL NIGHTS ({len(val_nights)}): {val_nights}")
+            logger.info(f"VAL NIGHTS ({len(val_nights)}): {val_nights}")
             
             transition_nights = self._df.iloc[self.next_state_idxs - 1]['night']
             val_mask = np.isin(transition_nights, val_nights)

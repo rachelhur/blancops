@@ -1,221 +1,242 @@
-
+import numpy as np
 from einops import rearrange
+from tqdm import tqdm
+from blancops.ephemerides import ephemerides
+from blancops.data.constants import *
+
+import logging
+logger = logging.getLogger(__name__)
+
+class BinFeatureEngineer:
+    def __init__(
+        self, 
+        hpGrid, 
+        base_features, 
+        cyclical_features, 
+        action_space,
+        night2fieldvisits, 
+        night2filtervisithistory, 
+        fieldfilter2maxvisits, 
+        field2radec, 
+        field2maxvisits, 
+        do_cyclical_norm=True, 
+        do_local_mean_z_score=True
+    ):
+        self.hpGrid = hpGrid
+        self.base_features = base_features
+        self.cyclical_features = cyclical_features
+        self.action_space = action_space
+        self.do_cyclical_norm = do_cyclical_norm
+        self.do_local_mean_z_score = do_local_mean_z_score
+        
+        self.night2fieldvisits = night2fieldvisits
+        self.night2filtervisithistory = night2filtervisithistory
+        self.fieldfilter2maxvisits = fieldfilter2maxvisits
+        self.field2radec = field2radec
+        self.field2maxvisits = field2maxvisits
+
+    def transform(self, pt_df, requested_features) -> np.ndarray:
+        """Executes the bin feature pipeline and returns a 3D tensor."""
+        timestamps = pt_df['timestamp'].values
+        assert all(np.diff(timestamps) > 0), "Timestamps must be strictly increasing."
+        
+        n_timestamps = len(timestamps)
+        n_bins = len(self.hpGrid.idx_lookup)
+        
+        features = self._pre_allocate_memory(n_timestamps, n_bins)
+        
+        self._calculate_ephemeris_features(features, timestamps, pt_df)
+        
+        if self._needs_history_features():
+            history_feats = self._calculate_history(pt_df, requested_features)
+            features.update(history_feats)
+            
+        if self.do_cyclical_norm:
+            self._apply_cyclical_norms(features)
+            
+        if self.do_local_mean_z_score:
+            self._apply_relative_norms(features)
+            
+        return self._stack_and_rearrange(features, requested_features)
 
 
-def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names, 
-                                   bin_feature_names, cyclical_feature_names, do_cyclical_norm, do_local_mean_z_score, night2fieldvisits,
-                                   night2filtervisithistory, fieldfilter2maxvisits, field2radec, field2maxvisits, action_space,
-                                   pt_az=None, pt_el=None, pt_ra=None, pt_dec=None, pt_filter=None, timestamps=None):
-    """
-    Calculate bin features dynamically based on requested feature names.
-    """
-    timestamps = pt_df['timestamp'].values
-    assert all(np.diff(timestamps) > 0)
-    n_timestamps = len(timestamps)
-    n_bins = len(hpGrid.idx_lookup)
-    
-    # History based features
-    history_based_features = ["num_unvisited_fields", "num_incomplete_fields", "min_tiling"]
+    def _pre_allocate_memory(self, n_timestamps, n_bins) -> dict:
+        """Determines which features are requested and allocates np.empty arrays."""
+        features = {}
+        bf = self.base_features
+        shape = (n_timestamps, n_bins)
 
-    do_history_based_features = any(
-        hist_feat in base_feat
-        for base_feat in base_bin_feature_names 
-        for hist_feat in history_based_features
+        # Boolean Flags
+        do_pointing_distance = "pointing_distance" in bf
+        do_rel_ha = "rel_ha" in bf
+        do_ha = "ha" in bf or do_rel_ha
+        do_airmass = "airmass" in bf
+        do_ra, do_dec = "ra" in bf, "dec" in bf
+        do_az, do_el = "az" in bf, "el" in bf
+        do_rel_moon_distance = "rel_moon_distance" in bf
+        do_moon_dist = "moon_distance" in bf or do_rel_moon_distance
+        do_delta_az, do_delta_el = "delta_az" in bf, "delta_el" in bf
+        do_coords = do_ra or do_dec or do_az or do_el or self.do_local_mean_z_score or do_delta_az or do_delta_el or do_ha
+
+        # Memory Allocation
+        if do_ha: features['ha'] = np.empty(shape, dtype=np.float32)
+        if do_rel_ha: features['rel_ha'] = np.empty(shape, dtype=np.float32)
+        if do_airmass: features['airmass'] = np.empty(shape, dtype=np.float32)
+        if do_moon_dist: features['moon_distance'] = np.empty(shape, dtype=np.float32)
+        if do_rel_moon_distance: features['rel_moon_distance'] = np.empty(shape, dtype=np.float32)
+
+        if do_ra or do_dec or (do_coords and not self.hpGrid.is_azel):
+            features['ra'] = np.empty(shape, dtype=np.float32)
+            features['dec'] = np.empty(shape, dtype=np.float32)
+
+        if do_coords:
+            features['az'] = np.empty(shape, dtype=np.float32)
+            features['el'] = np.empty(shape, dtype=np.float32)
+
+        if do_delta_az: features['delta_az'] = np.empty(shape, dtype=np.float32)
+        if do_delta_el: features['delta_el'] = np.empty(shape, dtype=np.float32)
+
+        if do_pointing_distance or do_delta_az or do_delta_el:
+            features['pointing_distance'] = np.empty(shape, dtype=np.float32)
+
+        return features
+
+    def _calculate_ephemeris_features(self, features, timestamps, pt_df):
+        """The core timestamp loop for coordinates and ephemeris."""
+        lon, lat = self.hpGrid.lon, self.hpGrid.lat
+
+        # Set up target coordinates for distance calculations
+        if 'pointing_distance' in features or 'delta_az' in features:
+            if self.hpGrid.is_azel:
+                target_lons, target_lats = pt_df['az'].values, pt_df['el'].values
+            else:
+                target_lons, target_lats = pt_df['ra'].values, pt_df['dec'].values
+
+        # Broadcast static coordinates instantly across all timestamps
+        do_coords = any(k in features for k in ['az', 'el', 'ra', 'dec'])
+        if do_coords or self.do_local_mean_z_score:
+            if self.hpGrid.is_azel:
+                if 'az' in features: features['az'][:] = lon
+                if 'el' in features or self.do_local_mean_z_score: features['el'][:] = lat
+            else:
+                if 'ra' in features or self.do_local_mean_z_score: features['ra'][:] = lon
+                if 'dec' in features or self.do_local_mean_z_score: features['dec'][:] = lat
+
+        # Timestamp dependent ephemeris
+        for i, time in tqdm(enumerate(timestamps), total=len(timestamps), desc='Calculating bin ephemeris'):
+            if 'ha' in features: 
+                features['ha'][i] = self.hpGrid.get_hour_angle(time=time)
+            if 'airmass' in features: 
+                features['airmass'][i] = self.hpGrid.get_airmass(time)
+            if 'moon_distance' in features: 
+                features['moon_distance'][i] = self.hpGrid.get_source_angular_separations('moon', time=time)
+            if 'pointing_distance' in features: 
+                features['pointing_distance'][i] = self.hpGrid.get_angular_separations(lon=target_lons[i], lat=target_lats[i])
+            if 'delta_az' in features or 'delta_el' in features:
+                features['delta_az'][i], features['delta_el'][i] = get_delta_az_el(lon, lat, target_lons[i], target_lats[i])
+                
+            # Coordinate Transformations
+            if do_coords or self.do_local_mean_z_score:
+                if self.hpGrid.is_azel:
+                    if 'ra' in features or 'dec' in features: 
+                        features['ra'][i], features['dec'][i] = ephemerides.topographic_to_equatorial(az=lon, el=lat, time=time)
+                else:
+                    if 'az' in features or 'el' in features or self.do_local_mean_z_score:
+                        features['az'][i], features['el'][i] = ephemerides.equatorial_to_topographic(ra=lon, dec=lat, time=time)
+
+    def _needs_history_features(self) -> bool:
+        history_keywords = ["num_unvisited_fields", "num_incomplete_fields", "min_tiling"]
+        return any(
+            hk in base_feat 
+            for base_feat in self.base_features 
+            for hk in history_keywords
         )
 
-    # FEATURE FLAGS
-    do_pointing_distance = "pointing_distance" in base_bin_feature_names
-    do_rel_ha = "rel_ha" in base_bin_feature_names
-    do_ha = "ha" in base_bin_feature_names or do_rel_ha
-    do_airmass = "airmass" in base_bin_feature_names
-    do_ra = "ra" in base_bin_feature_names
-    do_dec = "dec" in base_bin_feature_names
-    do_az = "az" in base_bin_feature_names
-    do_el = "el" in base_bin_feature_names
-    do_rel_moon_distance = "rel_moon_distance" in base_bin_feature_names
-    do_moon_dist = "moon_distance" in base_bin_feature_names or do_rel_moon_distance
-    do_delta_az = "delta_az" in base_bin_feature_names
-    do_delta_el = "delta_el" in base_bin_feature_names
-    do_coords = do_ra or do_dec or do_az or do_el or do_local_mean_z_score or do_delta_az or do_delta_el or do_ha
-    
-    # PRE-ALLOCATE IN MEMORY
-    calculated_features = {}
-    if do_ha or do_rel_ha:
-        logger.debug(f"Calculating ha for {n_timestamps} timestamps and {n_bins} bins")
-        calculated_features['ha'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-    if do_rel_ha:
-        calculated_features['rel_ha'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-        do_ha = True
-    if do_airmass:
-        calculated_features['airmass'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-        logger.debug(f"Calculating airmass for {n_timestamps} timestamps and {n_bins} bins")
-    if do_moon_dist or do_rel_moon_distance:
-        calculated_features['moon_distance'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-        logger.debug(f"Calculating moon distance for {n_timestamps} timestamps and {n_bins} bins")
-    if do_ra or do_dec or (do_coords and not hpGrid.is_azel):
-        calculated_features['ra'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # az or ra
-        calculated_features['dec'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # az or ra
-        logger.debug(f"Calculating ra/dec for {n_timestamps} timestamps and {n_bins} bins")
-    if do_coords:
-        calculated_features['az'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # el or dec
-        calculated_features['el'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # el or dec
-        logger.debug(f"Calculating az/el for {n_timestamps} timestamps and {n_bins} bins")
-        if do_delta_az :
-            calculated_features['delta_az'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-        if do_delta_el:
-            calculated_features['delta_el'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-    if do_pointing_distance or do_delta_az or do_delta_el:
-        calculated_features['pointing_distance'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-        if hpGrid.is_azel:
-            target_lons = pt_df['az'].values
-            target_lats = pt_df['el'].values
-        else:
-            target_lons = pt_df['ra'].values
-            target_lats = pt_df['dec'].values
-    normed_features = {}
-    if do_cyclical_norm:
-        for feat_name in calculated_features.keys():
-            if any(feat_name == cyc_feat or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in cyclical_feature_names):
-                normed_features[f"{feat_name}_cos"] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-                normed_features[f"{feat_name}_sin"] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
-    calculated_features.update(normed_features)
-    
-    # Speedup for loop by creating references to arrays in calculated_features dict    
-    ha_arr = calculated_features.get('ha')
-    airmass_arr = calculated_features.get('airmass')
-    moon_dist_arr = calculated_features.get('moon_distance')
-    pointing_dist_arr = calculated_features.get('pointing_distance')
-    delta_az_arr = calculated_features.get('delta_az')
-    delta_el_arr = calculated_features.get('delta_el')
-    ra_arr = calculated_features.get('ra')
-    dec_arr = calculated_features.get('dec')
-    az_arr = calculated_features.get('az')
-    el_arr = calculated_features.get('el')
-
-    lon, lat = hpGrid.lon, hpGrid.lat
-
-    if do_coords or do_local_mean_z_score:
-        if hpGrid.is_azel:
-            if az_arr is not None: az_arr[:] = lon  # Broadcasts to all timestamps instantly
-            if el_arr is not None or do_local_mean_z_score: el_arr[:] = lat
-        else:
-            if ra_arr is not None or do_local_mean_z_score: ra_arr[:] = lon
-            if dec_arr is not None or do_local_mean_z_score: dec_arr[:] = lat
-        
-    # CALCULATE PER TIMESTAMP FEATURES
-    for i, time in tqdm(enumerate(timestamps), total=n_timestamps, desc='Calculating bin features for all healpix bins and timestamps'):
-        if do_ha:
-            ha_arr[i] = hpGrid.get_hour_angle(time=time)
-        if do_airmass:
-            airmass_arr[i] = hpGrid.get_airmass(time)
-        if do_moon_dist:
-            moon_dist_arr[i] = hpGrid.get_source_angular_separations('moon', time=time)
-        if do_pointing_distance:
-            pointing_dist_arr[i] = hpGrid.get_angular_separations(lon=target_lons[i], lat=target_lats[i])
-        if do_delta_az or do_delta_el:
-            delta_az_arr[i], delta_el_arr[i] = get_delta_az_el(lon, lat, target_lons[i], target_lats[i])
-            
-        # Coordinate transformations
-        if do_coords or do_local_mean_z_score: # need elevaation to do delta_norm
-            if hpGrid.is_azel:
-                # ONLY calculate ra/dec if they were actually requested
-                if do_ra or do_dec: 
-                    ra_arr[i], dec_arr[i] = ephemerides.topographic_to_equatorial(az=lon, el=lat, time=time)
-                    # if do_cyclical_norm:
-                    #     calculated_features['ra_cos'][i], calculated_features['ra_sin'][i] = np.cos(ra_i), np.sin(ra_i)
-            else:
-                if do_az or do_el or do_local_mean_z_score:
-                    az_arr[i], el_arr[i] = ephemerides.equatorial_to_topographic(ra=lon, dec=lat, time=time)
-        
-    # CYCLICAL NORMALIZATIONS
-    calc_feature_names = list(calculated_features.keys())
-    for cyclical_feat in cyclical_feature_names:
-        for feat_name in calc_feature_names:
-            is_exact_match = (feat_name == cyclical_feat)
-            is_suffix_match = feat_name.endswith(f"_{cyclical_feat}")
-            is_rel_feat = feat_name.startswith("rel_")
-            
-            if (is_exact_match or is_suffix_match) and not is_rel_feat:
-                calculated_features[f"{feat_name}_cos"] = np.cos(calculated_features[feat_name])
-                calculated_features[f"{feat_name}_sin"] = np.sin(calculated_features[feat_name])   
-                     
-    # CALCULATE SURVEY HISTORY FEATURES
-    if do_history_based_features:
+    def _calculate_history(self, pt_df, requested_features) -> dict:
+        """Acts as a bridge to the pure history function."""
         logger.info("Calculating history-based features...")
-        calculated_night_history_features = calculate_history_dependent_bin_features(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, 
-                                                                                     night2visithistory=night2fieldvisits, night2filtervisithistory=night2filtervisithistory,
-                                                                                     field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, action_space=action_space,
-                                                                                     requested_features=bin_feature_names)
-        calculated_features = calculated_features | calculated_night_history_features
+        return calculate_history_dependent_bin_features(
+            pt_df=pt_df, 
+            hpGrid=self.hpGrid, 
+            field2radec=self.field2radec, 
+            night2visithistory=self.night2fieldvisits, 
+            night2filtervisithistory=self.night2filtervisithistory,
+            field2maxvisits=self.field2maxvisits, 
+            fieldfilter2maxvisits=self.fieldfilter2maxvisits, 
+            action_space=self.action_space,
+            requested_features=requested_features
+        )
 
-    # rel NORM
-    if do_local_mean_z_score:
-        el_mask = calculated_features['el'] > 0
-        # MOON
-        if do_rel_moon_distance:
-            calculated_features['rel_moon_distance'] = get_relative_feature(calculated_features['moon_distance'], el_mask)
-        if do_rel_ha:
-            calculated_features['rel_ha'] = get_relative_feature(calculated_features['ha'], el_mask)
-        # SURVEY HISTORY
-        if do_history_based_features:
-            calculated_features |= calc_relative_survey_progress_features(calculated_features, el_mask)
-            # for filt in FILTER2IDX.keys():
-            #     for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
-            #         raw_key = f"{s_feat_name}_{filt}"
-            #         if raw_key in calculated_features:
-            #             calculated_features[f"rel_{raw_key}"] = get_relative_feature(calculated_features[raw_key], el_mask)
-                        
-    # Make sure there are no missing columns
-    # missing_keys = set(bin_feature_names) - set(calculated_features.keys())
-    # assert not missing_keys, f"Missing features: {missing_keys}"
+    def _apply_cyclical_norms(self, features):
+        """Applies cos/sin expansions to cyclical features."""
+        calc_feature_names = list(features.keys())
+        for cyclical_feat in self.cyclical_features:
+            for feat_name in calc_feature_names:
+                is_exact = (feat_name == cyclical_feat)
+                is_suffix = feat_name.endswith(f"_{cyclical_feat}")
+                is_rel = feat_name.startswith("rel_")
+                
+                if (is_exact or is_suffix) and not is_rel:
+                    features[f"{feat_name}_cos"] = np.cos(features[feat_name])
+                    features[f"{feat_name}_sin"] = np.sin(features[feat_name])
+
+    def _apply_relative_norms(self, features):
+        """Subtracts the local valid mean from targeted features."""
+        el_mask = features.get('el', np.ones_like(next(iter(features.values())))) > 0
         
-    final_arrays = []
-    for key in bin_feature_names:
-        if key in calculated_features:
-            # .pop() transfers the memory and deletes it from the dictionary instantly
-            final_arrays.append(calculated_features.pop(key))
-            assert not np.isnan(final_arrays[-1]).any(), f"NaN values found in calculated feature {key}: {final_arrays[-1]}"
-        else:
-            raise ValueError(f"Requested feature '{key}' was not calculated by the pipeline.")
-    assert len(final_arrays) == len(bin_feature_names), "Number of final arrays should match number of requested bin features"
+        if 'moon_distance' in features and 'rel_moon_distance' in self.base_features:
+            features['rel_moon_distance'] = self._get_relative_feature(features['moon_distance'], el_mask)
             
-    bin_states = np.array(final_arrays)
-    bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
-    
-    # bin_states = np.array([calculated_features.get(key, np.full(shape=(n_timestamps, n_bins), fill_value=np.nan)) for key in bin_feature_names])
-    # bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
-    # assert (bin_states != np.nan).all()
-    assert not np.isnan(bin_states).any()
-    
-    return bin_states
+        if 'ha' in features and 'rel_ha' in self.base_features:
+            features['rel_ha'] = self._get_relative_feature(features['ha'], el_mask)
+            
+        if self._needs_history_features():
+            for filt in FILTER2IDX.keys():
+                for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
+                    raw_key = f"{s_feat_name}_{filt}"
+                    if raw_key in features:
+                        valid_cols = np.where(el_mask, features[raw_key], np.nan)
+                        features[f"rel_{raw_key}"] = self._get_relative_feature(valid_cols, el_mask)
 
-    
-def calc_relative_survey_progress_features(feature_dict, el_mask):
-    for filt in FILTER2IDX.keys():
-        for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
-            raw_key = f"{s_feat_name}_{filt}"
-            if raw_key in feature_dict:
-                valid_cols = np.where(el_mask, feature_dict[raw_key], np.nan)
-                feature_dict[f"rel_{raw_key}"] = get_relative_feature(valid_cols, el_mask)
-    return feature_dict
+    def _stack_and_rearrange(self, features, requested_features) -> np.ndarray:
+        """Pops requested arrays, validates them, and reshapes via einops."""
+        final_arrays = []
+        for key in requested_features:
+            if key in features:
+                arr = features.pop(key)
+                assert not np.isnan(arr).any(), f"NaN values found in calculated feature {key}"
+                final_arrays.append(arr)
+            else:
+                raise ValueError(f"Requested feature '{key}' was not calculated by the pipeline.")
+                
+        assert len(final_arrays) == len(requested_features)
+        
+        bin_states = np.array(final_arrays)
+        return rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
 
-def get_relative_feature(feat_arr, el_mask):
-    valid_cols = np.where(el_mask, feat_arr, np.nan)
-    return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
+    @staticmethod
+    def _get_relative_feature(feat_arr, el_mask):
+        valid_cols = np.where(el_mask, feat_arr, np.nan)
+        return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
+    
+# def calc_relative_survey_progress_features(feature_dict, el_mask):
+#     for filt in FILTER2IDX.keys():
+#         for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
+#             raw_key = f"{s_feat_name}_{filt}"
+#             if raw_key in feature_dict:
+#                 valid_cols = np.where(el_mask, feature_dict[raw_key], np.nan)
+#                 feature_dict[f"rel_{raw_key}"] = get_relative_feature(valid_cols, el_mask)
+#     return feature_dict
+
+# def get_relative_feature(feat_arr, el_mask):
+#     valid_cols = np.where(el_mask, feat_arr, np.nan)
+#     return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
 
 def get_delta_az_el(bin_azs, bin_els, target_az, target_el):
     azs = (bin_azs - target_az + np.pi) % (2 * np.pi) - np.pi
     els = bin_els - target_el
     return azs, els
 
-
-import numpy as np
-from blancops.data.constants import *
-from tqdm import tqdm
-from blancops.ephemerides import ephemerides
-
-import logging
-logger = logging.getLogger(__name__)
 
 def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2visithistory, 
                                              night2filtervisithistory, field2maxvisits, 
@@ -523,3 +544,193 @@ def _validate_history_dependent_features(do_filt, idx2filter, calculated_feature
                     f"FATAL LOGIC LEAK: {grp['name']} has unvisited fields, but min_tiling > 0 at global_idx {ts}, bin {bn}.\n"
                     f"Unvisited: {unv[ts, bn]} | Min Tiling: {til[ts, bn]}"
                 )
+                
+                
+                
+
+# def calculate_bin_features(pt_df, hpGrid, base_bin_feature_names, 
+#                                    bin_feature_names, cyclical_feature_names, do_cyclical_norm, do_local_mean_z_score, night2fieldvisits,
+#                                    night2filtervisithistory, fieldfilter2maxvisits, field2radec, field2maxvisits, action_space,
+#                                    pt_az=None, pt_el=None, pt_ra=None, pt_dec=None, pt_filter=None, timestamps=None):
+#     """
+#     Calculate bin features dynamically based on requested feature names.
+#     """
+#     timestamps = pt_df['timestamp'].values
+#     assert all(np.diff(timestamps) > 0)
+#     n_timestamps = len(timestamps)
+#     n_bins = len(hpGrid.idx_lookup)
+    
+#     # History based features
+#     history_based_features = ["num_unvisited_fields", "num_incomplete_fields", "min_tiling"]
+
+#     do_history_based_features = any(
+#         hist_feat in base_feat
+#         for base_feat in base_bin_feature_names 
+#         for hist_feat in history_based_features
+#         )
+
+#     # FEATURE FLAGS
+#     do_pointing_distance = "pointing_distance" in base_bin_feature_names
+#     do_rel_ha = "rel_ha" in base_bin_feature_names
+#     do_ha = "ha" in base_bin_feature_names or do_rel_ha
+#     do_airmass = "airmass" in base_bin_feature_names
+#     do_ra = "ra" in base_bin_feature_names
+#     do_dec = "dec" in base_bin_feature_names
+#     do_az = "az" in base_bin_feature_names
+#     do_el = "el" in base_bin_feature_names
+#     do_rel_moon_distance = "rel_moon_distance" in base_bin_feature_names
+#     do_moon_dist = "moon_distance" in base_bin_feature_names or do_rel_moon_distance
+#     do_delta_az = "delta_az" in base_bin_feature_names
+#     do_delta_el = "delta_el" in base_bin_feature_names
+#     do_coords = do_ra or do_dec or do_az or do_el or do_local_mean_z_score or do_delta_az or do_delta_el or do_ha
+    
+#     # PRE-ALLOCATE IN MEMORY
+#     calculated_features = {}
+#     if do_ha or do_rel_ha:
+#         logger.debug(f"Calculating ha for {n_timestamps} timestamps and {n_bins} bins")
+#         calculated_features['ha'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#     if do_rel_ha:
+#         calculated_features['rel_ha'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#         do_ha = True
+#     if do_airmass:
+#         calculated_features['airmass'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#         logger.debug(f"Calculating airmass for {n_timestamps} timestamps and {n_bins} bins")
+#     if do_moon_dist or do_rel_moon_distance:
+#         calculated_features['moon_distance'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#         logger.debug(f"Calculating moon distance for {n_timestamps} timestamps and {n_bins} bins")
+#     if do_ra or do_dec or (do_coords and not hpGrid.is_azel):
+#         calculated_features['ra'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # az or ra
+#         calculated_features['dec'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # az or ra
+#         logger.debug(f"Calculating ra/dec for {n_timestamps} timestamps and {n_bins} bins")
+#     if do_coords:
+#         calculated_features['az'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # el or dec
+#         calculated_features['el'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)  # el or dec
+#         logger.debug(f"Calculating az/el for {n_timestamps} timestamps and {n_bins} bins")
+#         if do_delta_az :
+#             calculated_features['delta_az'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#         if do_delta_el:
+#             calculated_features['delta_el'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#     if do_pointing_distance or do_delta_az or do_delta_el:
+#         calculated_features['pointing_distance'] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#         if hpGrid.is_azel:
+#             target_lons = pt_df['az'].values
+#             target_lats = pt_df['el'].values
+#         else:
+#             target_lons = pt_df['ra'].values
+#             target_lats = pt_df['dec'].values
+#     normed_features = {}
+#     if do_cyclical_norm:
+#         for feat_name in calculated_features.keys():
+#             if any(feat_name == cyc_feat or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in cyclical_feature_names):
+#                 normed_features[f"{feat_name}_cos"] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#                 normed_features[f"{feat_name}_sin"] = np.empty(shape=(n_timestamps, n_bins), dtype=np.float32)
+#     calculated_features.update(normed_features)
+    
+#     # Speedup for loop by creating references to arrays in calculated_features dict    
+#     ha_arr = calculated_features.get('ha')
+#     airmass_arr = calculated_features.get('airmass')
+#     moon_dist_arr = calculated_features.get('moon_distance')
+#     pointing_dist_arr = calculated_features.get('pointing_distance')
+#     delta_az_arr = calculated_features.get('delta_az')
+#     delta_el_arr = calculated_features.get('delta_el')
+#     ra_arr = calculated_features.get('ra')
+#     dec_arr = calculated_features.get('dec')
+#     az_arr = calculated_features.get('az')
+#     el_arr = calculated_features.get('el')
+
+#     lon, lat = hpGrid.lon, hpGrid.lat
+
+#     if do_coords or do_local_mean_z_score:
+#         if hpGrid.is_azel:
+#             if az_arr is not None: az_arr[:] = lon  # Broadcasts to all timestamps instantly
+#             if el_arr is not None or do_local_mean_z_score: el_arr[:] = lat
+#         else:
+#             if ra_arr is not None or do_local_mean_z_score: ra_arr[:] = lon
+#             if dec_arr is not None or do_local_mean_z_score: dec_arr[:] = lat
+        
+#     # CALCULATE PER TIMESTAMP FEATURES
+#     for i, time in tqdm(enumerate(timestamps), total=n_timestamps, desc='Calculating bin features for all healpix bins and timestamps'):
+#         if do_ha:
+#             ha_arr[i] = hpGrid.get_hour_angle(time=time)
+#         if do_airmass:
+#             airmass_arr[i] = hpGrid.get_airmass(time)
+#         if do_moon_dist:
+#             moon_dist_arr[i] = hpGrid.get_source_angular_separations('moon', time=time)
+#         if do_pointing_distance:
+#             pointing_dist_arr[i] = hpGrid.get_angular_separations(lon=target_lons[i], lat=target_lats[i])
+#         if do_delta_az or do_delta_el:
+#             delta_az_arr[i], delta_el_arr[i] = get_delta_az_el(lon, lat, target_lons[i], target_lats[i])
+            
+#         # Coordinate transformations
+#         if do_coords or do_local_mean_z_score: # need elevaation to do delta_norm
+#             if hpGrid.is_azel:
+#                 # ONLY calculate ra/dec if they were actually requested
+#                 if do_ra or do_dec: 
+#                     ra_arr[i], dec_arr[i] = ephemerides.topographic_to_equatorial(az=lon, el=lat, time=time)
+#                     # if do_cyclical_norm:
+#                     #     calculated_features['ra_cos'][i], calculated_features['ra_sin'][i] = np.cos(ra_i), np.sin(ra_i)
+#             else:
+#                 if do_az or do_el or do_local_mean_z_score:
+#                     az_arr[i], el_arr[i] = ephemerides.equatorial_to_topographic(ra=lon, dec=lat, time=time)
+        
+#     # CYCLICAL NORMALIZATIONS
+#     calc_feature_names = list(calculated_features.keys())
+#     for cyclical_feat in cyclical_feature_names:
+#         for feat_name in calc_feature_names:
+#             is_exact_match = (feat_name == cyclical_feat)
+#             is_suffix_match = feat_name.endswith(f"_{cyclical_feat}")
+#             is_rel_feat = feat_name.startswith("rel_")
+            
+#             if (is_exact_match or is_suffix_match) and not is_rel_feat:
+#                 calculated_features[f"{feat_name}_cos"] = np.cos(calculated_features[feat_name])
+#                 calculated_features[f"{feat_name}_sin"] = np.sin(calculated_features[feat_name])   
+                     
+#     # CALCULATE SURVEY HISTORY FEATURES
+#     if do_history_based_features:
+#         logger.info("Calculating history-based features...")
+#         calculated_night_history_features = calculate_history_dependent_bin_features(pt_df=pt_df, hpGrid=hpGrid, field2radec=field2radec, 
+#                                                                                      night2visithistory=night2fieldvisits, night2filtervisithistory=night2filtervisithistory,
+#                                                                                      field2maxvisits=field2maxvisits, fieldfilter2maxvisits=fieldfilter2maxvisits, action_space=action_space,
+#                                                                                      requested_features=bin_feature_names)
+#         calculated_features = calculated_features | calculated_night_history_features
+
+#     # rel NORM
+#     if do_local_mean_z_score:
+#         el_mask = calculated_features['el'] > 0
+#         # MOON
+#         if do_rel_moon_distance:
+#             calculated_features['rel_moon_distance'] = get_relative_feature(calculated_features['moon_distance'], el_mask)
+#         if do_rel_ha:
+#             calculated_features['rel_ha'] = get_relative_feature(calculated_features['ha'], el_mask)
+#         # SURVEY HISTORY
+#         if do_history_based_features:
+#             calculated_features |= calc_relative_survey_progress_features(calculated_features, el_mask)
+#             # for filt in FILTER2IDX.keys():
+#             #     for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
+#             #         raw_key = f"{s_feat_name}_{filt}"
+#             #         if raw_key in calculated_features:
+#             #             calculated_features[f"rel_{raw_key}"] = get_relative_feature(calculated_features[raw_key], el_mask)
+                        
+#     # Make sure there are no missing columns
+#     # missing_keys = set(bin_feature_names) - set(calculated_features.keys())
+#     # assert not missing_keys, f"Missing features: {missing_keys}"
+        
+#     final_arrays = []
+#     for key in bin_feature_names:
+#         if key in calculated_features:
+#             # .pop() transfers the memory and deletes it from the dictionary instantly
+#             final_arrays.append(calculated_features.pop(key))
+#             assert not np.isnan(final_arrays[-1]).any(), f"NaN values found in calculated feature {key}: {final_arrays[-1]}"
+#         else:
+#             raise ValueError(f"Requested feature '{key}' was not calculated by the pipeline.")
+#     assert len(final_arrays) == len(bin_feature_names), "Number of final arrays should match number of requested bin features"
+            
+#     bin_states = np.array(final_arrays)
+#     bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
+    
+#     # bin_states = np.array([calculated_features.get(key, np.full(shape=(n_timestamps, n_bins), fill_value=np.nan)) for key in bin_feature_names])
+#     # bin_states = rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
+#     # assert (bin_states != np.nan).all()
+#     assert not np.isnan(bin_states).any()
+    
+#     return bin_states
