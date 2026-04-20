@@ -1,7 +1,8 @@
 import pandas as pd
 import torch
 from tqdm import tqdm
-from blancops.data.constants import ZENITH_BIN_NUM
+from blancops.data.constants import ZENITH_BIN_NUM, np
+from blancops.data.features.normalizations import np
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
@@ -237,3 +238,20 @@ def normalize_times(time_series):
     time_series = (time_series - sunset_ts) / total_time
     assert all(time_series.values > 0) and all(time_series.values < 1), "Time fractions should be between 0 and 1"
     return time_series
+
+
+def calc_inst_teff_rate(df, next_state_idxs):
+    next_state_df = df.iloc[next_state_idxs]
+    current_state_df = df.iloc[next_state_idxs-1]
+    t_diff = next_state_df['timestamp'].values - current_state_df['timestamp'].values
+    teff_no_zen = next_state_df[['teff']].values[:, 0]
+
+    teff_inst_rate = teff_no_zen / t_diff
+    min_rate = np.min(teff_inst_rate)
+    max_rate = np.max(teff_inst_rate)
+    rewards = (teff_inst_rate - min_rate)/max_rate
+    return rewards
+
+
+def time_until_set():
+    pass

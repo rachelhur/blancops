@@ -2,12 +2,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from blancops.data.features.normalizations import np
+from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.rl.neural_nets.neural_nets import MLP, MultiHeadMLP, BinEmbeddingDQN, ContextualScoreMLP
 from blancops.math import geometry
 from blancops.rl.algorithms.base import AlgorithmBase
 import logging
 logger = logging.getLogger(__name__)
-from blancops.data.constants import NUM_FILTERS
+from blancops.data.constants import NUM_FILTERS, np
 
 from pathlib import Path
 class DDQN(AlgorithmBase):
@@ -325,4 +327,14 @@ class DDQN(AlgorithmBase):
             action = torch.argmax(q_values).item()
             
         return int(action)
+
+
+def calculate_distance_matrix(nside, is_azel):
+    hpGrid = HealpixGrid(nside, is_azel)
+    lons = hpGrid.lon
+    lats = hpGrid.lat
+    distance_matrix = np.zeros( (len(hpGrid.lon), len(hpGrid.lon)) )
+    for i, (lon, lat) in enumerate(zip(lons, lats)):
+        distance_matrix[i] = hpGrid.get_angular_separations(lon, lat)
+    return distance_matrix
     
