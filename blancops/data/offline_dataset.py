@@ -15,9 +15,9 @@ from torch.utils.data import random_split, RandomSampler
 import pickle
 import gc
 
-from blancops.features.bin_features import calculate_bin_features
-from blancops.features.features import *
-from blancops.features.global_features import *
+from blancops.data.features.bin_features import calculate_bin_features
+from blancops.data.features.features import *
+from blancops.data.features.global_features import *
 from blancops.data.constants import *
 from blancops.configs.constants import (
     PATHS, LOOKUPS, TRAIN_DATA_DIR,
@@ -28,7 +28,7 @@ from blancops.configs.enums import Algorithm, Network, LossStrategy
 from blancops.configs.schema import ExperimentConfig
 # Get the logger associated with this module's name (e.g., 'my_module')
 import logging
-from blancops.features.global_features import calculate_global_features
+from blancops.data.features.global_features import calculate_global_features
 from blancops.math import geometry
 logger = logging.getLogger(__name__)
 
@@ -415,24 +415,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         
         logger.info(f"Normalization stats successfully saved to {save_path}")
 
-    # def _save_norm_stats(self, save_dir):
-    #     """Persists the Z-score means and stds to disk for deployment/inference."""
-    #     z_path = Path(save_dir) / "z_score_stats.pt"
-    #     z_stats_dict = {
-    #         'global_features': self.global_zscore_stats,
-    #         'bin_features': self.bin_zscore_stats
-    #     }
-    #     torch.save(z_stats_dict, z_path)
-
-    #     rel_path = Path(save_dir) / "rel_norm_stats.pt"
-    #     rel_stats_dict = {
-    #         'global_features': self.global_rel_stats,
-    #         'bin_features': self.bin_rel_stats
-    #     }
-    #     torch.save(rel_stats_dict, rel_path)
-    #     logger.debug(f"z-score stats: {z_stats_dict}")
-    #     logger.debug(f"relative norm stats: {rel_stats_dict}")
-
     def __len__(self):
         return self.num_transitions
 
@@ -483,12 +465,18 @@ class OfflineDataset(torch.utils.data.Dataset):
         if method=='by_night':
             num_val_nights = max(1, int(self.n_nights * val_split))
             val_nights = np.random.choice(self.unique_nights, size=num_val_nights, replace=False)
+            print(f"VAL NIGHTS ({len(val_nights)}): {val_nights}")
             
             transition_nights = self._df.iloc[self.next_state_idxs - 1]['night']
             val_mask = np.isin(transition_nights, val_nights)
             
             train_indices = np.where(~val_mask)[0]
             val_indices = np.where(val_mask)[0]
+
+            # save train and val nights
+            train_nights = set(self.unique_nights) - set(val_nights)
+            self.val_nights = val_nights.tolist()
+            self.train_nights = train_nights
         elif method=='by_transition':
             # Total number of valid transitions in the dataset
             num_transitions = len(self.next_state_idxs) 

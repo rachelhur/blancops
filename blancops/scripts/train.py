@@ -39,19 +39,25 @@ def get_results_outdirs(cfg):
     return results_outdir, fig_outdir
 
 def main():
+
+    # --- SETUP EXPERIMENT FROM ARGS AND CONFIG --- #
     args = get_args()
     cfg = load_and_validate(args.cfg)
     exp_outdir, fig_outdir = get_results_outdirs(cfg)    
     exp_outdir.mkdir(parents=True, exist_ok=True)
     fig_outdir.mkdir(parents=True, exist_ok=True)
+    # ---------------------- #
 
-    # Set up logging
+    # --- SET UP LOGGER --- #
     logger = setup_logger(save_dir=exp_outdir, logging_filename='training.log')
+    # ---------------------- #
 
-    # Seed everything
+    # --- SEED AND GET DEVICE --- #
     seed_everything(cfg.train.seed)
     device = get_device()
+    # ---------------------- #
 
+    # --- LOAD DATA AND CONSTRUCT DATASET --- #
     df = load_train_data_to_dataframe(TRAIN_DATA_PATH)
     train_dataset = OfflineDataset(
         df=df,
@@ -59,6 +65,7 @@ def main():
         )
     logger.info("Finished constructing train_dataset.")
     logger.info(f"Train dataset has {train_dataset.n_nights} nights and {train_dataset.num_transitions} transitions")
+    # ---------------------- #
 
     #  --- BASIC PLOTTING --- #
     plot_bin_membership(train_dataset, fig_outdir)
@@ -66,18 +73,21 @@ def main():
     plot_bin_feature_distributions(train_dataset, fig_outdir)
     #  ---------------------- #
 
-    # DATALOADERS
+    # --- DATALOADERS --- #
     trainloader, valloader = train_dataset.get_dataloader(cfg.train.batch_size, num_workers=cfg.train.num_workers, pin_memory=True if device.type == 'cuda' else False, \
                                                               random_seed=cfg.train.seed)
+    #  ---------------------- #
     
-    # SAVE VAL DATA FOR VALIDATION
+    # --- SAVE VAL DATA FOR VALIDATION --- #
     cache_path = exp_outdir / "val_cache.pt"
     val_data_list = []
     for batch in valloader:
         val_data_list.append(batch)
         torch.save(val_data_list, cache_path)
         logger.info(f"Validation cache saved to {cache_path}")
+    # ---------------------- #
     
+    # --- GET COSINE ANNEALING SCHEDULER Kwargs --- #
     def get_cosine_annealing_scheduler_kwargs(cfg, train_dataset):
         steps_per_epoch = np.max([int(len(train_dataset) // cfg.train.batch_size), 1])
         num_lr_scheduler_steps = np.int32(np.max([1, int(cfg.train.lr_sched_epoch_duration * steps_per_epoch)]))
@@ -85,11 +95,41 @@ def main():
         return lr_scheduler_kwargs
     
     lr_scheduler_kwargs = get_cosine_annealing_scheduler_kwargs(cfg, trainloader.dataset)
+    # ---------------------- #
     cfg = resolve_and_save(cfg=cfg, dataset_dims=train_dataset.dataset_dims, dataset_feature_names=train_dataset.dataset_feature_names, 
-                           lr_scheduler_kwargs=lr_scheduler_kwargs, outdir=exp_outdir)
+                           lr_scheduler_kwargs=lr_scheduler_kwargs, val_nights=train_dataset.val_nights, outdir=exp_outdir)
     algorithm = build_algorithm(cfg, device=device)
-    
 
+    agent = Trainer(
+        algorithm=algorithm,
+        train_outdir=str(exp_outdir) + '/',
+    )
+
+    logger.info("Starting training...")
+
+    # Train agent
+    start_time = time.time()
+    agent.fit(
+        num_epochs=cfg.train.max_epochs,
+        trainloader=trainloader,
+        valloader=valloader,
+        batch_size=cfg.train.batch_size,
+        patience=cfg.train.patience,
+        hpGrid=train_dataset.hpGrid
+    )
+    end_time = time.time()
+    logger.info(f'Total train time = {end_time - start_time}s on {device}')
+    logger.info("Training complete.")
+    
+    logger.info(f'Results saved in {exp_outdir}')
+    
+    logger.info("Plotting metrics...")
+    plot_train_metrics(exp_outdir, dataset=train_dataset)
+
+if __name__ == "__main__":
+    main()
+    
+    
 # from torch.optim.lr_scheduler import LinearLR, ConstantLR, SequentialLR
 
 # # 1. Setup Optimizer
@@ -118,44 +158,3 @@ def main():
 #     lr_scheduler=main_scheduler, 
 #     device='cuda'
 # )
-    
-    # cfg['train']['lr_scheduler_kwargs'] = {key: float(val) for key, val in lr_scheduler_kwargs.items()}
-
-    agent = Trainer(
-        algorithm=algorithm,
-        train_outdir=str(exp_outdir) + '/',
-    )
-
-    logger.info("Starting training...")
-
-    # Train agent
-    start_time = time.time()
-    agent.fit(
-        num_epochs=cfg.train.max_epochs,
-        trainloader=trainloader,
-        valloader=valloader,
-        batch_size=cfg.train.batch_size,
-        patience=cfg.train.patience,
-        hpGrid=train_dataset.hpGrid
-    )
-    end_time = time.time()
-    logger.info(f'Total train time = {end_time - start_time}s on {device}')
-    logger.info("Training complete.")
-    
-    logger.info(f'Results saved in {exp_outdir}')
-    
-
-    # if args.save_to_model_dir:
-    #     if args.model_name is None:
-    #         args.model_name = cfg['metadata']['exp_name']
-    #     model_dir = workspace / 'models' / args.model_name
-    #     model_dir.mkdir(parents=True, exist_ok=True)  # <--- Add this line
-    #     logger.info(f"Saving weights and config to {model_dir}")
-    #     save_config(config_dict=cfg, outdir=model_dir)
-    #     agent.save(filepath=model_dir / 'best_weights.pt')
-
-    logger.info("Plotting metrics...")
-    plot_train_metrics(exp_outdir, dataset=train_dataset)
-
-if __name__ == "__main__":
-    main()

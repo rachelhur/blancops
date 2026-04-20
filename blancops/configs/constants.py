@@ -90,8 +90,8 @@ BIN_FEATURES = [
 ]
 
 CYCLICAL_FEATURE_NAMES = ["ra", "az", "ha", "lst"]
-SIN_NORM_FEATURE_NAMES = ["el", "dec"]
+SIN_NORM_FEATURE_NAMES = []
 LOG_NORM_FEATURE_NAMES = ["fwhm", "urgency"]
 FRACTIONAL_FEATURE_NAMES = ["moon_phase", "t_night", "t_survey", "survey_num_visits_done"]
-Z_SCORE_NORM_FEATURE_NAMES = ["airmass", "pointing_distance", "moon_distance", "sky_brightness", "fwhm", "delta_az", "delta_el", "urgency"]
+Z_SCORE_NORM_FEATURE_NAMES = ["airmass", "pointing_distance", "moon_distance", "sky_brightness", "fwhm", "delta_az", "delta_el", "urgency", "el", "dec"]
 LOCAL_MEAN_Z_SCORE_FEATURE_NAMES = ["rel_num_unvisited_fields", "rel_num_incomplete_fields", "rel_min_tiling", "rel_moon_distance", "rel_ha"]

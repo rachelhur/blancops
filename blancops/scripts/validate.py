@@ -14,7 +14,7 @@ import logging
 
 from blancops.configs.schema import load_and_validate
 from blancops.data.lookup import load_lookup_tables
-from blancops.features.normalizations import load_normalization_stats
+from blancops.data.features.normalizations import load_normalization_stats
 from blancops.plotting.plotting import plot_schedule_from_file
 from blancops.rl.trainer import Trainer
 from blancops.rl.registry import build_algorithm
@@ -22,14 +22,14 @@ from blancops.utils.sys_utils import seed_everything
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.preprocessing import load_train_data_to_dataframe
 from blancops.data.manager import load_field2radec_as_numpy
-from blancops.environment.offline_env import OfflineBlancoTestingEnv
+from blancops.environment.validation_env import OfflineBlancoTestingEnv
 from blancops.data.offline_dataset import OfflineDataset
 from blancops.data.constants import *
 from blancops.math import units
 from blancops.data.manager import load_field2radec_as_numpy
 from blancops.configs.constants import TRAIN_DATA_PATH, TRAIN_DATA_DIR, LOOKUPS
 
-from blancops.features.global_features import calc_twilight
+from blancops.data.features.global_features import calc_twilight
 import logging
 logger = logging.getLogger(__name__)
 
@@ -310,7 +310,8 @@ def main():
         id=f"gymnasium_env/{env_name}",
         entry_point=OfflineBlancoTestingEnv,
     )
-
+        
+        
     # GET INITIAL STATES PER NIGHT FROM DATASET
     global_pd_nightgroup = test_dataset._df.groupby('night')
     if not args.start_at_zenith:

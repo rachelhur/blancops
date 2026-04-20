@@ -22,3 +22,12 @@ class Network(str, Enum):
 class Reward(str, Enum):
     EXPERT_ACTION = "expert_action"
     SURVEY_UNIFORMITY = "survey_uniformity"
+
+class Lookup(str, Enum):
+    FIELD2NAME = "field2name"
+    FIELD2RADEC = "field2radec"
+    FIELD2MAXVISITS_TRAIN = "field2maxvisits_train"
+    NIGHT2FIELDVISITS = "night2fieldvisits"
+    NIGHT2FILTERVISITS = "night2filtervisits"
+    FIELDFILTER2MAXVISITS = "fieldfilter2maxvisits"
+    FILTER_TARGET_COUNTS = "target_counts_per_filter"

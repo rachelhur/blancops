@@ -1,5 +1,5 @@
 import pandas as pd
-from blancops.features.global_features import calc_t_survey, calc_urgency
+from blancops.data.features.global_features import calc_t_survey, calc_urgency
 import numpy as np
 from datetime import timedelta
 
@@ -236,8 +236,7 @@ def remove_dates(df, specific_years=None, specific_months=None, specific_days=No
     return df
 
 def load_train_data_to_dataframe(fits_path, add_survey_progress_cols=True):
-    d = fitsio.read(fits_path)
-    df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
+    df = fits_to_df(fits_path)
 
     sel = (df['propid'] == '2012B-0001') & (df['exptime'] > 40) & (df['exptime'] < 100) & (~np.isnan(df['teff']))
     df = df[sel].copy()
@@ -251,4 +250,9 @@ def load_train_data_to_dataframe(fits_path, add_survey_progress_cols=True):
     df = df.sort_values(by='timestamp').reset_index(drop=True)
     if add_survey_progress_cols:
         df = add_cols_to_raw_dataframe(df)
+    return df
+
+def fits_to_df(fits_path):
+    d = fitsio.read(fits_path)
+    df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
     return df

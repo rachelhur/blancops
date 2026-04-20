@@ -10,9 +10,9 @@ from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 
-from blancops.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
-from blancops.features.bin_features import get_relative_feature, get_delta_az_el, calc_relative_survey_progress_features
-from blancops.features.normalizations import normalize_noncyclic_features, normalize_timestamp
+from blancops.data.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
+from blancops.data.features.bin_features import get_relative_feature, get_delta_az_el, calc_relative_survey_progress_features
+from blancops.data.features.normalizations import normalize_noncyclic_features, normalize_timestamp
 from blancops.data.constants import *
 from blancops.math import geometry
 

@@ -9,18 +9,14 @@ from blancops.configs.enums import *
 from blancops.configs.constants import TRAIN_DATA_PATH, BIN_FEATURES
 from blancops.data.constants import FILTER2IDX
 
-class DatasetConfig(BaseModel):
+class BaseDataConfig(BaseModel):
     name: str = 'des-data-v0'
-    path: str = TRAIN_DATA_PATH
+    path: str = str(TRAIN_DATA_PATH)
     # cache_in_memory: bool = False
     
     # Data configuration
     nside: int = 16
     action_space: str
-    years: List[int] = [2013, 2014, 2015, 2016, 2017, 2018, 2019] # full set of data
-    months: List[int] = [i+1 for i in range(12)]
-    days: List[int] = [i+1 for i in range(31)]
-    filters: List[str] = [filt for filt in FILTER2IDX.keys()]
     
     # Normalization configuration 
     do_cyclical_norm: bool = True
@@ -37,25 +33,36 @@ class DatasetConfig(BaseModel):
     num_filters: Optional[int] = None
     num_actions: Optional[int] = None
 
-    # Configurations required for validation
-    train_nights: Optional[List[str]] = None
-    val_nights: Optional[List[str]] = None
-    
-    train_val_split: float  = 0.9
-    
     # Features
     global_features: List[str]
     bin_features: List[str]
     
     @model_validator(mode='after')
-    def validate_features(self) -> 'DatasetConfig':
+    def validate_features(self) -> 'TrainDataConfig':
         for bin_feat in self.bin_features:
             if bin_feat not in BIN_FEATURES:
                 raise ValueError(f"{bin_feat} is not implemented.")
         return self
+      
+class TrainDataConfig(BaseDataConfig):
+    years: List[int] = [2013, 2014, 2015, 2016, 2017, 2018, 2019] # full set of data
+    months: List[int] = [i+1 for i in range(12)]
+    days: List[int] = [i+1 for i in range(31)]
+    filters: List[str] = [filt for filt in FILTER2IDX.keys()]
+    
+    # Configurations required for validation
+    train_nights: Optional[List[str]] = None
+    val_nights: Optional[List[str]] = None
+    train_val_split: float  = 0.9
     
 class NormalizationConfig(BaseModel): # Not yet done
-    feature_names:  Optional[List[str]] = None
+    feature_names:  Optional[List[str]] = None    # Normalization configuration 
+    do_cyclical_norm: bool = True
+    do_sin_norm: bool = True
+    do_log_norm: bool = True
+    do_fractional_norm: bool = True
+    do_local_mean_z_score: bool = True
+    do_z_score_norm: bool = True
     
 class BaseModelConfig(BaseModel):
     network: Network = Network.CONTEXTUAL_SCORE_MLP
@@ -105,7 +112,7 @@ class ExperimentConfig(BaseModel):
     experiment_name: str
     experiments_directory: str
     experiment_outdir: Optional[str] = None
-    data: DatasetConfig
+    data: TrainDataConfig
     model: AnyModelConfig = Field(discriminator="algorithm")
     reward: RewardConfig
     train: TrainConfig
@@ -118,14 +125,21 @@ class ExperimentConfig(BaseModel):
             return self.experiment_outdir
         else:
             return str(Path(self.experiments_directory) / self.experiment_name)
+        
+class ScheduleConfig(BaseModel):
+    model_dir: str
+    data: TrainDataConfig
+    
 
 def load_and_validate(yaml_path: str | Path) -> ExperimentConfig:
+    """Loads the YAML config and validates it against the ExperimentConfig schema."""
     with open(yaml_path, "r") as f:
         raw_data = yaml.safe_load(f)
     return ExperimentConfig(**raw_data) # Added dictionary unpacking
 
-def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_names: dict, lr_scheduler_kwargs: dict, outdir: str | Path) -> ExperimentConfig:
-    # Use model_copy to update nested models cleanly
+def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_names: dict, lr_scheduler_kwargs: dict, val_nights: List[str], outdir: str | Path) -> ExperimentConfig:
+    """Resolves config by filling in fields calculated after data processing. Saves the resolved config to the output directory."""
+    # UPDATE CONFIG.DATA
     data_updates = {
         "state_dim": int(dataset_dims['state_dim']),
         "bin_state_dim": int(dataset_dims['bin_state_dim']),
@@ -134,18 +148,26 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
         "num_actions": int(dataset_dims['num_actions']),
         "global_features": dataset_feature_names['global_features'],
         "bin_features": dataset_feature_names['bin_features'],
+        "val_nights": val_nights
     }
     updated_data = cfg.data.model_copy(update=data_updates)
-    
+    # UPDATE CONFIG.TRAIN
     train_updates = {"lr_scheduler_kwargs": lr_scheduler_kwargs}
     updated_train = cfg.train.model_copy(update=train_updates)
     
+    # COPY CONFIG WITH UPDATES
     resolved_cfg = cfg.model_copy(update={
         "data": updated_data,
         "train": updated_train
     })
     
-    with open(outdir / "resolved_config.yaml", "w") as f:
-        yaml.safe_dump(resolved_cfg.model_dump(mode='json'), f, default_flow_style=False, sort_keys=False)
+    # CONSTRUCT EXPERIMENT_OUTDIR CONFIG FIELD AND SAVE RESOLVED CONFIG
+    if resolved_cfg.experiment_outdir is None:
+        resolved_cfg.experiment_outdir = str(Path(resolved_cfg.experiments_directory) / resolved_cfg.experiment_name)
+    Path(resolved_cfg.experiment_outdir).mkdir(parents=True, exist_ok=True)
+    with open(Path(resolved_cfg.experiment_outdir) / "resolved_config.yaml", "w") as f:
+        # Use mode='json' to force Pydantic to convert complex types (like Enums) to strings
+        resolved_dict = resolved_cfg.model_dump(mode='json') 
+        yaml.dump(resolved_dict, f, default_flow_style=False, sort_keys=False)
         
     return resolved_cfg
