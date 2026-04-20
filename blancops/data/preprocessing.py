@@ -126,6 +126,28 @@ def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
     
     return df
 
+def load_train_data_to_dataframe(fits_path, add_survey_progress_cols=True):
+    df = fits_to_df(fits_path)
+
+    sel = (df['propid'] == '2012B-0001') & (df['exptime'] > 40) & (df['exptime'] < 100) & (~np.isnan(df['teff']))
+    df = df[sel].copy()
+    df['datetime'] = pd.to_datetime(df['datetime'], utc=True)
+    df['night'] = (df['datetime'] - pd.Timedelta(hours=12)).dt.normalize()
+    df['night'] = df['night'] + (timedelta(days=1) - pd.Timedelta(seconds=1))
+    df = df[df['datetime'].dt.year > 2010] # There are some 1970 rows even after selecting propid
+
+    timestamps = (df['datetime'] - pd.Timestamp("1970-01-01", tz='utc')) // pd.Timedelta("1s")
+    df['timestamp'] = timestamps
+    df = df.sort_values(by='timestamp').reset_index(drop=True)
+    if add_survey_progress_cols:
+        df = add_cols_to_raw_dataframe(df)
+    return df
+
+def fits_to_df(fits_path):
+    d = fitsio.read(fits_path)
+    df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
+    return df
+
 def add_cols_to_raw_dataframe(df):
     df['night_idx'] = pd.factorize(df['night'])[0]
     df['t_survey'] = calc_t_survey(df['night_idx'].values, df['night_idx'].max() + 1)
@@ -233,26 +255,4 @@ def remove_dates(df, specific_years=None, specific_months=None, specific_days=No
         assert not df.empty, f"Filters {specific_filters} do not exist in days {specific_days}, months {specific_months}, and years {specific_years}"
     assert not df.empty, "No observations found for the specified year/month/day/filter selections."
     
-    return df
-
-def load_train_data_to_dataframe(fits_path, add_survey_progress_cols=True):
-    df = fits_to_df(fits_path)
-
-    sel = (df['propid'] == '2012B-0001') & (df['exptime'] > 40) & (df['exptime'] < 100) & (~np.isnan(df['teff']))
-    df = df[sel].copy()
-    df['datetime'] = pd.to_datetime(df['datetime'], utc=True)
-    df['night'] = (df['datetime'] - pd.Timedelta(hours=12)).dt.normalize()
-    df['night'] = df['night'] + (timedelta(days=1) - pd.Timedelta(seconds=1))
-    df = df[df['datetime'].dt.year > 2010] # There are some 1970 rows even after selecting propid
-
-    timestamps = (df['datetime'] - pd.Timestamp("1970-01-01", tz='utc')) // pd.Timedelta("1s")
-    df['timestamp'] = timestamps
-    df = df.sort_values(by='timestamp').reset_index(drop=True)
-    if add_survey_progress_cols:
-        df = add_cols_to_raw_dataframe(df)
-    return df
-
-def fits_to_df(fits_path):
-    d = fitsio.read(fits_path)
-    df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
     return df

@@ -1,6 +1,6 @@
 import logging
 
-from blancops.features.features import calculate_distance_matrix
+from blancops.rl.algorithms.ddqn import calculate_distance_matrix
 logger = logging.getLogger(__name__)
 
 import torch

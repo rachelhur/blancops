@@ -11,7 +11,7 @@ from datetime import timezone
 
 from blancops.data.constants import *
 from blancops.ephemerides.ephemerides import HealpixGrid
-from blancops.features.global_features import calc_twilight
+from blancops.data.features.global_features import calc_twilight
 from blancops.plotting.plotting import plot_schedule_from_file
 from collections import defaultdict
 from blancops.ephemerides.ephemerides import topographic_to_equatorial

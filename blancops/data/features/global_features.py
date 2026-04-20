@@ -11,10 +11,29 @@ import numpy as np
 import ephem
 from astropy.time import Time
 from blancops.data.constants import *
+from blancops.data.preprocessing import drop_rows_in_DECam_data
+from blancops.configs.constants import CYCLICAL_FEATURE_NAMES
 
 import logging
 logger = logging.getLogger(__name__)
 
+def construct_global_feature_df(self, df, cfg, years, months, days, filters):
+    self._df = drop_rows_in_DECam_data(
+        df,
+        specific_years=cfg.data.years if years is None else years, 
+        specific_months=cfg.data.months if months is None else months, 
+        specific_days=cfg.data.days if days is None else days,
+        specific_filters=cfg.data.filters if filters is None else filters,
+        )
+    self._df = calculate_global_features(
+        df=self._df, 
+        field2name=self.lookup['field2name'], 
+        hpGrid=self.hpGrid, 
+        base_global_feature_names=self.base_global_feature_names,
+        cyclical_feature_names=CYCLICAL_FEATURE_NAMES, 
+        do_cyclical_norm=cfg.data.do_cyclical_norm
+    )
+        
 def calc_t_survey(survey_night_indices, survey_nights_max):
     t_survey = survey_night_indices / survey_nights_max
     if type(t_survey) == torch.Tensor or type(t_survey) == np.ndarray:

@@ -274,7 +274,7 @@ class BinEmbeddingDQN(nn.Module):
         
         return self.net(full_input)
 
-class SpatialEncoder(nn.Module):
+class CNN(nn.Module):
     def __init__(self, num_features):
         super().__init__()
         self.cnn = nn.Sequential(
