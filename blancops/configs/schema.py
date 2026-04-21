@@ -1,14 +1,35 @@
 from pydantic import BaseModel, Field, computed_field, model_validator
 import yaml
 from pathlib import Path
-from typing import List, Union, Literal
+from typing import List, Union, Literal, Dict
 import numpy as np
 
 from typing import Optional
 from blancops.configs.enums import *
-from blancops.configs.constants import TRAIN_DATA_PATH, BIN_FEATURES
+from blancops.configs.constants import DEFAULT_NORM_MAPPING, TRAIN_DATA_PATH, BIN_FEATURES
 from blancops.data.constants import FILTER2IDX
 
+from blancops.configs.constants import ALLOWED_NORMS_PER_FEATURE, NORM_TYPES
+
+class NormalizationConfig(BaseModel):
+    feature_mappings: Dict[str, List[NORM_TYPES]] = Field(
+        default_factory=lambda: {k: v.copy() for k, v in DEFAULT_NORM_MAPPING.items()})
+    fix_nans: bool = True
+
+    @model_validator(mode='after')
+    def validate_legal_normalizations(self) -> 'NormalizationConfig':
+        for feature, requested_norms in self.feature_mappings.items():
+            allowed_norms = ALLOWED_NORMS_PER_FEATURE.get(feature)
+            if allowed_norms is None:
+                raise ValueError(f"Feature '{feature}' is not recognized in allowed normalization rules.")
+                
+            if not set(requested_norms).issubset(allowed_norms): # allowed_norms is already a set!
+                raise ValueError(
+                    f"Normalization {requested_norms} is not allowed for feature '{feature}'. "
+                    f"Allowed: {list(allowed_norms)}"
+                )
+        return self
+    
 class BaseDataConfig(BaseModel):
     name: str = 'des-data-v0'
     path: str = str(TRAIN_DATA_PATH)
@@ -18,14 +39,9 @@ class BaseDataConfig(BaseModel):
     nside: int = 16
     action_space: str
     
-    # Normalization configuration 
-    do_cyclical_norm: bool = True
-    do_sin_norm: bool = True
-    do_log_norm: bool = True
-    do_fractional_norm: bool = True
-    do_local_mean_z_score: bool = True
-    do_z_score_norm: bool = True
-
+    # Normalization configuration
+    norm: NormalizationConfig = Field(default_factory=NormalizationConfig)
+    
     # Configurations calculated after data processing (required for model instantiation)
     state_dim: Optional[int] = None
     bin_state_dim: Optional[int] = None
@@ -54,15 +70,6 @@ class TrainDataConfig(BaseDataConfig):
     train_nights: Optional[List[str]] = None
     val_nights: Optional[List[str]] = None
     train_val_split: float  = 0.9
-    
-class NormalizationConfig(BaseModel): # Not yet done
-    feature_names:  Optional[List[str]] = None    # Normalization configuration 
-    do_cyclical_norm: bool = True
-    do_sin_norm: bool = True
-    do_log_norm: bool = True
-    do_fractional_norm: bool = True
-    do_local_mean_z_score: bool = True
-    do_z_score_norm: bool = True
     
 class BaseModelConfig(BaseModel):
     network: Network = Network.CONTEXTUAL_SCORE_MLP
@@ -128,8 +135,7 @@ class ExperimentConfig(BaseModel):
         
 class ScheduleConfig(BaseModel):
     model_dir: str
-    data: TrainDataConfig
-    
+    data: BaseDataConfig
 
 def load_and_validate(yaml_path: str | Path) -> ExperimentConfig:
     """Loads the YAML config and validates it against the ExperimentConfig schema."""

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Dict, List, Literal
 
 def get_workspace_dir() -> Path:
     """Determines the active workspace. Priority: (1) environment variable (2) pointer file (saved after running model-init) (3) default=`~/.blancops`
@@ -88,6 +89,103 @@ BIN_FEATURES = [
     "rel_survey_min_tiling", 
     "rel_survey_min_tiling_r", "rel_survey_min_tiling_g", "rel_survey_min_tiling_i", "rel_survey_min_tiling_z", "rel_survey_min_tiling_Y", 
 ]
+
+
+# 1. Define allowed normalization strings to catch typos instantly
+NORM_TYPES = Literal['cyclical', 'sin', 'log', 'fractional', 'z_score', 'local_mean_z']
+
+# 2. Define the absolute physical rules of your domain
+ALLOWED_NORMS_PER_FEATURE = {
+    
+    # Telescope coords
+    'ra': {'cyclical', 'z_score'},
+    'az': {'cyclical', 'z_score'},
+    'ha': {'cyclical', 'z_score'},
+    'lst': {'cyclical', 'z_score'},
+    
+    # Sun coords
+    'sun_ra': {'cyclical', 'z_score'},
+    'sun_az': {'cyclical', 'z_score'},
+    'sun_el': {'z_score'},
+    'sun_dec': {'z_score'},
+    
+    # Moon coords
+    'moon_ra': {'cyclical', 'z_score'},
+    'moon_az': {'cyclical', 'z_score'},
+    'moon_el': {'z_score'},
+    'moon_dec': {'z_score'},
+    
+    'moon_distance': {'z_score'},
+    'airmass': {'log', 'z_score'},
+    'pointing_distance': {'z_score'},
+    'sky_brightness': {'z_score'},
+    'delta_az': {'z_score'},
+    'delta_el': {'z_score'},
+    'el': {'z_score'},
+    'dec': {'z_score'},
+    
+    'fwhm': {'log', 'z_score'},
+    'urgency': {'log', 'z_score'},
+    
+    'survey_progress': {'fractional', 'sin', 'z_score'},
+    'urgency': {'log', 'z_score'},
+    
+    'rel_num_unvisited_fields': {'local_mean_z'},
+    'rel_num_incomplete_fields': {'local_mean_z'},
+    'rel_min_tiling': {'local_mean_z'},
+    'rel_moon_distance': {'local_mean_z'},
+    'rel_ha': {'local_mean_z'},
+    
+    't_night': {'fractional'},
+    't_survey': {'fractional'},
+    'moon_phase': {'fractional'},
+    'survey_num_visits_done': {'fractional'},
+}
+
+DEFAULT_NORM_MAPPING = {
+    
+    # Telescope coords
+    'ra': ['cyclical'],
+    'az': ['cyclical'],
+    'ha':['cyclical'],
+    'lst': ['cyclical'],
+    'el': ['z_score'],
+    'dec': ['z_score'],
+
+    # Sun coords
+    'sun_ra': ['cyclical'],
+    'sun_az': ['cyclical'],
+    'sun_el': ['z_score'],
+    'sun_dec': ['z_score'],
+    
+    # Moon coords
+    'moon_ra': ['cyclical'],
+    'moon_az': ['cyclical'],
+    'moon_el': ['z_score'],
+    'moon_dec': ['z_score'],
+    
+    # Image quality
+    'moon_distance': ['z_score'],
+    'airmass': ['log', 'z_score'],
+    'sky_brightness': ['z_score'],
+    'delta_az': ['z_score'],
+    'delta_el': ['z_score'],
+    'fwhm': ['z_score'],
+    'urgency': ['z_score'],
+    
+    # Bin features
+    'pointing_distance': ['z_score'],
+    'rel_num_unvisited_fields': ['local_mean_z'],
+    'rel_num_incomplete_fields': ['local_mean_z'],
+    'rel_min_tiling': ['local_mean_z'],
+    'rel_moon_distance': ['local_mean_z'],
+    'rel_ha': ['local_mean_z'],
+    
+    't_night': ['fractional'],
+    't_survey': ['fractional'],
+    'moon_phase': ['fractional'],
+    'survey_num_visits_done': ['fractional'],
+}
 
 CYCLICAL_FEATURE_NAMES = ["ra", "az", "ha", "lst"]
 SIN_NORM_FEATURE_NAMES = []

@@ -22,14 +22,14 @@ from blancops.utils.sys_utils import seed_everything
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.preprocessing import load_train_data_to_dataframe
 from blancops.data.manager import load_field2radec_as_numpy
-from blancops.environment.validation_env import OfflineBlancoTestingEnv
+from blancops.environment.validation_env import ValidationBlancoEnv
 from blancops.data.offline_dataset import OfflineDataset
 from blancops.data.constants import *
 from blancops.math import units
 from blancops.data.manager import load_field2radec_as_numpy
 from blancops.configs.constants import TRAIN_DATA_PATH, TRAIN_DATA_DIR, LOOKUPS
 
-from blancops.data.features.global_features import calc_twilight
+from blancops.data.features.glob_features import calc_twilight
 import logging
 logger = logging.getLogger(__name__)
 
@@ -273,6 +273,16 @@ def main():
     logger.info(f"Loaded z-score stats: {zscore_stats}")
     logger.info(f"Loaded rel_norm_stats: {rel_norm_stats}")
     
+    from blancops.data.features.normalizations import build_normalizer_kwargs, StateNormalizer
+    norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
+    global_normalizer = StateNormalizer(
+        state_feature_names=cfg.data.global_features, 
+        **norm_kwargs
+    )
+    bin_normalizer = StateNormalizer(
+        state_feature_names=cfg.data.bin_features, 
+        **norm_kwargs
+    )
     logger.info("Loading test dataset with same config as training dataset...")
     test_dataset = OfflineDataset(
         df=df,
@@ -281,9 +291,12 @@ def main():
         months=args.months,
         days=args.days,
         filters=args.filters,
+        global_normalizer=global_normalizer, # Pass normalizers instead of raw stats!
+        bin_normalizer=bin_normalizer,
         z_score_stats=zscore_stats,
         rel_norm_stats=rel_norm_stats
         ) 
+    
     from scipy.interpolate import CubicSpline
 
     # GET INTERPOLATED FEATURES
@@ -308,7 +321,7 @@ def main():
     env_name = 'OfflineDECamTestingEnv-v0'
     gym.register(
         id=f"gymnasium_env/{env_name}",
-        entry_point=OfflineBlancoTestingEnv,
+        entry_point=ValidationBlancoEnv,
     )
         
         
@@ -334,9 +347,11 @@ def main():
     #                zenith_bin_states=night_start_bin_states, z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, t_survey_arr=t_survey_arr, survey_nights_total=survey_nights_total,
     #                fwhm_night_interps=fwhm_night_interps)
     logger.debug("Directly instantiating to find bug...")
-    env = OfflineBlancoTestingEnv(
+    env = ValidationBlancoEnv(
         cfg=cfg, 
         lookups=lookups,
+        global_normalizer=global_normalizer,
+        bin_normalizer=bin_normalizer,
         max_nights=None, 
         global_pd_nightgroup=global_pd_nightgroup, 
         zenith_bin_states=night_start_bin_states, 
@@ -469,62 +484,49 @@ def main():
         fig_b.savefig(night_dir + f'bin_vs_step.png')
         plt.close()
 
-        # # Plot state features vs timestamp for first episode
-        # fig, axs = plt.subplots(len(test_dataset.global_feature_names), figsize=(10, len(test_dataset.global_feature_names)*5))
-        # for i, feature_row in enumerate(metrics['glob_observations'].T[:len(test_dataset.global_feature_names)]):
-        #     feat_name = test_dataset.global_feature_names[i]
-        #     agent_data = feature_row.copy()
-        #     # REVERSE NORMALIZATIONS
-        #     if feat_name in global_cfg['features']['SIN_NORM_FEATURE_NAMES']:
-        #         agent_data = np.arcsin(agent_data)
-        #     elif feat_name in global_cfg['features']['LOG_NORM_FEATURE_NAMES']:
-        #         agent_data = np.exp(agent_data) - 1e-9
-        #     elif feat_name in global_cfg['features']['FRACTIONAL_FEATURE_NAMES']:
-        #         agent_data = agent_data * (2*np.pi)
-        #     elif feat_name in global_cfg['features']['LOCAL_MEAN_Z_SCORE_FEATURE_NAMES']:
-        #         agent_data = agent_data * (2*np.pi)
-        #     else:
-        #         agent_data = agent_data
-        #     if feat_name in global_cfg['features']['Z_SCORE_FEATURE_NAMES']:
-        #         agent_data = agent_data * zscore_stats['global_features']['std'][] + zscore_stats[feat_name]['mean']
+        # Plot state features vs timestamp for first episode
+        fig, axs = plt.subplots(len(test_dataset.global_feature_names), figsize=(10, len(test_dataset.global_feature_names)*5))
+        
+        feature_mappings = cfg.data.norm.feature_mappings
+        
+        # 1. Safely extract the global stats dictionaries BEFORE the loop
+        global_z_stats = zscore_stats.get('global_features', {})
+        global_rel_stats = rel_norm_stats.get('global_features', {})
+        
+        for i, feature_row in enumerate(metrics['glob_observations'].T[:len(test_dataset.global_feature_names)]):
+            feat_name = test_dataset.global_feature_names[i]
+            agent_data = feature_row.copy()
+            
+            # Get requested norms for this feature (default to empty list if none)
+            norms_applied = feature_mappings.get(feat_name, [])
+            
+            if 'z_score' in norms_applied:
+                mean = global_z_stats[feat_name]['mean']
+                std = global_z_stats[feat_name]['std']
+                agent_data = (agent_data * std) + mean
+                
+            if 'local_mean_z' in norms_applied:
+                std = global_rel_stats[feat_name]['std']
+                agent_data = agent_data * std
+                
+            # 2. Reverse Stateless Normalizations Second
+            if 'fractional' in norms_applied:
+                agent_data = (agent_data / 2.0) + 0.5
+            if 'log' in norms_applied:
+                agent_data = np.exp(agent_data) - 1e-9
+            if 'sin' in norms_applied:
+                agent_data = np.arcsin(agent_data)
 
-        #     axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
-        #     axs[i].plot(expert_timestamps[expert_zenith_mask], night_df[feat_name].values[expert_zenith_mask], label='original schedule', marker='o')
-        #     axs[i].set_title(feat_name)
-        #     axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
-        #     axs[i].legend()
-        # fig.tight_layout()
-        # fig.savefig(night_dir + f'state_features_vs_time.png')
-        # plt.close()
-
-        # # Plot most frequently visited bin features vs timestamp
-        # if cfg['model']['action_architecture'] is not None:
-        #     _bins_vis_tonight = metrics['bin'].astype(int)
-        #     _bincounts = np.bincount(_bins_vis_tonight[agent_zenith_mask], minlength=test_dataset.num_actions)
-        #     _most_common_bin = np.argmax(_bincounts)
-        #     normed_feature_names = test_dataset.bin_feature_names
-        #     fig, axs = plt.subplots(len(normed_feature_names), figsize=(10, len(normed_feature_names)* 5))
-        #     for i, feat_row in enumerate(metrics['bin_observations'].T[:, _most_common_bin, :]):
-        #         feat_name = normed_feature_names[i]
-        #         # unnormalize observations to compare to expert values
-        #         if feat_name == 'airmass':
-        #             agent_data = 1 / feat_row
-        #         elif feat_name in global_cfg['features']['SIN_NORM_FEATURE_NAMES']:
-        #             agent_data = feat_row * (np.pi/2)
-        #         elif feat_name in global_cfg['features']['ANG_DISTANCE_NORM_FEATURE_NAMES']:
-        #             agent_data = feat_row * (2 * np.pi)
-        #         else:
-        #             agent_data = feat_row
-        #         axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
-        #         axs[i].plot(expert_timestamps[expert_zenith_mask], expert_bin_states[expert_zenith_mask, _most_common_bin, i], label='original schedule', marker='o')
-        #         axs[i].set_title(feat_name)
-        #         axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
-        #         axs[i].legend()
-        #     fig.suptitle(f"Bin {_most_common_bin}: (az, el) = ({test_dataset.hpGrid.lon[_most_common_bin]:.2f}, {test_dataset.hpGrid.lat[_most_common_bin]:.2f}")
-        #     fig.tight_layout()
-        #     fig.savefig(night_dir + f'bin_features_vs_time.png')
-
-
+            axs[i].plot(agent_timestamps[agent_zenith_mask], agent_data[agent_zenith_mask], label='policy roll out', marker='o')
+            axs[i].plot(expert_timestamps[expert_zenith_mask], night_df[feat_name].values[expert_zenith_mask], label='original schedule', marker='o')
+            axs[i].set_title(feat_name)
+            axs[i].set_xlabel('Hours since sunset \n (-10 deg)')
+            axs[i].legend()
+            
+        fig.tight_layout()
+        fig.savefig(night_dir + f'state_features_vs_time.png')
+        plt.close()
+        
         # Plot static bin and field radec scatter plots
         bin2coord = {int(i): (lon, lat) for i, (lon, lat) in enumerate(zip(test_dataset.hpGrid.lon/units.deg, test_dataset.hpGrid.lat/units.deg))}
 

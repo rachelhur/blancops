@@ -1,4 +1,3 @@
-import os
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, RandomSampler, Subset
@@ -8,8 +7,9 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from blancops.configs.schema import NormalizationConfig
 from blancops.data.features.glob_features import calc_inst_teff_rate
-from blancops.data.features.normalizations import normalize_noncyclic_features, setup_feature_names
+from blancops.data.features.normalizations import StateNormalizer, build_normalizer_kwargs, setup_feature_names
 from blancops.ephemerides import ephemerides
 import pandas as pd
 import json
@@ -31,18 +31,17 @@ from blancops.math import geometry
 import logging
 logger = logging.getLogger(__name__)
 
-def reward_func_v0():
-    raise NotImplementedError
-
 class OfflineDataset(torch.utils.data.Dataset):
     def __init__(self, df=None, cfg=None,
+                 global_normalizer=None, bin_normalizer=None,
                  years=None, months=None, days=None, filters=None,
-                 z_score_stats=None, rel_norm_stats=None
+                 z_score_stats=None, rel_norm_stats=None, mode='train'
                  ): 
 
         # ASSIGN STATIC ATTS
         self.reward_choice = cfg.reward.reward_choice
         self._calculate_action_mask = cfg.model.algorithm != 'bc' # should be False if using bc (to minimize data processing time), otherwise True
+        norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
 
         # Get other configurations
         action_space = cfg.data.action_space
@@ -70,7 +69,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.global_feature_names, self.bin_feature_names = setup_feature_names(base_global_feature_names=self.base_global_feature_names,
                                                                                 base_bin_feature_names=self.base_bin_feature_names,
                                                                                 cyclical_feature_names=CYCLICAL_FEATURE_NAMES,
-                                                                                do_cyclical_norm=cfg.data.do_cyclical_norm,
+                                                                                do_cyclical_norm=norm_kwargs['do_cyclical_norm'],
                                                                                 )
         self.do_local_mean_z_score = any('rel_' in name for name in self.bin_feature_names)
         logger.info(f"Final features names {self.global_feature_names, self.bin_feature_names}")
@@ -92,7 +91,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 hpGrid=self.hpGrid, 
                 base_features=self.base_global_feature_names,
                 cyclical_features=CYCLICAL_FEATURE_NAMES, 
-                do_cyclical_norm=cfg.data.do_cyclical_norm
+                do_cyclical_norm=norm_kwargs['do_cyclical_norm']
                 )
     
         # PROCESS RAW DATA FRAME INTO GLOBAL FEATURES
@@ -100,20 +99,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         
         # PROCESS RAW DATA FRAME INTO BIN FEATURES
         if self.include_bin_features:
-            # bin_states = calculate_bin_features(
-            #     pt_df=self._df,
-            #     hpGrid=self.hpGrid, 
-            #     base_bin_feature_names=self.base_bin_feature_names, 
-            #     bin_feature_names=self.bin_feature_names, 
-            #     cyclical_feature_names=CYCLICAL_FEATURE_NAMES, 
-            #     do_cyclical_norm=cfg.data.do_cyclical_norm,
-            #     do_local_mean_z_score=self.do_local_mean_z_score,
-            #     field2radec=self.lookup['field2radec'],
-            #     night2fieldvisits=self.lookup['night2fieldvisits'],
-            #     fieldfilter2maxvisits=self.lookup['fieldfilter2maxvisits'],
-            #     night2filtervisithistory=self.lookup['night2filtervisithistory'],
-            #     field2maxvisits=self.lookup['field2maxvisits'],
-            # )
             bin_feature_eng = BinFeatureEngineer(
                 hpGrid=self.hpGrid, 
                 base_features=self.base_bin_feature_names, 
@@ -124,7 +109,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 fieldfilter2maxvisits=self.lookup['fieldfilter2maxvisits'],
                 night2filtervisithistory=self.lookup['night2filtervisithistory'],
                 field2maxvisits=self.lookup['field2maxvisits'],
-                do_cyclical_norm=cfg.data.do_cyclical_norm,
+                do_cyclical_norm=norm_kwargs['do_cyclical_norm'],
                 do_local_mean_z_score=self.do_local_mean_z_score
                 )
             bin_states = bin_feature_eng.transform(self._df, requested_features=self.bin_feature_names)
@@ -161,51 +146,47 @@ class OfflineDataset(torch.utils.data.Dataset):
         train_state_idxs = np.unique(np.concatenate([train_c_idxs, train_n_idxs]))
 
         # NORMALIZE STATES
-        state_feature_names = self.global_feature_names # if no bin features, state feature names are just global feature names
         logger.debug('Normalizing global features...')
-        self.states, self.global_zscore_stats, self.global_rel_stats = normalize_noncyclic_features(
-            state=states,
-            state_feature_names=state_feature_names,
-            sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
-            log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
-            fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
-            local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
-            z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
-            do_sin_norm=cfg.data.do_sin_norm,
-            do_log_norm=cfg.data.do_log_norm,
-            do_fractional_norm=cfg.data.do_fractional_norm,
-            do_local_mean_z_score=cfg.data.do_local_mean_z_score,
-            do_z_score_norm=cfg.data.do_z_score_norm,
-            fix_nans=True,
-            z_stats=z_score_stats['global_features'] if z_score_stats is not None else None,
-            rel_stats=rel_norm_stats['global_features'] if rel_norm_stats is not None else None,
-            train_state_idxs=train_state_idxs
-        )
-        if self.include_bin_features and bin_states is not None:
-            logger.debug('Normalizing bin features...')
-            self.bin_states, self.bin_zscore_stats, self.bin_rel_stats = normalize_noncyclic_features(
-                state=torch.tensor(bin_states).detach().clone(),
-                state_feature_names=self.bin_feature_names,
-                sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
-                log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
-                fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
-                local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
-                z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
-                do_sin_norm=cfg.data.do_sin_norm,
-                do_log_norm=cfg.data.do_log_norm,
-                do_fractional_norm=cfg.data.do_fractional_norm,
-                do_local_mean_z_score=cfg.data.do_local_mean_z_score,
-                do_z_score_norm=cfg.data.do_z_score_norm,
-                z_stats=z_score_stats['bin_features'] if z_score_stats is not None else None,
-                rel_stats=rel_norm_stats['bin_features'] if rel_norm_stats is not None else None,
-                fix_nans=True,
+        if global_normalizer is None:
+            global_normalizer = StateNormalizer(state_feature_names=cfg.data.global_features, **norm_kwargs)
+        if self.include_bin_features and bin_normalizer is None:
+            bin_normalizer = StateNormalizer(state_feature_names=cfg.data.bin_features, **norm_kwargs)
+        
+        if mode == 'train':
+            self.states, self.global_zscore_stats, self.global_rel_stats = global_normalizer.fit_transform(
+                state=states,
                 train_state_idxs=train_state_idxs
             )
         else:
-            self.bin_states = None
-        if self.global_zscore_stats or self.global_rel_stats:
-            self._save_norm_stats(Path(cfg.experiments_directory) / cfg.experiment_name)
+            self.states = global_normalizer.transform(
+                state=states,
+                z_stats_dict=z_score_stats.get('global_features', {}),
+                rel_stats_dict=rel_norm_stats.get('global_features', {})
+            )
+            self.global_zscore_stats, self.global_rel_stats = None, None
         
+        if self.include_bin_features and bin_states is not None:
+            logger.debug('Normalizing bin features...')
+            bin_tensor = torch.tensor(bin_states).detach().clone()
+            
+            if mode == 'train':
+                self.bin_states, self.bin_zscore_stats, self.bin_rel_stats = bin_normalizer.fit_transform(
+                    state=bin_tensor,
+                    train_state_idxs=train_state_idxs
+                )
+            else:
+                self.bin_states = bin_normalizer.transform(
+                    state=bin_tensor,
+                    z_stats_dict=z_score_stats.get('bin_features', {}),
+                    rel_stats_dict=rel_norm_stats.get('bin_features', {})
+                )
+                self.bin_zscore_stats, self.bin_rel_stats = None, None
+        else:
+            self.bin_states = None
+
+        if mode == 'train' and (self.global_zscore_stats or self.global_rel_stats):
+            self._save_norm_stats(Path(cfg.experiments_directory) / cfg.experiment_name)
+            
         # If using flat MLP
         if cfg.model.network == 'mlp':
             if self.include_bin_features and self.bin_states is not None:

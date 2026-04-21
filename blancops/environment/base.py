@@ -5,16 +5,16 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 
-from blancops.configs.constants import CYCLICAL_FEATURE_NAMES, FRACTIONAL_FEATURE_NAMES, LOCAL_MEAN_Z_SCORE_FEATURE_NAMES, LOG_NORM_FEATURE_NAMES, SIN_NORM_FEATURE_NAMES, Z_SCORE_NORM_FEATURE_NAMES
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 
-from blancops.data.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
+from blancops.data.features.glob_features import add_cyclical_norm_cols, calc_moon_phase, calc_sun_and_moon_positions, calc_urgency
 from blancops.data.features.bin_features import get_relative_feature, get_delta_az_el, calc_relative_survey_progress_features
-from blancops.data.features.normalizations import normalize_noncyclic_features, normalize_timestamp
-from blancops.data.constants import *
+from blancops.data.features.normalizations import normalize_timestamp
 from blancops.math import geometry
+from blancops.data.constants import *
+
 
 from astropy.time import Time
 from einops import rearrange
@@ -250,49 +250,66 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         self._update_action_masks()
 
     def _get_state(self):
-        global_state, bin_state = self._global_state, self._bin_state
-        global_state_normed, _, _ = normalize_noncyclic_features(
-                            state=np.array(global_state),
-                            state_feature_names=self.state_feature_names,
-                            sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
-                            log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
-                            fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
-                            local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
-                            z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
-                            do_sin_norm=self.cfg.data.do_sin_norm,
-                            do_log_norm=self.cfg.data.do_log_norm,
-                            do_fractional_norm=self.cfg.data.do_fractional_norm,
-                            do_local_mean_z_score=self.cfg.data.do_local_mean_z_score,
-                            do_z_score_norm=self.cfg.data.do_z_score_norm,
-                            z_stats=self._z_score_stats['global_features'],
-                            rel_stats=self._rel_norm_stats['global_features'],
-                            fix_nans=True,
-                            do_debug=False
+        global_state = np.array(self._global_state, dtype=np.float32)
+        global_state_normed = self.global_normalizer.transform(
+            global_state,
+            self._z_score_stats['global_features'],
+            self._rel_norm_stats['global_features']
         )
-
+        # global_state_normed, _, _ = normalize_noncyclic_features(
+        #                     state=np.array(global_state),
+        #                     state_feature_names=self.state_feature_names,
+        #                     sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
+        #                     log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
+        #                     fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
+        #                     local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
+        #                     z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
+        #                     do_sin_norm=self.cfg.data.do_sin_norm,
+        #                     do_log_norm=self.cfg.data.do_log_norm,
+        #                     do_fractional_norm=self.cfg.data.do_fractional_norm,
+        #                     do_local_mean_z_score=self.cfg.data.do_local_mean_z_score,
+        #                     do_z_score_norm=self.cfg.data.do_z_score_norm,
+        #                     z_stats=self._z_score_stats['global_features'],
+        #                     rel_stats=self._rel_norm_stats['global_features'],
+        #                     fix_nans=True,
+        #                     do_debug=False
+        # )
         if self.include_bin_features:
-            bin_state_normed, _, _ = normalize_noncyclic_features(
-                state=np.array(bin_state), # add axis for function
-                state_feature_names=self.bin_feature_names,
-                sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
-                log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
-                fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
-                local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
-                z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
-                do_sin_norm=self.cfg.data.do_sin_norm,
-                do_log_norm=self.cfg.data.do_log_norm,
-                do_fractional_norm=self.cfg.data.do_fractional_norm,
-                do_local_mean_z_score=self.cfg.data.do_local_mean_z_score,
-                do_z_score_norm=self.cfg.data.do_z_score_norm,
-                z_stats=self._z_score_stats['bin_features'],
-                rel_stats=self._rel_norm_stats['bin_features'],
-                fix_nans=True,
-                do_debug=False
+            bin_state_arr = np.array(self._bin_state, dtype=np.float32)
+            bin_state_normed = self.bin_normalizer.transform(
+                bin_state_arr,
+                self._z_score_stats['bin_features'],
+                self._rel_norm_stats['bin_features']
             )
         else:
-            bin_state_normed = np.array([])
-        self._global_state = global_state_normed.astype(np.float32)
-        self._bin_state = bin_state_normed.astype(np.float32)
+            bin_state_normed = np.array([], dtype=np.float32)
+
+        self._global_state = global_state_normed
+        self._bin_state = bin_state_normed
+        
+        # if self.include_bin_features:
+        #     bin_state_normed, _, _ = normalize_noncyclic_features(
+        #         state=np.array(bin_state), # add axis for function
+        #         state_feature_names=self.bin_feature_names,
+        #         sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
+        #         log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
+        #         fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
+        #         local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
+        #         z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
+        #         do_sin_norm=self.cfg.data.do_sin_norm,
+        #         do_log_norm=self.cfg.data.do_log_norm,
+        #         do_fractional_norm=self.cfg.data.do_fractional_norm,
+        #         do_local_mean_z_score=self.cfg.data.do_local_mean_z_score,
+        #         do_z_score_norm=self.cfg.data.do_z_score_norm,
+        #         z_stats=self._z_score_stats['bin_features'],
+        #         rel_stats=self._rel_norm_stats['bin_features'],
+        #         fix_nans=True,
+        #         do_debug=False
+        #     )
+        # else:
+        #     bin_state_normed = np.array([])
+        # self._global_state = global_state_normed.astype(np.float32)
+        # self._bin_state = bin_state_normed.astype(np.float32)
         # for feat_name, row in zip(self.global_feature_names, self._global_state):
         #     print(feat_name, row.max(), row.min())
         # for feat_name, row in zip(self.bin_feature_names, self._bin_state.T):
@@ -400,12 +417,13 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         else:
             new_features['t_night'] = normalize_timestamp(timestamp, sunset_timestamp=sunset_ts, sunrise_timestamp=sunrise_ts)
         
-
-        for feat_name in self.base_global_feature_names:
-            if any(string in feat_name and 'frac' not in feat_name for string in CYCLICAL_FEATURE_NAMES):
-                new_features[f'{feat_name}_cos'] = np.cos(new_features[feat_name])
-                new_features[f'{feat_name}_sin'] = np.sin(new_features[feat_name])
-
+        if getattr(self, 'do_cyclical_norm', False):
+            for feat_name in self.base_global_feature_names:
+                # Use the dynamic list from the YAML config instead of the hardcoded constant
+                if any(feat_name == cyc_feat or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in self.cyclical_feature_names):
+                    new_features[f'{feat_name}_cos'] = np.cos(new_features[feat_name])
+                    new_features[f'{feat_name}_sin'] = np.sin(new_features[feat_name])
+                    
         global_state_features = [new_features.get(feat, np.nan) for feat in self.global_feature_names]
         nan_feats = np.isnan(global_state_features)
         if any(nan_feats):
@@ -575,14 +593,15 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             features |= calc_relative_survey_progress_features(features, el_mask)
         
         # Normalize periodic features here and add as df cols
-        if self.cfg.data.do_cyclical_norm:
+        # Normalize periodic features here and add as dict keys
+        if getattr(self, 'do_cyclical_norm', False):
             for feat_name in self.base_bin_feature_names:
-                if any(string in feat_name and 'frac' not in feat_name for string in CYCLICAL_FEATURE_NAMES):
-                    if feat_name in features.keys():
+                if any(feat_name == cyc_feat or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in self.cyclical_feature_names):
+                    if feat_name in features:
                         features[f'{feat_name}_cos'] = np.cos(features[feat_name])
                         features[f'{feat_name}_sin'] = np.sin(features[feat_name])
                     else:
-                        raise ValueError(f"{feat_name} was not calculated in _calculate_bin_features. Is this feature implemented?")
+                        raise ValueError(f"{feat_name} was not calculated. Is this feature implemented?")
                     
         final_arrays = []
         for key in self.bin_feature_names:

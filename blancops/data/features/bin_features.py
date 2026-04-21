@@ -219,18 +219,18 @@ class BinFeatureEngineer:
         valid_cols = np.where(el_mask, feat_arr, np.nan)
         return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
     
-# def calc_relative_survey_progress_features(feature_dict, el_mask):
-#     for filt in FILTER2IDX.keys():
-#         for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
-#             raw_key = f"{s_feat_name}_{filt}"
-#             if raw_key in feature_dict:
-#                 valid_cols = np.where(el_mask, feature_dict[raw_key], np.nan)
-#                 feature_dict[f"rel_{raw_key}"] = get_relative_feature(valid_cols, el_mask)
-#     return feature_dict
+def calc_relative_survey_progress_features(feature_dict, el_mask):
+    for filt in FILTER2IDX.keys():
+        for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
+            raw_key = f"{s_feat_name}_{filt}"
+            if raw_key in feature_dict:
+                valid_cols = np.where(el_mask, feature_dict[raw_key], np.nan)
+                feature_dict[f"rel_{raw_key}"] = get_relative_feature(valid_cols, el_mask)
+    return feature_dict
 
-# def get_relative_feature(feat_arr, el_mask):
-#     valid_cols = np.where(el_mask, feat_arr, np.nan)
-#     return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
+def get_relative_feature(feat_arr, el_mask):
+    valid_cols = np.where(el_mask, feat_arr, np.nan)
+    return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
 
 def get_delta_az_el(bin_azs, bin_els, target_az, target_el):
     azs = (bin_azs - target_az + np.pi) % (2 * np.pi) - np.pi

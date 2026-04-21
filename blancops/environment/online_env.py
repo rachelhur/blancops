@@ -13,7 +13,7 @@ from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data.offline_dataset import setup_feature_names
 
-from blancops.data.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
+from blancops.data.features.glob_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
 from blancops.data.constants import *
 
 from blancops.environment.base import BaseBlancoEnv

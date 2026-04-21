@@ -8,11 +8,13 @@ import pandas as pd
 import torch
 
 from blancops.configs.constants import CYCLICAL_FEATURE_NAMES
+from blancops.data.features.normalizations import build_normalizer_kwargs
 from blancops.data.lookup import load_lookup_tables
+from blancops.data.constants import *
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data.offline_dataset import setup_feature_names
-from blancops.data.features.global_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
+from blancops.data.features.glob_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
 from blancops.data.constants import *
 
 from blancops.environment.base import BaseBlancoEnv
@@ -22,11 +24,11 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 
-class OfflineBlancoTestingEnv(BaseBlancoEnv):
+class ValidationBlancoEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
     """
-    def __init__(self, cfg, lookups, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None, fwhm_night_interps=None, z_score_stats=None, rel_norm_stats=None,
+    def __init__(self, cfg, lookups, global_normalizer, bin_normalizer, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None, fwhm_night_interps=None, z_score_stats=None, rel_norm_stats=None,
                  t_survey_arr=None, survey_nights_total=None):
         """
         Args
@@ -48,10 +50,6 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
         self.do_filt = 'filter' in self.action_space
         self._fwhm_night_interps = fwhm_night_interps
-        self._rel_norm_stats = rel_norm_stats
-        self._z_score_stats = z_score_stats
-        logger.debug(f"Loaded rel_norm_stats: {self._rel_norm_stats}")
-        logger.debug(f"Loaded z_score_stats: {self._z_score_stats}")
         self._t_survey_arr = t_survey_arr
         self.nfields = len(lookups.field2maxvisits)
         self._fids = np.array(list(lookups.field2maxvisits.keys())).astype(np.int32)
@@ -59,6 +57,16 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
         self._ra_arr = np.array([lookups.field2radec[fid][0] for fid in self._fids])
         self._dec_arr = np.array([lookups.field2radec[fid][1] for fid in self._fids])
         self._max_s_visits_arr = np.array([lookups.field2maxvisits[fid] for fid in self._fids], dtype=np.int32)
+        
+        self._rel_norm_stats = rel_norm_stats
+        self._z_score_stats = z_score_stats
+        logger.debug(f"Loaded rel_norm_stats: {self._rel_norm_stats}")
+        logger.debug(f"Loaded z_score_stats: {self._z_score_stats}")
+        self.global_normalizer = global_normalizer
+        self.bin_normalizer = bin_normalizer
+        norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
+        self.cyclical_feature_names = norm_kwargs.get('cyclical_feature_names', [])
+        self.do_cyclical_norm = len(self.cyclical_feature_names) > 0
 
         # Get filter lookup tables
         if self.do_filt:
@@ -81,7 +89,7 @@ class OfflineBlancoTestingEnv(BaseBlancoEnv):
             setup_feature_names(base_global_feature_names=cfg.data.global_features,
                                 base_bin_feature_names=cfg.data.bin_features,
                                 cyclical_feature_names=CYCLICAL_FEATURE_NAMES,
-                                do_cyclical_norm=cfg.data.do_cyclical_norm,
+                                do_cyclical_norm=norm_kwargs['do_cyclical_norm'],
                                 )
         if cfg.model.network == 'mlp':
             self.state_feature_names = self.global_feature_names + self.bin_feature_names
