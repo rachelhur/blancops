@@ -2,19 +2,21 @@ import os
 import numpy as np
 import torch
 import matplotlib
+
+from blancops.data.lookup import LookupTables
 matplotlib.use('Agg')
 import time
 
 from blancops.rl.trainer import Trainer
 # from blancops.rl.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device, seed_everything
-from blancops.data.preprocessing import load_train_data_to_dataframe 
+from blancops.data.preprocessing import preprocess_train_df 
 from blancops.data.dataset import OfflineDataset
 from blancops.utils.sys_utils import save_config
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 from blancops.rl.registry import build_algorithm, build_network
 from blancops.configs.schema import load_and_validate, resolve_and_save
-from blancops.configs.constants import TRAIN_DATA_PATH, BIN_FEATURES
+from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, BIN_FEATURES
 
 import argparse
 import logging
@@ -58,10 +60,12 @@ def main():
     # ---------------------- #
 
     # --- LOAD DATA AND CONSTRUCT DATASET --- #
-    df = load_train_data_to_dataframe(TRAIN_DATA_PATH)
+    df = preprocess_train_df(TRAIN_DATA_PATH)
+    train_lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, is_historic=True)
     train_dataset = OfflineDataset(
         df=df,
         cfg=cfg,
+        lookups=train_lookups
         )
     logger.info("Finished constructing train_dataset.")
     logger.info(f"Train dataset has {train_dataset.n_nights} nights and {train_dataset.num_transitions} transitions")

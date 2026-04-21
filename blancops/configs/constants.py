@@ -27,21 +27,8 @@ PATHS = {
     "SAMPLE_110825": Path(WORKSPACE / "data" / "test_suite" / "sample-110825")
 }
 
-LOOKUPS = {
-    "DECFITS": "decam-exposures-20251211.fits",
-    "FIELD2RADEC": "field2radec.json",
-    "FIELD2NAME": "field2name.json",
-    "FIELD2MAXVISITS_TRAIN": "field2nvisits_default1.json",
-    "FIELD2MAXVISITS_EVAL": "field2nvisits_default0.json",
-    "NIGHT2FIELDVISITS": "night2fieldhistory.pkl",
-    "NIGHT2FILTERVISITS": "night2filterhistory.pkl",
-    "FIELD2FILTERS": "field2filters.pkl",
-    "FIELDFILTER2MAXVISITS": "fieldfilter2nvisits.pkl",
-    "FILTER_TARGET_COUNTS": "target_counts_per_filter.pkl"
-}
-
 TRAIN_DATA_DIR = PATHS["TRAIN_DIR"]
-TRAIN_DATA_PATH = TRAIN_DATA_DIR / LOOKUPS["DECFITS"]
+TRAIN_DATA_PATH = TRAIN_DATA_DIR / "decam-exposures-20251211.fits"
 
 GLOBAL_FEATURES = [
     "t_night", 

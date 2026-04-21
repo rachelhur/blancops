@@ -19,7 +19,7 @@ from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.constants import *
 from blancops.environment.online_env import OnlineBlancoEnv
 from blancops.plotting.schedule_viz import *
-from blancops.data.dataset import load_field2radec_as_numpy
+from blancops.data.dataset import load_fid2radec_as_numpy
 
 import logging
 logger = logging.getLogger(__name__)
@@ -129,15 +129,15 @@ def main():
         schedule_name = args.schedule_name
         workspace_dir = get_workspace_dir()
         lookup_dirpath = workspace_dir / "data" / "test_suite" / schedule_name
-        for f in ['field_lookup.json', 'field2radec.json']:
+        for f in ['field_lookup.json', 'fid2radec.json']:
             filepath = lookup_dirpath / f
             assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
 
         field_lookup = pd.read_json(lookup_dirpath / "field_lookup.json")
-        # field2radec = field_lookup[['ra', 'dec']].to_numpy()
+        # fid2radec = field_lookup[['ra', 'dec']].to_numpy()
         
-        field2radec = load_field2radec_as_numpy(lookup_dirpath / "field2radec.json")
-        field2nvisits = np.array([n for n in field_lookup['n_visits'].values])
+        fid2radec = load_fid2radec_as_numpy(lookup_dirpath / "fid2radec.json")
+        fid2nvisits = np.array([n for n in field_lookup['n_visits'].values])
         
         if schedule_name == 'gw-followup':
             print(f"Using GW followup test suite with predefined observing nights based on {args.observing_nights} set")
@@ -167,13 +167,13 @@ def main():
         lookup_dirpath = args.field_lookup_dir.resolve()
         schedule_name = args.schedule_name
 
-    for f in ['field_lookup.json', 'field2radec.json']:
+    for f in ['field_lookup.json', 'fid2radec.json']:
         filepath = lookup_dirpath / f
         assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
 
     field_lookup = pd.read_json(lookup_dirpath / "field_lookup.json")
-    field2radec = load_field2radec_as_numpy(lookup_dirpath / "field2radec.json")
-    field2nvisits = np.array([n for n in field_lookup['n_visits'].values])
+    fid2radec = load_fid2radec_as_numpy(lookup_dirpath / "fid2radec.json")
+    fid2nvisits = np.array([n for n in field_lookup['n_visits'].values])
 
     # Check that field_lookup has all required columns needed to run environment
     required_columns = ['field_id', 'exptime', 'ra', 'dec', 'n_visits', 'filter'] # 'dithers','object', 'priorities'
@@ -204,17 +204,17 @@ def main():
     env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, data_dir=lookup_dirpath,
                     observing_night_strs=observing_night_strs, horizon=sun_horizon, max_nights=args.max_nights, airmass_limit=args.airmass_lim,
                     s_visits_cur=s_visits_cur, s_filter_visits_cur=fieldfilter2nvisits, night1_ts_start=args.night1_ts_start, field_priorities_arr=None)
-    # field2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
+    # fid2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
 
     # Evaluate
     eval_metrics = agent.evaluate(env=env, cfg=cfg, num_episodes=1, field_choice_method=args.field_choice_method, eval_outdir=schedule_outdir,
-              field2nvisits=field2nvisits, field2radec=field2radec, save_SISPI=True, SISPI_fn=schedule_name + ".json", field_lookup=field_lookup)
+              fid2nvisits=fid2nvisits, fid2radec=fid2radec, save_SISPI=True, SISPI_fn=schedule_name + ".json", field_lookup=field_lookup)
     
     logger.info("Generating plots...")
     save_survey_diagnostics(eval_metrics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, action_space=action_space)
     save_gifs(schedule_path=schedule_outdir / 'full_survey_schedule.csv', save_dir=schedule_outdir, 
               do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, action_space=action_space, nside=nside, 
-              field2radec_filepath=lookup_dirpath / "field2radec.json")
+              fid2radec_filepath=lookup_dirpath / "fid2radec.json")
 
     if not args.no_night_diagnostics:
         save_nightly_diagnostics(eval_metrics=eval_metrics, observing_night_strs=observing_night_strs, schedule_outdir=schedule_outdir, action_architecture=cfg['model']['action_architecture'],

@@ -12,8 +12,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 def main():
     """
-    .
-    Default workspace is the project root directory, blancops
+    Initialized a workspace for blancops and saves a pointer to ~/.blancops_profile. Default workspace is the project root directory, blancops
     """
     parser = argparse.ArgumentParser(description="Initialize blancops workspace and saves a pointer to ~/.blancops_profile")
     parser.add_argument(
@@ -34,7 +33,7 @@ def main():
 
     logger.info(f"Initializing workspace at: {workspace}")
 
-    # 1. Create the necessary directory structure
+    # Create the necessary directory structure
     directories_to_create = [
         workspace,
         workspace / "configs",
@@ -48,7 +47,7 @@ def main():
         dir_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"  [+] Created directory: {dir_path}")
 
-    # 2. Copy the default global_config.json out of the package
+    # Copy sample train_config.json to outside of package
     src_config_dict = {
         "template_train_config.json": workspace / "blancops" / "configs" / "template_train_config.json"
     }
@@ -61,8 +60,6 @@ def main():
             logger.warning(f" [!] Config already exists at {cfg_dest}. Use --force to overwrite.")
         else:
             try:
-                # Copy global_config.json from within package to config_dest
-                save_DES_bin_and_field_mappings(fits_path=None, outdir=None)
                 config_text = resources.files('blancops.configs').joinpath(cfg_name).read_text()
                 cfg_dest.write_text(config_text)
                 ext_config_dict[cfg_name].write_text(config_text)
@@ -72,13 +69,13 @@ def main():
                 logger.warning(f"  [!] Failed to copy config. Reason: {e}")
         
 
-    # 3. Save lookups for train data - assumes fits file is in train dir already
-    try:
-        train_dir = workspace / "data" / "train"
-        save_DES_bin_and_field_mappings(fits_path= train_dir / "decam-exposures-20251211.fits", outdir=train_dir)
-        logger.info(f"  [+] Constructed train data lookup tables in {train_dir}")
-    except Exception as e:
-        logger.warning(f"  [!] Failed to construct train data lookup tables. Reason: {e}")
+    # # 3. Save lookups for train data - assumes fits file is in train dir already
+    # try:
+    #     train_dir = workspace / "data" / "train"
+    #     save_DES_bin_and_field_mappings(fits_path= train_dir / "decam-exposures-20251211.fits", outdir=train_dir)
+    #     logger.info(f"  [+] Constructed train data lookup tables in {train_dir}")
+    # except Exception as e:
+    #     logger.warning(f"  [!] Failed to construct train data lookup tables. Reason: {e}")
 
     # save workspace pointer file
     pointer_file = Path.home() / ".blancops_profile"

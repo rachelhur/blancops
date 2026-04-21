@@ -5,7 +5,6 @@ import pickle
 import gc
 import logging
 from pathlib import Path
-from collections import defaultdict
 from tqdm import tqdm
 
 import torch
@@ -18,9 +17,7 @@ from blancops.math import geometry
 from blancops.data.preprocessing import drop_rows_in_DECam_data
 from blancops.data.constants import *
 from blancops.configs.constants import (
-    PATHS, LOOKUPS, TRAIN_DATA_DIR,
     CYCLICAL_FEATURE_NAMES, SIN_NORM_FEATURE_NAMES, LOG_NORM_FEATURE_NAMES,
-    FRACTIONAL_FEATURE_NAMES, Z_SCORE_NORM_FEATURE_NAMES, LOCAL_MEAN_Z_SCORE_FEATURE_NAMES
 )
 
 from blancops.data.features.glob_features import GlobalFeatureEngineer, calc_inst_teff_rate
@@ -31,15 +28,16 @@ logger = logging.getLogger(__name__)
 
 class OfflineDataset(torch.utils.data.Dataset):
     def __init__(
-        self, df=None, cfg=None,
+        self, df=None, cfg=None, lookups=None,
         global_normalizer=None, bin_normalizer=None,
         years=None, months=None, days=None, filters=None,
         z_score_stats=None, rel_norm_stats=None, mode='train'
     ): 
-        # 1. Configuration & Space Setup
+        # Setup configurations, normalization method, and lookups
         norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
         self._setup_configuration(cfg, norm_kwargs)
-        self.load_lookups()
+        self.lookups = lookups
+        # self.load_lookups()
 
         # 2. Raw Data Filtering
         df = drop_rows_in_DECam_data(
@@ -68,10 +66,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         # 7. Final Formatting & Validation
         self._format_tensors_for_network(cfg.model.network)
         self._validate_dataset()
-
-    # ==========================================
-    # PIPELINE METHODS
-    # ==========================================
 
     def _setup_configuration(self, cfg, norm_kwargs):
         """Initializes constants, spaces, and feature names."""
@@ -104,11 +98,11 @@ class OfflineDataset(torch.utils.data.Dataset):
     def _engineer_features(self, df, cfg, norm_kwargs):
         """Executes the pandas/numpy feature engineering pipelines."""
         glob_feature_eng = GlobalFeatureEngineer(
-            field2name=self.lookup['field2name'], 
+            fid2name=self.lookups.fid2name, 
             hpGrid=self.hpGrid, 
             base_features=cfg.data.global_features,
             cyclical_features=CYCLICAL_FEATURE_NAMES, 
-            do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', False)
+            do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', True)
         )
         self._df = glob_feature_eng.transform(df)
         
@@ -118,12 +112,12 @@ class OfflineDataset(torch.utils.data.Dataset):
                 base_features=cfg.data.bin_features, 
                 cyclical_features=CYCLICAL_FEATURE_NAMES, 
                 action_space=cfg.data.action_space,
-                field2radec=self.lookup['field2radec'],
-                night2fieldvisits=self.lookup['night2fieldvisits'],
-                fieldfilter2maxvisits=self.lookup['fieldfilter2maxvisits'],
-                night2filtervisithistory=self.lookup['night2filtervisithistory'],
-                field2maxvisits=self.lookup['field2maxvisits'],
-                do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', False),
+                fid2radec=self.lookups.fid2radec,
+                night2fieldvisits=self.lookups.night2fid_visit_hist,
+                fieldfilter2maxvisits=self.lookups.target_fidfilt_counts,
+                night2filtervisithistory=self.lookups.night2fidfilt_visit_hist,
+                fid2maxvisits=self.lookups.target_fid_counts,
+                do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', True),
                 do_local_mean_z_score=self.do_local_mean_z_score
             )
             self._prenorm_bin_states = bin_feature_eng.transform(self._df, requested_features=self.bin_feature_names)
@@ -384,10 +378,6 @@ class OfflineDataset(torch.utils.data.Dataset):
             json.dump(all_stats, f, indent=4)
         logger.info(f"Normalization stats successfully saved to {save_path}")
 
-    # ==========================================
-    # PYTORCH DATASET OVERRIDES
-    # ==========================================
-
     def __len__(self):
         return self.num_transitions
 
@@ -410,10 +400,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         )
         return transition
     
-    # ==========================================
-    # DATALOADER HELPERS
-    # ==========================================
-
     def _determine_split(self, val_split, random_seed, method='by_night'):
         np.random.seed(random_seed)
         
@@ -459,30 +445,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         )
         return train_loader, val_loader
 
-    def load_lookups(self):
-        field2maxvisits_path = TRAIN_DATA_DIR / LOOKUPS['FIELD2MAXVISITS_TRAIN']
-        field2radec_path = TRAIN_DATA_DIR / LOOKUPS['FIELD2RADEC']
-        field2name_path = TRAIN_DATA_DIR / LOOKUPS['FIELD2NAME']
-        night2filtervisithistory_path = TRAIN_DATA_DIR / LOOKUPS['NIGHT2FILTERVISITS']
-        fieldfilter2maxvisits = TRAIN_DATA_DIR / LOOKUPS['FIELDFILTER2MAXVISITS']
-
-        self.lookup = {}
-        with open(field2name_path, 'r') as f:
-            self.lookup['field2name'] = json.load(f)
-        with open(TRAIN_DATA_DIR / LOOKUPS['NIGHT2FIELDVISITS'], 'rb') as f:
-            self.lookup['night2fieldvisits'] = pickle.load(f)
-        with open(field2radec_path, 'r') as f:
-            field2radec = json.load(f)
-            self.lookup['field2radec'] = {int(k): v for k, v in field2radec.items()}
-        with open(field2maxvisits_path, 'r') as f:
-            field2maxvisits = json.load(f)
-            self.lookup['field2maxvisits'] = {int(k): v for k, v in field2maxvisits.items()}
-        with open(night2filtervisithistory_path, 'rb') as f:
-            self.lookup['night2filtervisithistory'] = pickle.load(f)
-        with open(fieldfilter2maxvisits, 'rb') as f:
-            self.lookup['fieldfilter2maxvisits'] = pickle.load(f)
-        return self
-    
 def _validate_field_lookup_df(field_lookup_df):
     required_columns = ['field_id', 'exptime', 'ra', 'dec', 'n_visits', 'filter'] # 'dithers','object', 'priorities'
     missing_cols = [col for col in required_columns if col not in field_lookup_df.columns]
@@ -511,17 +473,17 @@ def load_field_lookup_df(filepath):
     _validate_field_lookup_df(field_lookup_df)
     return field_lookup_df
 
-def save_field2radec(field2radec_df, outdir):
+def save_fid2radec(fid2radec_df, outdir):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exists_ok=True)
     
-    field2radec = {int(row['field_id']): (row['ra'], row['dec']) for _, row in field2radec_df.iterrows()}
+    fid2radec = {int(row['field_id']): (row['ra'], row['dec']) for _, row in fid2radec_df.iterrows()}
     
-    outpath = outdir / "field2radec.json"
+    outpath = outdir / "fid2radec.json"
     with open(outpath, 'w') as f:
-        json.dump(field2radec, f)
-    logger.info(f"Successfully saved field2radec to {outpath}")
+        json.dump(fid2radec, f)
+    logger.info(f"Successfully saved fid2radec to {outpath}")
     
-def load_field2radec_as_numpy(filepath):
-    field2radec = pd.read_json(filepath).T
-    return field2radec.to_numpy()
+def load_fid2radec_as_numpy(filepath):
+    fid2radec = pd.read_json(filepath).T
+    return fid2radec.to_numpy()

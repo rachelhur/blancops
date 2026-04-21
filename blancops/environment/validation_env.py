@@ -8,10 +8,9 @@ import pandas as pd
 import torch
 
 from blancops.configs.constants import CYCLICAL_FEATURE_NAMES
-from blancops.data.features.normalizations import build_normalizer_kwargs
-from blancops.data.lookup import load_lookup_tables
+from blancops.data.features.normalizations import StateNormalizer, build_normalizer_kwargs
 from blancops.data.constants import *
-from blancops.math import units
+from blancops.data.lookup import LookupTables
 from blancops.ephemerides import ephemerides
 from blancops.data.features.normalizations import setup_feature_names
 from blancops.data.features.glob_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
@@ -28,7 +27,7 @@ class ValidationBlancoEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
     """
-    def __init__(self, cfg, lookups, global_normalizer, bin_normalizer, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None, fwhm_night_interps=None, z_score_stats=None, rel_norm_stats=None,
+    def __init__(self, cfg, lookups: LookupTables, global_normalizer: StateNormalizer, bin_normalizer: StateNormalizer, max_nights=None, exp_time=90., global_pd_nightgroup=None, zenith_bin_states=None, fwhm_night_interps=None, z_score_stats=None, rel_norm_stats=None,
                  t_survey_arr=None, survey_nights_total=None):
         """
         Args
@@ -51,12 +50,12 @@ class ValidationBlancoEnv(BaseBlancoEnv):
         self.do_filt = 'filter' in self.action_space
         self._fwhm_night_interps = fwhm_night_interps
         self._t_survey_arr = t_survey_arr
-        self.nfields = len(lookups.field2maxvisits)
-        self._fids = np.array(list(lookups.field2maxvisits.keys())).astype(np.int32)
+        self.nfields = len(lookups.fid2name)
+        self._fids = np.array(list(lookups.fid2name.keys())).astype(np.int32)
         assert np.array_equal(self._fids, np.arange(len(self._fids))), "Field IDs must be perfectly sequential and start at 0."
-        self._ra_arr = np.array([lookups.field2radec[fid][0] for fid in self._fids])
-        self._dec_arr = np.array([lookups.field2radec[fid][1] for fid in self._fids])
-        self._max_s_visits_arr = np.array([lookups.field2maxvisits[fid] for fid in self._fids], dtype=np.int32)
+        self._ra_arr = np.array([lookups.fid2radec[fid][0] for fid in self._fids])
+        self._dec_arr = np.array([lookups.fid2radec[fid][1] for fid in self._fids])
+        self._max_s_visits_arr = np.array([lookups.target_fid_counts[fid] for fid in self._fids], dtype=np.int32)
         
         self._rel_norm_stats = rel_norm_stats
         self._z_score_stats = z_score_stats
@@ -73,7 +72,7 @@ class ValidationBlancoEnv(BaseBlancoEnv):
             self.nfilters = NUM_FILTERS
             self.idx2filter = {v: k for k, v in FILTER2IDX.items()}
             if self.do_filt: 
-                self._max_s_filter_visits_arr = np.array([lookups.fieldfilter2maxvisits[fid] for fid in self._fids], dtype=np.int32)
+                self._max_s_filter_visits_arr = np.array([lookups.target_fidfilt_counts[fid] for fid in self._fids], dtype=np.int32)
 
         # Bin-space dependent function to get fields in bin
         if not self.hpGrid.is_azel:
@@ -119,7 +118,7 @@ class ValidationBlancoEnv(BaseBlancoEnv):
         self._is_new_night = True
         self._start_new_night()
         self._update_action_masks()
-        # self._update_action_masks(timestamp=self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+        # self._update_action_masks(timestamp=self._ts, fid2maxvisits=self.fid2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
         #                                           hpGrid=self.hpGrid, visited=self._s_visits_cur)
     
     def _start_new_night(self):
@@ -142,12 +141,12 @@ class ValidationBlancoEnv(BaseBlancoEnv):
         self._global_state = [global_first_row[feat_name] for feat_name in self.global_feature_names]
 
         # Get field visit counts at start of night
-        self._s_visits_cur = self.lookups.night2fieldvisithistory[night][self._fids].copy().astype(np.int32)
+        self._s_visits_cur = self.lookups.night2fid_visit_hist[night][self._fids].copy().astype(np.int32)
         self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
         
         # Get field filter visit counts at start of night
         if self.do_filt:
-            self._s_filter_visits_cur = self.lookups.night2filtervisithistory[night].copy()
+            self._s_filter_visits_cur = self.lookups.night2fidfilt_visit_hist[night].copy()
             self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
             if 'raw_survey_progress_g' in list(global_first_row.keys()):
                 self._global_urgency_arr = np.array([global_first_row[f'urgency_{filt_name}'] for filt_name in FILTER2IDX.keys()], dtype=np.float32)

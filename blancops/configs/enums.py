@@ -23,11 +23,13 @@ class Reward(str, Enum):
     EXPERT_ACTION = "expert_action"
     SURVEY_UNIFORMITY = "survey_uniformity"
 
-class Lookup(str, Enum):
-    FIELD2NAME = "field2name"
-    FIELD2RADEC = "field2radec"
-    FIELD2MAXVISITS_TRAIN = "field2maxvisits_train"
-    NIGHT2FIELDVISITS = "night2fieldvisits"
-    NIGHT2FILTERVISITS = "night2filtervisits"
-    FIELDFILTER2MAXVISITS = "fieldfilter2maxvisits"
-    FILTER_TARGET_COUNTS = "target_counts_per_filter"
+class LookupKeys(str, Enum):
+    FID2NAME = "fid2name.json"
+    FID2RADEC = "fid2radec.json"
+    FID2FILTERS = "fid2filters.pkl"
+    TARGET_FID2VISITS_TRAIN = "target_counts_per_fid_train.json"
+    TARGET_FID2VISITS_EVAL = "target_counts_per_fid_eval.json"
+    NIGHT2FID_VISIT_HIST = "night2fidvisits.pkl"
+    NIGHT2FIDFILT_VISIT_HIST = "night2fidfilt_visits.pkl"
+    TARGET_FIDFILT_COUNTS = "target_counts_per_fidfilt.pkl"
+    TARGET_FILT_COUNTS = "target_counts_per_filter.pkl"

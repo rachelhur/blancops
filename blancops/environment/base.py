@@ -189,7 +189,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             all_fields_visited = np.all(self._s_filter_visits_cur >= self._max_s_filter_visits_arr)
         else:
             all_fields_visited = np.all(self._s_visits_cur >= self._max_s_visits_arr)
-        # all_fields_visited = all(np.array([self._s_visits_cur[fid] >= self.field2maxvisits[fid] for fid in self._fids]))
+        # all_fields_visited = all(np.array([self._s_visits_cur[fid] >= self.fid2maxvisits[fid] for fid in self._fids]))
         
         terminated = all_nights_completed or all_fields_visited
         if terminated:
@@ -245,7 +245,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                                                           ra_arr=self._ra_arr, dec_arr=self._dec_arr,
                                                           )
         self._bin_state = self._calculate_bin_features(timestamp=self._ts) if self.include_bin_features else np.array([])
-        # self._update_action_masks(timestamp=self._ts, field2maxvisits=self.field2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+        # self._update_action_masks(timestamp=self._ts, fid2maxvisits=self.fid2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
                                                 #   hpGrid=self.hpGrid, visited=self._s_visits_cur)
         self._update_action_masks()
 
@@ -379,7 +379,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                 new_features[f'is_filter_{filt}'] = filt_str == filt
       # --- OnlineEnv Logic --- #
             
-        # new_features['ra'], new_features['dec'] = self.field2radec[field_id]
+        # new_features['ra'], new_features['dec'] = self.fid2radec[field_id]
         new_features['az'], new_features['el'] = ephemerides.equatorial_to_topographic(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
         new_features['ha'] = ephemerides.equatorial_to_hour_angle(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
         
@@ -405,10 +405,10 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             sky_bright_filt = estimate_sky_brightness(time=timestamp, ra=ra, dec=dec, band=filt)
             new_features[f'sky_brightness_{filt}'] = sky_bright_filt
             if getattr(self, "_raw_survey_progress_arr", None) is not None:
-                new_features[f'survey_progress_{filt}'] = self._raw_survey_progress_arr[idx] / self.lookups.target_filter_counts[idx]
+                new_features[f'survey_progress_{filt}'] = self._raw_survey_progress_arr[idx] / self.lookups.target_filt_counts[idx]
                 new_features[f'urgency_{filt}'] = calc_urgency(
                     filter_counts_arr=self._raw_survey_progress_arr[idx], 
-                    filter_counts_max=self.lookups.target_filter_counts[idx], 
+                    filter_counts_max=self.lookups.target_filt_counts[idx], 
                     survey_night_indices=self._survey_night_idx,
                     survey_nights_max=self.survey_nights_total)
         if sunrise_ts == sunset_ts:
@@ -722,14 +722,14 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                 mask_visibility = mask_fields_below_horizon # Fallback for offline
 
             if self.do_filt:
-                sel_valid_ff = self._s_filter_visits_cur < self.lookups.fieldfilter2maxvisits
+                sel_valid_ff = self._s_filter_visits_cur < self.lookups.target_fidfilt_counts
                 sel_valid_ff &= mask_visibility[:, np.newaxis] 
                 sel_valid_fields = sel_valid_ff.any(axis=1)
             else:
-                if isinstance(self.lookups.field2maxvisits, dict):
-                    mask_completed_fields = np.array([self._s_visits_cur[fid] < self.lookups.field2maxvisits[fid] for fid in self._fids], dtype=bool)
+                if isinstance(self.lookups.target_fid_counts, dict):
+                    mask_completed_fields = np.array([self._s_visits_cur[fid] < self.lookups.target_fid_counts[fid] for fid in self._fids], dtype=bool)
                 else:
-                    mask_completed_fields = self._s_visits_cur < self.lookups.field2maxvisits
+                    mask_completed_fields = self._s_visits_cur < self.lookups.target_fid_counts
                 sel_valid_fields = mask_completed_fields & mask_visibility
 
             if self.hpGrid.is_azel:

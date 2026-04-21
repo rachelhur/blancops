@@ -17,8 +17,8 @@ class BinFeatureEngineer:
         night2fieldvisits, 
         night2filtervisithistory, 
         fieldfilter2maxvisits, 
-        field2radec, 
-        field2maxvisits, 
+        fid2radec, 
+        fid2maxvisits, 
         do_cyclical_norm=True, 
         do_local_mean_z_score=True
     ):
@@ -32,8 +32,8 @@ class BinFeatureEngineer:
         self.night2fieldvisits = night2fieldvisits
         self.night2filtervisithistory = night2filtervisithistory
         self.fieldfilter2maxvisits = fieldfilter2maxvisits
-        self.field2radec = field2radec
-        self.field2maxvisits = field2maxvisits
+        self.fid2radec = fid2radec
+        self.fid2maxvisits = fid2maxvisits
 
     def transform(self, pt_df, requested_features) -> np.ndarray:
         """Executes the bin feature pipeline and returns a 3D tensor."""
@@ -158,10 +158,10 @@ class BinFeatureEngineer:
         return calculate_history_dependent_bin_features(
             pt_df=pt_df, 
             hpGrid=self.hpGrid, 
-            field2radec=self.field2radec, 
+            fid2radec=self.fid2radec, 
             night2visithistory=self.night2fieldvisits, 
             night2filtervisithistory=self.night2filtervisithistory,
-            field2maxvisits=self.field2maxvisits, 
+            fid2maxvisits=self.fid2maxvisits, 
             fieldfilter2maxvisits=self.fieldfilter2maxvisits, 
             action_space=self.action_space,
             requested_features=requested_features
@@ -238,12 +238,12 @@ def get_delta_az_el(bin_azs, bin_els, target_az, target_el):
     return azs, els
 
 
-def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2visithistory, 
-                                             night2filtervisithistory, field2maxvisits, 
+def calculate_history_dependent_bin_features(pt_df, hpGrid, fid2radec, night2visithistory, 
+                                             night2filtervisithistory, fid2maxvisits, 
                                              fieldfilter2maxvisits, action_space, requested_features):
     n_bins = len(hpGrid.idx_lookup)
     arr_shape = (len(pt_df), n_bins)
-    field_ids = np.array(list(field2maxvisits.keys()))
+    field_ids = np.array(list(fid2maxvisits.keys()))
     nfields, nfilters = len(field_ids), len(FILTER2IDX)
     idx2filter = {v: k for k, v in FILTER2IDX.items()}
     sentinel_val = AZEL_BIN_FEAT_SENTINEL if hpGrid.is_azel else RADEC_BIN_FEAT_SENTINEL
@@ -288,13 +288,13 @@ def calculate_history_dependent_bin_features(pt_df, hpGrid, field2radec, night2v
     # ---------------------------------------------------------
     # 2. SURVEY-WIDE SETUP
     # ---------------------------------------------------------
-    ra_arr = np.array([field2radec[fid][0] for fid in field_ids])
-    dec_arr = np.array([field2radec[fid][1] for fid in field_ids])
+    ra_arr = np.array([fid2radec[fid][0] for fid in field_ids])
+    dec_arr = np.array([fid2radec[fid][1] for fid in field_ids])
     
     if do_filt:
         max_s_f_vis_all = np.array([fieldfilter2maxvisits[fid] for fid in field_ids], dtype=np.int32)
     else:
-        max_s_vis_all = np.array([field2maxvisits[fid] for fid in field_ids], dtype=np.int32)
+        max_s_vis_all = np.array([fid2maxvisits[fid] for fid in field_ids], dtype=np.int32)
 
     pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX).fillna(ZENITH_FILTER_IDX).astype(np.int32)
     if pt_df['filt_idx'].isna().any():

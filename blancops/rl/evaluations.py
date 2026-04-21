@@ -10,7 +10,7 @@ from matplotlib import colors
 import pandas as pd
 
 from blancops.data.constants import *
-from blancops.data.lookup import load_lookup_tables
+from blancops.data.lookup import LookupTables
 from blancops.data.dataset import OfflineDataset
 from blancops.data.features.normalizations import load_normalization_stats
 from blancops.math.geometry import angular_separation
@@ -20,7 +20,7 @@ from blancops.math import units
 from blancops.ephemerides.ephemerides import get_source_ra_dec
 from blancops.data.features.glob_features import calc_moon_phase as _calc_moon_phase
 from blancops.data.features.glob_features import calc_sun_and_moon_positions as _calc_sun_and_moon_pos
-from blancops.data.preprocessing import load_train_data_to_dataframe
+from blancops.data.preprocessing import preprocess_train_df
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 
 from blancops.plotting.plotting import plot_schedule_whole
@@ -41,7 +41,7 @@ FILTER_PATCHES = [Patch(color=v, label=k) for k, v in FILTER_COLORS.items()]
 
 def get_validation_dataset(cfg):
     outdir = Path(cfg.experiment_outdir)
-    df = load_train_data_to_dataframe(TRAIN_DATA_PATH)
+    df = preprocess_train_df(TRAIN_DATA_PATH)
     df_val = df[df['night'].isin(cfg.data.val_nights)]
     z_score_stats, rel_norm_stats = load_normalization_stats(outdir)
     val_dataset = OfflineDataset(
@@ -359,7 +359,7 @@ class DataContainer():
         self._populate_expert_df()
         self.segments = self._get_expert_idx_segments()
         
-        self.lookup = load_lookup_tables(TRAIN_DATA_DIR)
+        self.lookup = LookupTables.load_from_dir(TRAIN_DATA_DIR)
         self.errors_df = pd.DataFrame()
             
     def populate_errors_df(self):
@@ -580,8 +580,8 @@ class DataContainer():
         return az_arr, el_arr, ra_arr, dec_arr
 
     def _get_field_coords(self, field_ids, timestamps):
-        ra_arr = np.array([self.lookup.field2radec[fid][0] for fid in field_ids])
-        dec_arr = np.array([self.lookup.field2radec[fid][1] for fid in field_ids])
+        ra_arr = np.array([self.lookup.fid2radec[fid][0] for fid in field_ids])
+        dec_arr = np.array([self.lookup.fid2radec[fid][1] for fid in field_ids])
         az_arr, el_arr = np.zeros(len(field_ids)), np.zeros(len(field_ids))
         for i, (time, (ra, dec)) in enumerate(zip(timestamps, zip(ra_arr, dec_arr))):
             az_arr[i], el_arr[i] = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=time)
@@ -668,7 +668,7 @@ class Evaluator:
         timestamps = self.data.agent_df['timestamp'].values
         expert_bin_idxs = self.data.expert_df['bin_idx']
         agent_bin_idxs = self.data.agent_df['bin_idx']
-        field_pos = np.array([self.data.lookup.field2radec[fid] for fid in np.arange(len(self.data.lookup.field2radec))])
+        field_pos = np.array([self.data.lookup.fid2radec[fid] for fid in np.arange(len(self.data.lookup.fid2radec))])
         nside = self.data.hpGrid.nside
         self.plotter.plot_mollweide_res(timestamps, expert_bin_idxs, agent_bin_idxs, field_pos, nside)
         

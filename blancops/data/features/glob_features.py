@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 class GlobalFeatureEngineer:
     """Pipeline for calculating global state features for blancops RL."""
     
-    def __init__(self, field2name, hpGrid, base_features, cyclical_features, do_cyclical_norm=True):
-        self.field2name = field2name
+    def __init__(self, fid2name, hpGrid, base_features, cyclical_features, do_cyclical_norm=True):
+        self.fid2name = fid2name
         self.hpGrid = hpGrid
         self.base_features = base_features
         self.cyclical_features = cyclical_features
@@ -55,7 +55,7 @@ class GlobalFeatureEngineer:
         return df
 
     def _map_bins_and_fields(self, df: pd.DataFrame) -> pd.DataFrame:
-        df['field_id'] = df['object'].map({v: k for k, v in self.field2name.items()})
+        df['field_id'] = df['object'].map({v: k for k, v in self.fid2name.items()})
         
         if self.hpGrid is not None:
             lon = df['az'] if self.hpGrid.is_azel else df['ra']
@@ -281,7 +281,7 @@ def calculate_sun_rise_and_set_azel(df):
     return rise_azels, set_azels
 
 
-# def calculate_global_features(df: pd.DataFrame, field2name, hpGrid, 
+# def calculate_global_features(df: pd.DataFrame, fid2name, hpGrid, 
 #                       base_global_feature_names, cyclical_feature_names, do_cyclical_norm):
 #     # ADD ZENITH ROWS
 #     zenith_df = get_zenith_features(original_df=df)
@@ -303,7 +303,7 @@ def calculate_sun_rise_and_set_azel(df):
 #     assert all(df['t_night'].values > 0) and all(df['t_night'].values < 1), "Time fractions should be between 0 and 1"  
 
 #     # 6. Add bin and field id columns to dataframe
-#     df['field_id'] = df['object'].map({v: k for k, v in field2name.items()})
+#     df['field_id'] = df['object'].map({v: k for k, v in fid2name.items()})
     
 #     if hpGrid is not None:
 #         if hpGrid.is_azel:
@@ -314,7 +314,7 @@ def calculate_sun_rise_and_set_azel(df):
 #             lat = df['dec']
 #         df['bin'] = hpGrid.ang2idx(lon=lon, lat=lat)
 #         df.loc[df['object'] == 'zenith', "bin"] = ZENITH_BIN_NUM
-#         df.loc[df['object'] == 'zenith', "field_id"] = ZENITH_FIELD_ID # Need to re-assign zenith field_id bc df['object'].map(...) above will assign zenith the field_id of the field with object name 'zenith', but this field is mis-labelled and not actually the zenith field. #TODO should fix this in field2name
+#         df.loc[df['object'] == 'zenith', "field_id"] = ZENITH_FIELD_ID # Need to re-assign zenith field_id bc df['object'].map(...) above will assign zenith the field_id of the field with object name 'zenith', but this field is mis-labelled and not actually the zenith field. #TODO should fix this in fid2name
 
 #     # Add other feature columns for those not present in dataframe
 #     sky_bright_done = False

@@ -79,16 +79,16 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         self.nfilters = len(FILTER2IDX)
 
         self.field_lookup = pd.read_json(Path(data_dir) / "field_lookup.json" )
-        # self.field2radec = pd.read_json(Path(data_dir) / "field2radec.json")
-        from blancops.data.dataset import load_field2radec_as_numpy
-        self.field2radec = load_field2radec_as_numpy(Path(data_dir) / "field2radec.json")
+        # self.fid2radec = pd.read_json(Path(data_dir) / "fid2radec.json")
+        from blancops.data.dataset import load_fid2radec_as_numpy
+        self.fid2radec = load_fid2radec_as_numpy(Path(data_dir) / "fid2radec.json")
                 
         self._fids = np.unique(self.field_lookup['field_id'].to_numpy())
         self.nfields = len(self._fids)
         assert np.array_equal(self._fids, np.arange(len(self._fids))), "Field IDs must be perfectly sequential and start at 0."
         
-        self._ra_arr = self.field2radec[:, 0]
-        self._dec_arr = self.field2radec[:, 1]
+        self._ra_arr = self.fid2radec[:, 0]
+        self._dec_arr = self.fid2radec[:, 1]
         self._max_s_visits_arr = np.bincount(self.field_lookup['field_id'].values, weights=self.field_lookup['n_visits'].values).astype(int)
 
         # Get filter lookup tables
@@ -122,10 +122,10 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                 self._s_filter_visits_cur = self._init_s_filter_visits.copy()
             else:
                 self._s_filter_visits_cur = np.zeros((len(self._fids), self.nfilters), dtype=np.int32)
-            self.field2maxvisits = None
+            self.fid2maxvisits = None
         else:
             self.fieldfilter2maxvisits = None
-            self.field2maxvisits = self._max_s_visits_arr
+            self.fid2maxvisits = self._max_s_visits_arr
 
         # Get static bin memberships for radec
         if not self.hpGrid.is_azel:
@@ -235,7 +235,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
             self._bin_state = np.array([])
         self._update_action_masks()
 
-        # self._update_action_masks(self._ts, field2maxvisits=self.field2maxvisits, fieldfilter2maxvisits=self.fieldfilter2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+        # self._update_action_masks(self._ts, fid2maxvisits=self.fid2maxvisits, fieldfilter2maxvisits=self.fieldfilter2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
                                                 #   hpGrid=self.hpGrid, field_visits_arr=self._s_visits_cur, field_filter_visits_arr=self._s_filter_visits_cur)
 
     def _fast_forward(self, timestamp, ras, decs, visited, max_visits):

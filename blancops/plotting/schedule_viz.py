@@ -17,14 +17,14 @@ from collections import defaultdict
 from blancops.ephemerides.ephemerides import topographic_to_equatorial
 from blancops.math import units
 
-def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_ortho, action_space, nside, field2radec_filepath):
+def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_ortho, action_space, nside, fid2radec_filepath):
     if do_fieldbin:
         plot_schedule_from_file(
             outfile=save_dir / "agent_fieldbin_schedule.gif",
             schedule_file=schedule_path,
             plot_type='fieldbin',
             nside=nside,
-            fields_file=field2radec_filepath,
+            fields_file=fid2radec_filepath,
             whole=False,
             compare=False,
             expert=False,
@@ -37,7 +37,7 @@ def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_or
             schedule_file=schedule_path,
             plot_type='bin',
             nside=nside,
-            fields_file=field2radec_filepath,
+            fields_file=fid2radec_filepath,
             whole=False,
             compare=False,
             expert=False,
@@ -54,7 +54,7 @@ def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_or
                     schedule_file=schedule_path,
                     plot_type='bin',
                     nside=nside,
-                    fields_file=field2radec_filepath,
+                    fields_file=fid2radec_filepath,
                     whole=True,
                     compare=True,
                     expert=True,
@@ -67,7 +67,7 @@ def save_gifs(schedule_path, save_dir, do_fieldbin, do_bin, do_mollefield, do_or
                     schedule_file=schedule_path,
                     plot_type='bin',
                     nside=nside,
-                    fields_file=field2radec_filepath,
+                    fields_file=fid2radec_filepath,
                     whole=True,
                     compare=True,
                     expert=True,
@@ -226,7 +226,7 @@ def save_nightly_diagnostics(eval_metrics, observing_night_strs, schedule_outdir
         save_nightly_schedule(night_metrics=metrics, save_dir=night_dir)
         if do_gifs:
             save_gifs(night_dir / "schedule.csv", night_dir, do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, action_space=action_space, nside=nside, 
-                      field2radec_filepath=lookup_dirpath / 'field2radec.json')
+                      fid2radec_filepath=lookup_dirpath / 'fid2radec.json')
             
         night_dt += timedelta(days=1)
 

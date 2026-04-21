@@ -191,8 +191,8 @@ class Trainer:
         episode_rewards = []
         eval_metrics = {}
 
-        field2nvisits = lookups.field2maxvisits
-        field2radec = lookups.field2radec
+        fid2nvisits = lookups.target_fid_counts
+        fid2radec = lookups.fid2radec
 
         hpGrid = ephemerides.HealpixGrid(nside=cfg.data.nside, is_azel=('azel' in cfg.data.action_space))
         action_space = cfg.data.action_space
@@ -248,8 +248,8 @@ class Trainer:
                             fields_in_bin = np.array(valid_fields_per_bin.get(int(bin_idx), []))
                             if len(fields_in_bin) == 0:
                                 raise ValueError(f"No valid fields in bin {action}.")
-                            field_id = self.choose_field(obs=(state['global_state'], state['bin_state']), info=info, field2nvisits=field2nvisits, 
-                                                        field2radec=field2radec, hpGrid=hpGrid, field_choice_method=field_choice_method, fields_in_bin=fields_in_bin,
+                            field_id = self.choose_field(obs=(state['global_state'], state['bin_state']), info=info, fid2nvisits=fid2nvisits, 
+                                                        fid2radec=fid2radec, hpGrid=hpGrid, field_choice_method=field_choice_method, fields_in_bin=fields_in_bin,
                                                         filter_idx=filter_idx)#, num_filters=self.algorithm.num_filters)
                             FIELDS_CHOSEN.append(field_id)
                         is_first_wait = (bin_idx == WAIT_SIGNAL) and (last_bin_idx != WAIT_SIGNAL)
@@ -359,7 +359,7 @@ class Trainer:
         """
         self.algorithm.load(filepath)
 
-    def choose_field(self, obs, info, field2nvisits, field2radec, hpGrid, field_choice_method, fields_in_bin, filter_idx): 
+    def choose_field(self, obs, info, fid2nvisits, fid2radec, hpGrid, field_choice_method, fields_in_bin, filter_idx): 
         """
         Choose field in bin based on interpolated Q-values
         """
@@ -374,7 +374,7 @@ class Trainer:
         if (s_filter_visits is not None) and (max_s_filter_visits is not None) and (filter_idx >= 0):
             field_ids_in_bin = [fid for fid in fields_in_bin if s_filter_visits[fid, filter_idx] < max_s_filter_visits[fid, filter_idx]]
         else:
-            field_ids_in_bin = [fid for fid in fields_in_bin if s_visited[fid] < field2nvisits[fid]]
+            field_ids_in_bin = [fid for fid in fields_in_bin if s_visited[fid] < fid2nvisits[fid]]
         
         assert len(field_ids_in_bin) != 0, "No valid fields are in bin...check environment's output mask."
         logger.debug(f'Chosen bin contains {len(field_ids_in_bin)} incomplete fields out of {len(fields_in_bin)} fields total')
@@ -399,8 +399,8 @@ class Trainer:
             lat_data = hpGrid.lat
 
             # CHECK
-            # target_coords = np.array([field2radec[fid] for fid in field_ids_in_bin])
-            target_coords = np.array([field2radec[fid] for fid in field_ids_in_bin])
+            # target_coords = np.array([fid2radec[fid] for fid in field_ids_in_bin])
+            target_coords = np.array([fid2radec[fid] for fid in field_ids_in_bin])
             
             if hpGrid.is_azel:
                 # Project RA/Dec to local Az/El frame using the current timestamp
