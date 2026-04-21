@@ -10,6 +10,7 @@ from blancops.configs.constants import TRAIN_DATA_DIR, LOOKUPS
 @dataclass
 class LookupTables:
     field2name: dict
+    # field2fid: np.array
     field2radec: np.array
     field2maxvisits: np.array
     night2fieldvisithistory: np.array

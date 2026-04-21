@@ -9,7 +9,7 @@ from blancops.rl.trainer import Trainer
 # from blancops.rl.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device, seed_everything
 from blancops.data.preprocessing import load_train_data_to_dataframe 
-from blancops.data.offline_dataset import OfflineDataset
+from blancops.data.dataset import OfflineDataset
 from blancops.utils.sys_utils import save_config
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 from blancops.rl.registry import build_algorithm, build_network

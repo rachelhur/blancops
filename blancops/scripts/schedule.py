@@ -19,7 +19,7 @@ from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.constants import *
 from blancops.environment.online_env import OnlineBlancoEnv
 from blancops.plotting.schedule_viz import *
-from blancops.data.manager import load_field2radec_as_numpy
+from blancops.data.dataset import load_field2radec_as_numpy
 
 import logging
 logger = logging.getLogger(__name__)

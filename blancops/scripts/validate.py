@@ -21,12 +21,11 @@ from blancops.rl.registry import build_algorithm
 from blancops.utils.sys_utils import seed_everything
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.preprocessing import load_train_data_to_dataframe
-from blancops.data.manager import load_field2radec_as_numpy
+from blancops.data.dataset import load_field2radec_as_numpy
 from blancops.environment.validation_env import ValidationBlancoEnv
-from blancops.data.offline_dataset import OfflineDataset
+from blancops.data.dataset import OfflineDataset
 from blancops.data.constants import *
 from blancops.math import units
-from blancops.data.manager import load_field2radec_as_numpy
 from blancops.configs.constants import TRAIN_DATA_PATH, TRAIN_DATA_DIR, LOOKUPS
 
 from blancops.data.features.glob_features import calc_twilight

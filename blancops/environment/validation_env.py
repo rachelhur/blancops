@@ -13,7 +13,7 @@ from blancops.data.lookup import load_lookup_tables
 from blancops.data.constants import *
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-from blancops.data.offline_dataset import setup_feature_names
+from blancops.data.features.normalizations import setup_feature_names
 from blancops.data.features.glob_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
 from blancops.data.constants import *
 

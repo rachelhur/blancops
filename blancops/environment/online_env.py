@@ -11,7 +11,7 @@ import torch
 
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-from blancops.data.offline_dataset import setup_feature_names
+from blancops.data.features.normalizations import setup_feature_names
 
 from blancops.data.features.glob_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
 from blancops.data.constants import *
@@ -80,7 +80,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
 
         self.field_lookup = pd.read_json(Path(data_dir) / "field_lookup.json" )
         # self.field2radec = pd.read_json(Path(data_dir) / "field2radec.json")
-        from blancops.data.manager import load_field2radec_as_numpy
+        from blancops.data.dataset import load_field2radec_as_numpy
         self.field2radec = load_field2radec_as_numpy(Path(data_dir) / "field2radec.json")
                 
         self._fids = np.unique(self.field_lookup['field_id'].to_numpy())

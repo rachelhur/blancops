@@ -11,15 +11,15 @@ import pandas as pd
 
 from blancops.data.constants import *
 from blancops.data.lookup import load_lookup_tables
-from blancops.data.offline_dataset import OfflineDataset
+from blancops.data.dataset import OfflineDataset
 from blancops.data.features.normalizations import load_normalization_stats
 from blancops.math.geometry import angular_separation
 from blancops.ephemerides import ephemerides
 
 from blancops.math import units
 from blancops.ephemerides.ephemerides import get_source_ra_dec
-from blancops.data.features.global_features import calc_moon_phase as _calc_moon_phase
-from blancops.data.features.global_features import calc_sun_and_moon_positions as _calc_sun_and_moon_pos
+from blancops.data.features.glob_features import calc_moon_phase as _calc_moon_phase
+from blancops.data.features.glob_features import calc_sun_and_moon_positions as _calc_sun_and_moon_pos
 from blancops.data.preprocessing import load_train_data_to_dataframe
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 
