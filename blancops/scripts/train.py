@@ -27,7 +27,7 @@ from pathlib import Path
 def get_args():
     parser = argparse.ArgumentParser()
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-c', '--cfg', type=str, default=None, help="Path to config file. If passed, all other arguments are ignored")
+    parser.add_argument('-c', '--cfg', type=str, default=None, required=True, help="Path to config file. If passed, all other arguments are ignored")
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
 
     args = parser.parse_args()

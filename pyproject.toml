@@ -12,10 +12,12 @@ dependencies = ["PyYAML"]
 include = ["blancops*"]
 
 [project.scripts]
-model-init = "blancops.scripts.init:main"
-model-train = "blancops.scripts.train:main"
-model-eval = "blancops.scripts.eval:main"
-model-schedule = "blancops.scripts.schedule:main"
+init-workspace = "blancops.scripts.init:main"
+construct-train-lookups = "blancops.scripts.generate_train_lookups:main"
+run-train = "blancops.scripts.train:main"
+run-validate = "blancops.scripts.validate:main"
+run-inference = "blancops.scripts.inference:main"
 
 [tool.setuptools.package-data]
 "blancops" = ["configs/*.json", "configs/*.yaml"]
+"blancops.configs" = ["*.json"]

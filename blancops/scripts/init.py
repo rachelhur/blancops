@@ -3,7 +3,6 @@ import argparse
 from pathlib import Path
 # import importlib.resources as pkg_resources
 from importlib import resources
-from blancops.data.preprocessing import save_DES_bin_and_field_mappings
 
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -47,35 +46,26 @@ def main():
         dir_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"  [+] Created directory: {dir_path}")
 
-    # Copy sample train_config.json to outside of package
-    src_config_dict = {
-        "template_train_config.json": workspace / "blancops" / "configs" / "template_train_config.json"
-    }
-    ext_config_dict = {
-        "template_train_config.json": workspace / "configs" / "template_train_config.json"    
-    }
+    # # Copy sample train_config.json to outside of package
+    # src_config_dict = {
+    #     "template_train_config.json": workspace / "blancops" / "configs" / "template_train_config.json"
+    # }
+    # ext_config_dict = {
+    #     "template_train_config.json": workspace / "configs" / "template_train_config.json"    
+    # }
     
-    for cfg_name, cfg_dest in src_config_dict.items():
-        if cfg_dest.exists() and not args.force:
-            logger.warning(f" [!] Config already exists at {cfg_dest}. Use --force to overwrite.")
-        else:
-            try:
-                config_text = resources.files('blancops.configs').joinpath(cfg_name).read_text()
-                cfg_dest.write_text(config_text)
-                ext_config_dict[cfg_name].write_text(config_text)
+    # for cfg_name, cfg_dest in src_config_dict.items():
+    #     if cfg_dest.exists() and not args.force:
+    #         logger.warning(f" [!] Config already exists at {cfg_dest}. Use --force to overwrite.")
+    #     else:
+    #         try:
+    #             config_text = resources.files('blancops.configs').joinpath(cfg_name).read_text()
+    #             cfg_dest.write_text(config_text)
+    #             ext_config_dict[cfg_name].write_text(config_text)
                 
-                logger.info(f"  [+] Copied default {cfg_name} to: {ext_config_dict[cfg_name]}")
-            except Exception as e:
-                logger.warning(f"  [!] Failed to copy config. Reason: {e}")
-        
-
-    # # 3. Save lookups for train data - assumes fits file is in train dir already
-    # try:
-    #     train_dir = workspace / "data" / "train"
-    #     save_DES_bin_and_field_mappings(fits_path= train_dir / "decam-exposures-20251211.fits", outdir=train_dir)
-    #     logger.info(f"  [+] Constructed train data lookup tables in {train_dir}")
-    # except Exception as e:
-    #     logger.warning(f"  [!] Failed to construct train data lookup tables. Reason: {e}")
+    #             logger.info(f"  [+] Copied default {cfg_name} to: {ext_config_dict[cfg_name]}")
+    #         except Exception as e:
+    #             logger.warning(f"  [!] Failed to copy config. Reason: {e}")
 
     # save workspace pointer file
     pointer_file = Path.home() / ".blancops_profile"
