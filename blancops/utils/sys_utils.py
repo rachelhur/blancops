@@ -71,7 +71,9 @@ def dict_to_nested(data):
         d[keys[-1]] = value
     return nested
 
-def setup_logger(save_dir, logging_filename, logging_level='debug'):
+def setup_logger(save_dir, logging_filename=None, logging_level='debug'):
+    if save_dir is not None:
+        assert logging_filename is not None, "Must provide logging filename if saving logs to directory. Use save_dir=None if not saving logs."
     # Create logger
     # logger = logging.getLogger(__name__)
     logger = logging.getLogger('blancops')
@@ -85,26 +87,23 @@ def setup_logger(save_dir, logging_filename, logging_level='debug'):
         format = '%(asctime)s - %(levelname)s - %(message)s'
     else:
         raise NotImplementedError
+    format = logging.Formatter(format, datefmt='%Y-%m-%d %H:%M:%S')
 
     # Avoid duplicate handlers if called twice
     if logger.handlers:
         raise ValueError("Handler called twice")
     
-    # Create handlers
+    # Create console handler
     console_handler = logging.StreamHandler(sys.stdout)
-    # console_handler.setLevel(logging.DEBUG)
-    file_handler = logging.FileHandler(save_dir / logging_filename, mode='w')
-    # file_handler.setLevel(logging.DEBUG)
-    
-    # Create formatters and add to handlers
-    # console_format = logging.Formatter('%(levelname)s - %(message)s')
-    format = logging.Formatter(format, datefmt='%Y-%m-%d %H:%M:%S')
     console_handler.setFormatter(format)
-    file_handler.setFormatter(format)
-    
-    # Add handlers to logger
     logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+    
+    # Create file handler
+    if save_dir is not None:
+        file_handler = logging.FileHandler(save_dir / logging_filename, mode='w')
+        file_handler.setFormatter(format)
+        logger.addHandler(file_handler)
+
     return logger
 
 def get_device():
