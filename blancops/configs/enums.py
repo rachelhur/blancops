@@ -27,9 +27,12 @@ class LookupKeys(str, Enum):
     FID2NAME = "fid2name.json"
     FID2RADEC = "fid2radec.json"
     FID2FILTERS = "fid2filters.pkl"
+    TARGET_FIDFILT_COUNTS = "target_counts_per_fidfilt.pkl"
+    TARGET_FILT_COUNTS = "target_counts_per_filter.pkl"
+    TARGET_FID_COUNTS = "target_counts_per_fid.pkl"
+    
+    # TRAIN DATA LOOKUP KEYS    
     TARGET_FID2VISITS_TRAIN = "target_counts_per_fid_train.json"
     TARGET_FID2VISITS_EVAL = "target_counts_per_fid_eval.json"
     NIGHT2FID_VISIT_HIST = "night2fidvisits.pkl"
     NIGHT2FIDFILT_VISIT_HIST = "night2fidfilt_visits.pkl"
-    TARGET_FIDFILT_COUNTS = "target_counts_per_fidfilt.pkl"
-    TARGET_FILT_COUNTS = "target_counts_per_filter.pkl"
