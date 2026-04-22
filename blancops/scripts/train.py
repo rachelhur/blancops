@@ -100,20 +100,23 @@ def main():
     
     lr_scheduler_kwargs = get_cosine_annealing_scheduler_kwargs(cfg, trainloader.dataset)
     # ---------------------- #
+    
+    # --- BUILD ALGORITHM --- #
     cfg = resolve_and_save(cfg=cfg, dataset_dims=train_dataset.dataset_dims, dataset_feature_names=train_dataset.dataset_feature_names, 
                            lr_scheduler_kwargs=lr_scheduler_kwargs, val_nights=train_dataset.val_nights, outdir=exp_outdir)
     algorithm = build_algorithm(cfg, device=device)
 
-    agent = Trainer(
+    trainer = Trainer(
         algorithm=algorithm,
         train_outdir=str(exp_outdir) + '/',
     )
+    # ---------------------- #
 
     logger.info("Starting training...")
 
     # Train agent
     start_time = time.time()
-    agent.fit(
+    trainer.fit(
         num_epochs=cfg.train.max_epochs,
         trainloader=trainloader,
         valloader=valloader,

@@ -14,15 +14,15 @@ import logging
 
 from blancops.configs.enums import LookupKeys
 from blancops.configs.schema import load_and_validate
+from blancops.core.runner import ScheduleGenerator
 from blancops.data.lookup import LookupTables
 from blancops.data.features.normalizations import load_normalization_stats
 from blancops.plotting.plotting import plot_schedule_from_file
-from blancops.rl.trainer import Trainer
+from blancops.rl.agent import Agent
 from blancops.rl.registry import build_algorithm
 from blancops.utils.sys_utils import seed_everything
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.preprocessing import preprocess_train_df
-from blancops.data.dataset import load_fid2radec_as_numpy
 from blancops.environment.validation_env import ValidationBlancoEnv
 from blancops.data.dataset import OfflineDataset
 from blancops.data.constants import *
@@ -219,8 +219,8 @@ def main():
     # Define eval outdir
     evaluation_name = args.evaluation_name
     if getattr(args, 'evaluation_name', None) is None:
-        date_postfix = datetime.now().strftime("%Y-%m-%d")
-        evaluation_name = f"eval_{date_postfix}_0"
+        date_postfix = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        evaluation_name = f"val_test_{date_postfix}_0"
     else:
         evaluation_name = args.evaluation_name
 
@@ -311,14 +311,7 @@ def main():
         # plt.plot(_ts, cs(_ts), color='red')
         fwhm_night_interps.append(cs)
 
-    algorithm = build_algorithm(cfg, device)
-    agent = Trainer(
-        algorithm=algorithm,
-        train_outdir=args.trained_model_dir,
-    )
-    agent.load(Path(args.trained_model_dir) / 'best_weights.pt')
-
-    # REGISTER ENV 
+    # ENVIRONMENT SETUP
     logger.info("Setting up environment...")
     env_name = 'OfflineDECamTestingEnv-v0'
     gym.register(
@@ -326,8 +319,7 @@ def main():
         entry_point=ValidationBlancoEnv,
     )
         
-        
-    # GET INITIAL STATES PER NIGHT FROM DATASET
+    # get initial state per night from dataset
     global_pd_nightgroup = test_dataset._df.groupby('night')
     if not args.start_at_zenith:
         global_pd_nightgroup = global_pd_nightgroup.apply(lambda x: x.iloc[1:]).reset_index(drop=True).groupby('night')
@@ -340,12 +332,13 @@ def main():
     else:
         night_start_bin_states = None
     
-    # INITIALIZE ENV
     
     # env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, \
     #                zenith_bin_states=night_start_bin_states, z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, t_survey_arr=t_survey_arr, survey_nights_total=survey_nights_total,
     #                fwhm_night_interps=fwhm_night_interps)
-    logger.debug("Directly instantiating to find bug...")
+    # logger.debug("Directly instantiating to find bug...")
+    
+    # CREATE ENVIRONMENT
     env = ValidationBlancoEnv(
         cfg=cfg, 
         lookups=lookups,
@@ -360,10 +353,29 @@ def main():
         survey_nights_total=survey_nights_total,
         fwhm_night_interps=fwhm_night_interps
     )
-    # Plot predicted action for each state
+    
+    # BUILD ALGORITHM
+    algorithm = build_algorithm(cfg, device)
+    algorithm.load(Path(args.trained_model_dir) / 'best_weights.pt')
+    
+    # BUILD AGENT
+    agent = Agent(algorithm=algorithm, cfg=cfg, lookups=lookups, field_choice_method=args.field_choice_method)
+    # BUILD RUNNER
+    runner = ScheduleGenerator(
+        agent=agent,
+        algorithm=algorithm,
+        cfg=cfg,
+        lookups=lookups,
+        num_episodes=1,
+        outdir=args.trained_model_dir / evaluation_name,
+        save_SISPI=False,
+        schedule_chunk_size=0,
+    )
+
+    # -------------- GET SINGLE STEP PREDICTIONS -------------- #
     cur_idxs = test_dataset.current_state_idxs
     with torch.no_grad():
-        q_vals = agent.algorithm.policy.core_net(test_dataset.states[cur_idxs].to(device), test_dataset.bin_states[cur_idxs].to(device) if test_dataset.bin_states is not None else None)
+        q_vals = runner.algorithm.policy.core_net(test_dataset.states[cur_idxs].to(device), test_dataset.bin_states[cur_idxs].to(device) if test_dataset.bin_states is not None else None)
         agent_actions = torch.argmax(q_vals, dim=1).to('cpu').detach().numpy()
     
     exp_actions = test_dataset.actions.detach().numpy()    
@@ -412,17 +424,20 @@ def main():
         axs[1].set_ylabel('Filter Index residuals (Agent - Expert)')
         axs[1].set_xlabel('Time since sunrise (normalized)')
         fig.savefig(eval_outdir + 'single_step_filters_vs_time.png')
+    # ............................................. #
 
-    # Roll out policy
+    # -------------- EVALUATE POLICY -------------- #
     logger.info("Starting evaluation...")
-    agent.evaluate(env=env, cfg=cfg, num_episodes=args.num_episodes, lookups=lookups, field_choice_method=args.field_choice_method, eval_outdir=eval_outdir)
+    diagnostics = runner.generate_schedule(env=env)
     logger.info("Evaluation complete.")
     with open(eval_outdir + 'eval_metrics.pkl', 'rb') as handle:
-        eval_metrics = pickle.load(handle)
+        diagnostics = pickle.load(handle)
     logger.info("Generating static plots...")
-
+    # ............................................. #
+    
+    # ------------ PLOT RESULTS -------------- #
     ep_num = 0
-    eval_metrics = eval_metrics[f'ep-{ep_num}']
+    diagnostics = diagnostics[f'ep-{ep_num}']
 
     # 1. Create a DataFrame of ONLY the valid "current" states.
     # This perfectly aligns (1-to-1) with test_dataset.bin_actions and test_dataset.dones
@@ -430,7 +445,6 @@ def main():
 
     # 2. Iterate cleanly over the unique nights
     for night_idx, night_name in enumerate(test_dataset.unique_nights):
-        
         # Get date in string form for plots
         date = night_name.date()
         date_str = f"{date.year}-{date.month}-{date.day}"
@@ -444,7 +458,7 @@ def main():
         night_dl_idxs = np.where(night_mask)[0]
         
         # 4. Extract Agent Metrics
-        metrics = eval_metrics[f'night-{night_idx}']
+        metrics = diagnostics[f'night-{night_idx}']
         
         if len(night_dl_idxs) < 2 or len(metrics['timestamp']) < 2:
             logger.info(f"Night {night_idx} had no viable observations")
@@ -564,7 +578,8 @@ def main():
         
         save_schedule(night_metrics=metrics, pd_group=night_df, save_dir=night_dir, nside=nside, make_gifs=args.make_gifs, 
                       is_azel=test_dataset.hpGrid.is_azel, fid2radec_filepath=TRAIN_DATA_DIR / LookupKeys.FID2RADEC.value
-)
+        )
+        # --------------------------------------- #
         
 if __name__ == "__main__":
     main()
