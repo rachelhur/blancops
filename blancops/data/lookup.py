@@ -20,6 +20,7 @@ class LookupTables:
     target_fidfilt_counts: np.array
     target_filt_counts: np.array
     target_fid_counts: np.array
+    dir: Path
     # Add optional training-specific fields
     night2fid_visit_hist: Optional[dict] = None
     night2fidfilt_visit_hist: Optional[dict] = None
@@ -63,10 +64,42 @@ class LookupTables:
 
         return cls(
             fid2name=f2name, fid2radec=f2radec, fid2filters=f2filts, target_fid_counts=f2max, target_fidfilt_counts=ff2max, target_filt_counts=target_filt_counts,
-            night2fid_visit_hist=n2field, night2fidfilt_visit_hist=n2fidfilt
+            night2fid_visit_hist=n2field, night2fidfilt_visit_hist=n2fidfilt, dir=data_dir
         )
+        
+    # def construct_from_field_df(self, df, save_dir: Optional[Path] = None):
+    #     self.fid2name = {fid: g.loc[:, ['object']].values.tolist()[0][0] for fid, g in df.groupby('field_id')}
+    #     self.fid2radec = {int(fid): (g.loc[:, ['ra', 'dec']]).mean(axis=0).values.tolist() for fid, g in df.groupby('field_id')}
+    #     self.fid2filters = {int(fid): g.loc[:, ['filter']].values.tolist() for fid, g in df.groupby('field_id')}
+        
+    #     self._write_to_disk(save_dir)
+    
+    def write_to_disk(self, data_dir: Path):
+        # FID2NAME
+        with open(data_dir / LookupKeys.FID2NAME.value, "w") as f:
+            json.dump(self.fid2name, f)
+    
+        # FID2RADEC
+        with open(data_dir / LookupKeys.FID2RADEC.value, "wb") as f:
+            pickle.dump(self.fid2radec, f)
+    
+        # FID2FILTERS
+        with open(data_dir / LookupKeys.FID2FILT.value, "wb") as f:
+            pickle.dump(self.fid2filter, f)
+    
+        # TARGET_FIDFILT_COUNTS
+        with open(data_dir / LookupKeys.TARGET_FIDFILT_COUNTS.value, "wb") as f:
+            pickle.dump(self.target_fidfilt_counts, f)
+    
+        # TARGET_FILT_COUNTS
+        with open(data_dir / LookupKeys.TARGET_FILT_COUNTS.value, "wb") as f:
+            pickle.dump(self.target_fidfilt_counts, f)
+    
+        # TARGET_FID_COUNTS
+        with open(data_dir / LookupKeys.TARGET_FID_COUNTS.value, "wb") as f:
+            pickle.dump(self.target_fidfilt_counts, f)
 
-    def merge(self, new_fields: "LookupTables") -> "LookupTables":
+    def merge(self, new_fields: "LookupTables", new_dir: Path = None) -> "LookupTables":
         """
         Appends a new LookupTables object to the end of this one.
         Calculates the required index offset and applies it to all new dictionaries/arrays.
@@ -85,6 +118,8 @@ class LookupTables:
             merged_f2max[k + offset] = v
 
         merged_ff2max = np.vstack((self.fieldfilter2maxvisits, new_fields.fieldfilter2maxvisits))
+        if new_dir:
+            self.dir = new_dir
 
         return LookupTables(
             fid2name=merged_f2name,
@@ -95,5 +130,6 @@ class LookupTables:
             # (ToOs don't have historical survey progress)
             night2fieldvisithistory=self.night2fieldvisithistory,
             night2filtervisithistory=self.night2filtervisithistory,
-            target_filter_counts=self.target_filter_counts
+            target_filter_counts=self.target_filter_counts,
+            dir=self.dir
         )
