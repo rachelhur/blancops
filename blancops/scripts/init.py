@@ -37,7 +37,7 @@ def main():
         workspace,
         workspace / "configs",
         workspace / "experiments",
-        workspace / "models",
+        workspace / "deployable_models",
         workspace / "data" / "train",
         workspace / "data" / "test_suite"
     ]
