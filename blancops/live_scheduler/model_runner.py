@@ -66,14 +66,14 @@ class MockModelRunner(ModelRunner):
         ra, dec = current_ra, current_dec
         masked_fields = np.asarray(masked_fields)
 
-        # Rejection-sample nearby pointings until one passes all validity checks.
+        # rejection-sample nearby pointings until one passes all validity checks
         valid = False
         while not valid:
             drad = 10 * units.deg
             delta_ra = random.uniform(-drad, drad) / np.cos(current_dec)
             delta_dec = random.uniform(-drad, drad)
-            ra = current_ra + delta_ra
-            dec = current_dec + delta_dec
+            ra = (current_ra + delta_ra) % (360 * units.deg)
+            dec = np.clip(current_dec + delta_dec, -90 * units.deg, 90 * units.deg)
 
             # Ensure minimum step size from current pointing.
             angsep = geometry.angular_separation((ra, dec), (current_ra, current_dec))
@@ -81,7 +81,7 @@ class MockModelRunner(ModelRunner):
             if not valid_currentangsep:
                 continue
 
-            # Keep away from user/system-masked fields.
+            # keep away from user/system-masked fields
             if len(masked_fields) > 0:
                 angsep = geometry.angular_separation((ra, dec), masked_fields)
                 valid_angsep = np.all(angsep > 5 * units.deg)  # 5deg threshold
@@ -90,7 +90,7 @@ class MockModelRunner(ModelRunner):
             if not valid_angsep:
                 continue
 
-            # Enforce telescope visibility via elevation floor.
+            # enforce telescope visibility via elevation floor
             az, el = ephemerides.equatorial_to_topographic(ra, dec)
             valid_el = el > 30 * units.deg  # 30deg elevation limit
 
@@ -103,7 +103,7 @@ class MockModelRunner(ModelRunner):
         Generate a mock chunk as a short random walk in sky coordinates.
 
         Note:
-            `available_fields` is currently unused but included to preserve interface
+            available_fields is currently unused but included to preserve interface
             compatibility with other production model runners.
         """
 
@@ -112,7 +112,7 @@ class MockModelRunner(ModelRunner):
         )
         out = []
 
-        # Start from the current telescope pointing and walk forward.
+        # start from the current telescope pointing and walk forward
         ra, dec = telemetry["pointing_ra"], telemetry["pointing_dec"]
         for i in range(chunk_size):
             ra, dec = self.generate_next_observation(
@@ -120,7 +120,7 @@ class MockModelRunner(ModelRunner):
                 masked_fields=masked_fields,
             )
 
-            # Keep output schema aligned with scheduler expectations.
+            # keep output schema aligned with scheduler expectations
             out.append(
                 {
                     "time": i,
