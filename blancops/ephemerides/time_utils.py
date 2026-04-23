@@ -44,3 +44,20 @@ def unix_to_datetime(ts):
         Corresponding timezone-aware datetime object in UTC.
     """
     return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def unix_to_local_datetime(ts):
+    """
+    Convert a UNIX timestamp in UTC to a datetime object in the local timezone.
+
+    Arguments
+    ---------
+    ts: float
+        UNIX timestamp in UTC to convert.
+
+    Returns
+    -------
+    datetime
+        Corresponding timezone-aware datetime object in the local timezone.
+    """
+    return unix_to_datetime(ts).astimezone()

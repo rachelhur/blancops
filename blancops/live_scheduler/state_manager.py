@@ -8,7 +8,15 @@ from blancops.ephemerides import time_utils, ephemerides
 class StateManager:
     """Track the current observing session and log completed fields to disk."""
 
-    def __init__(self, output_dir, session_id=None, start_time=None, start_sun_elevation=None, stop_time=None, stop_sun_elevation=None):
+    def __init__(
+        self,
+        output_dir,
+        session_id=None,
+        start_time=None,
+        start_sun_elevation=None,
+        stop_time=None,
+        stop_sun_elevation=None,
+    ):
         """
         Initialize session metadata, output paths, and persisted history.
 
@@ -40,13 +48,14 @@ class StateManager:
 
     def _generate_session_id(self):
         """Map a continuous observing block across midnight to a single session date."""
+        from datetime import timedelta
 
         # map the current time to a start date; if before noon use the previous day
-        now = datetime.now()
-        if now.hour < 12:
-            session_date = now - timedelta(days=1)
+        local_now = time_utils.unix_to_local_datetime(time_utils.utc_now())
+        if local_now.hour < 12:
+            session_date = local_now - timedelta(days=1)
         else:
-            session_date = now
+            session_date = local_now
         session_date = session_date.strftime("%Y-%m-%d")
         print(f"[State] Generated session ID: {session_date}")
         return session_date
@@ -106,7 +115,7 @@ class StateManager:
         """
         # get current conditions
         now = time_utils.utc_now()
-        ra, dec = ephemerides.get_source_ra_dec('sun', time=now)
+        ra, dec = ephemerides.get_source_ra_dec("sun", time=now)
         az, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=now)
 
         # require both time and sun elevation start conditions to be met if specified
@@ -122,7 +131,7 @@ class StateManager:
         """
         # get current conditions
         now = time_utils.utc_now()
-        ra, dec = ephemerides.get_source_ra_dec('sun', time=now)
+        ra, dec = ephemerides.get_source_ra_dec("sun", time=now)
         az, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=now)
 
         # end if either time or sun elevation end conditions are met

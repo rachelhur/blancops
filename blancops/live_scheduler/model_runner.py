@@ -10,15 +10,11 @@ observations and provides two implementations:
 import random
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from abc import ABC, abstractmethod
 from blancops.data.constants import IDX2FILTER
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
-from pathlib import Path
-
-import pandas as pd
-import numpy as np
-from abc import ABC, abstractmethod
 from blancops.data.lookup import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.live_scheduler.inference.helpers import build_env

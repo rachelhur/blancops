@@ -6,10 +6,9 @@ This module defines the scheduler-facing telescope interface and provides:
 - BlancoTelescopeAPI: placeholder wrapper for the real observatory control path.
 """
 
-import time
 from abc import ABC, abstractmethod
 from blancops.math import units, geometry
-from blancops.ephemerides import ephemerides
+from blancops.ephemerides import ephemerides, time_utils
 
 
 class TelescopeAPI(ABC):
@@ -86,7 +85,7 @@ class MockTelescopeAPI(TelescopeAPI):
         """Return True when simulated slew+exposure time has elapsed."""
 
         # compare elapsed wall-clock time against modeled slew + exposure duration
-        delta = time.time() - self.last_exposure_submit_time
+        delta = time_utils.utc_now() - self.last_exposure_submit_time
         return delta > self.slew_time + self.exposure_duration
 
     def submit_observation(self, obs_row):
@@ -99,7 +98,7 @@ class MockTelescopeAPI(TelescopeAPI):
         self.slew_time = geometry.blanco_slew_time(angsep) / units.second
 
         # update internal state to reflect the new observation
-        self.last_exposure_submit_time = time.time()
+        self.last_exposure_submit_time = time_utils.utc_now()
         self.current_ra = obs_row["ra"]
         self.current_dec = obs_row["dec"]
 
