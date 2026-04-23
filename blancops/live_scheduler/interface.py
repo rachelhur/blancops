@@ -13,6 +13,19 @@ class BaseInterface(ABC):
     """Abstract interface for user interaction with proposed observation chunks."""
 
     @abstractmethod
+    def __init__(self, output_dir=None):
+        """
+        Initialize the interface.
+
+        Arguments
+        ---------
+        output_dir: str or pathlib.Path, optional
+            Directory to save any generated outputs (e.g. plots).
+        """
+
+        pass
+
+    @abstractmethod
     def display_chunk(self, chunk_df):
         """
         Render the proposed observation chunk for operator review.
@@ -56,6 +69,9 @@ class BaseInterface(ABC):
 
 class CLIInterface(BaseInterface):
     """Command-line interface for chunk preview and approval."""
+
+    def __init__(self, output_dir=None):
+        self.output_dir = output_dir
 
     def display_chunk(self, chunk_df):
         """Print the proposed chunk and save a simple RA/Dec plot."""

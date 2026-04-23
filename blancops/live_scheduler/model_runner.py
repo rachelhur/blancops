@@ -31,6 +31,20 @@ class ModelRunner(ABC):
     """
 
     @abstractmethod
+    def __init__(self, chunk_size):
+        """
+        Initialize the model runner with any necessary setup, such as loading model
+        weights or setting up internal state.
+
+        Arguments
+        ---------
+        chunk_size: int
+            Number of sequential observations to propose in each generated chunk.
+        """
+
+        pass
+
+    @abstractmethod
     def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size):
         """
         Generate a chunk of proposed observations.
@@ -57,6 +71,9 @@ class ModelRunner(ABC):
 
 class MockModelRunner(ModelRunner):
     """Randomized mock implementation used for development and dry runs."""
+
+    def __init__(self, chunk_size):
+        self.chunk_size = chunk_size
 
     def generate_next_observation(self, telemetry, masked_fields):
         """
@@ -104,7 +121,7 @@ class MockModelRunner(ModelRunner):
 
         return ra, dec
 
-    def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size):
+    def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size=None):
         """
         Generate a mock chunk as a short random walk in sky coordinates.
 
@@ -120,7 +137,7 @@ class MockModelRunner(ModelRunner):
 
         # start from the current telescope pointing and walk forward
         ra, dec = telemetry["pointing_ra"], telemetry["pointing_dec"]
-        for i in range(chunk_size):
+        for i in range(chunk_size or self.chunk_size):
             ra, dec = self.generate_next_observation(
                 telemetry={"pointing_ra": ra, "pointing_dec": dec},
                 masked_fields=masked_fields,
