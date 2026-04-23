@@ -16,6 +16,7 @@ from blancops.ephemerides import ephemerides
 from blancops.data.constants import *
 import logging
 
+from blancops.rl.checkpointing import Checkpointer
 from blancops.utils.schedule_io import save_survey_schedule
 
 
@@ -33,6 +34,7 @@ class Trainer:
             self,
             algorithm,
             train_outdir,
+            top_k=1
             # env: gym.Env = None,
             ):
         """
@@ -48,7 +50,8 @@ class Trainer:
         if not os.path.exists(train_outdir):
             os.makedirs(train_outdir)
         self.train_outdir = Path(train_outdir)
-    
+        self.checkpointer = Checkpointer(self.train_outdir, top_k=top_k, mode='min') 
+           
     def _validate_valloader(self, valloader):
         if len(valloader) == 0:
             raise ValueError("Validation dataloader is empty! Check dataset split logic.")
@@ -175,20 +178,32 @@ class Trainer:
                         val_loss_cur = val_metrics.get('val_loss', [1e5])[-1]
                         ang_sep_cur = val_metrics.get('ang_sep', [1e5])[-1]
                         improved = False
+                        
                         if val_loss_cur < best_val_loss and use_best_val_loss:
                             improved = True
                             best_val_loss = val_loss_cur
                             metric_str = f"val loss is {val_loss_cur:.3f}"
+                            tracking_metric = best_val_loss
+                            
                         elif ang_sep_cur < best_ang_sep and use_best_ang_sep:
                             improved = True
                             best_ang_sep = ang_sep_cur
                             metric_str = f"angular separation is {ang_sep_cur:.3f}"
+                            tracking_metric = best_ang_sep
                         
                         if improved:
                             best_epoch = i_epoch
                             patience_cur = patience
                             logger.info(f'Improved model at step {i_step} (epoch {i_epoch}): {metric_str}. Saving weights')
-                            self.save(save_filepath)
+                            
+                            self.checkpointer.save_training_state(
+                                algorithm=self.algorithm, 
+                                epoch=i_epoch, 
+                                metric_value=tracking_metric, 
+                                is_best=True
+                            )
+                            self.checkpointer.export_deployment_model(self.algorithm.policy)
+                            
                             with open(train_metrics_filepath, 'wb') as handle:
                                 pickle.dump(train_metrics, handle)
                             with open(val_metrics_filepath, 'wb') as handle:
@@ -207,6 +222,9 @@ class Trainer:
             pickle.dump(train_metrics, handle)
         with open(val_metrics_filepath, 'wb') as handle:
             pickle.dump(val_metrics, handle)
+    
+    def _get_improvement_status(self):
+        pass
     
     def save(self, filepath):
         """Saves algorithm parameters to a file.

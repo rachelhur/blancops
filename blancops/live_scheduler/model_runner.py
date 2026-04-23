@@ -21,7 +21,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 from blancops.data.lookup import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
-from blancops.live_scheduler.inference.helpers import build_env, generate_lookups_from_fields
+from blancops.live_scheduler.inference.helpers import build_env
 from blancops.live_scheduler.inference.model_loader import DeploymentAgentLoader
 
 
@@ -144,25 +144,37 @@ class MockModelRunner(ModelRunner):
 
 
 class AIModelRunner(ModelRunner):
-    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, field_choice_method,device='cpu', **kwargs):
+    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu", 
+                 field_choice_method: str = "interp", chunk_size: int = 10, testing_mode=True):
         self.device = device
-        loader = DeploymentAgentLoader()
+        self.testing_mode = testing_mode
         
-        self.agent, self.cfg = loader.build_agent(
+        # Fields and Lookups
+        self.fields_dir = Path(field_lookup_dir)
+        self.lookups = self._get_lookups(fields_path, self.fields_dir)
+        
+        # Agent and Model
+        agent_loader = DeploymentAgentLoader()
+        self.agent, self.cfg = agent_loader.build_agent(
             model_path_or_alias=model_path_or_alias,
+            lookups=self.lookups,
+            field_choice_method=field_choice_method,
             device=self.device,
-            field_lookup_dir=Path(field_lookup_dir),
-            field_choice_method=field_choice_method
         )
         
-        self.lookups = LookupTables().load_from_dir(field_lookup_dir, is_training=False, is_historic=False)
-        self.model_dir = loader._resolve_model_dir(self.model_name)
-        self.env = build_env(self.cfg, self.model_dir, self.lookups)
-        self.fields_dir = None
+        self.model_dir = agent_loader.resolve_model_dir(model_path_or_alias)
+        self.env = None
+        # self.env = build_env(self.cfg, self.model_dir, self.lookups, chunk_size=chunk_size)
         self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
-        
         print(f"[Model] Loaded model weights from {self.model_dir} into memory.")
 
+    def _get_lookups(self, fields_path, fields_dir):
+        if fields_path:
+            lookups = LookupTables.generate_lookups_from_fields(fields_path=fields_path, outdir=self.fields_dir, write_to_disk=True)
+        else:
+            lookups = LookupTables.load_from_dir(self.fields_dir, is_training=False, is_historic=False, construct_if_missing=True)
+        return lookups
+        
     def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size, new_fields=None, new_lookup_dir=None) -> pd.DataFrame:
         obs, info = None, None
         
@@ -172,30 +184,41 @@ class AIModelRunner(ModelRunner):
         
         # UPDATE ENV AND GET OBS
         self.env.sync_to_telemetry(telemetry)
-        obs = env.get_obs()
+        obs = self.env.get_obs()
         
-        proposed_schedule = {'agent_bin_id': np.zeros(chunk_size, dtype=np.int32),
-                            'agent_field_id': np.zeros(chunk_size, dtype=np.int32),
-                            'agent_filter': np.zeros(chunk_size, dtype=str),
-                            'agent_timestamp': np.zeros(chunk_size, dtype=np.int32),
+        proposed_schedule = {'bin_idx': np.zeros(chunk_size, dtype=np.int32),
+                            'field_id': np.zeros(chunk_size, dtype=np.int32),
+                            'filter': np.zeros(chunk_size, dtype=str),
+                            'timestamp': np.zeros(chunk_size, dtype=np.int32),
+                            'ra': np.zeros(chunk_size, dtype=np.float32),
+                            'dec': np.zeros(chunk_size, dtype=np.float32),
                             }
         
         # GENERATE SCHEDULE
         for i in range(chunk_size):
             bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, self.hpGrid)
             actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
-            proposed_schedule['agent_bin_id'].append(bin_idx)
-            proposed_schedule['agent_field_id'].append(field_id)
-            proposed_schedule['agent_filter'].append(IDX2FILTER[filter_idx])
-            proposed_schedule['agent_timestamp'].append(info.get('timestamp'))
+            
+            proposed_schedule['bin_idx'][i] = bin_idx
+            proposed_schedule['field_id'][i] = field_id
+            proposed_schedule['filter'][i] = IDX2FILTER[filter_idx]
+            proposed_schedule['timestamp'][i] = info.get('timestamp')
+            
+            ra, dec = self.lookups.fid2radec[field_id]
+            proposed_schedule['ra'][i] = ra
+            proposed_schedule['dec'][i] = dec
+            
             obs, reward, terminated, truncated, info = self.env.step(actions)
 
         print("[Model] Generating state features and running inference...")
         
-        return pd.DataFrame()
+        return pd.DataFrame(proposed_schedule)
 
-    def update_lookups(self, new_fields: pd.DataFrame, new_dir=None):
-        new_lookups = generate_lookups_from_fields(new_fields)
+    def update_lookups(self, new_fields_path, new_dir=None):
+        if not new_fields_path: 
+            return self.lookups
+        
+        new_lookups = LookupTables.generate_lookups_from_fields(fields_path=new_fields_path, write_to_disk=False)
         self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir)
         self.lookups.write_to_disk(new_dir)
-
+        return self.lookups

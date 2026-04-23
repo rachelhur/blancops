@@ -24,6 +24,7 @@ class Reward(str, Enum):
     SURVEY_UNIFORMITY = "survey_uniformity"
 
 class LookupKeys(str, Enum):
+    FIELDS_TABLE = "fields.json"
     FID2NAME = "fid2name.json"
     FID2RADEC = "fid2radec.json"
     FID2FILTERS = "fid2filters.pkl"

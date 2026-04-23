@@ -34,7 +34,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
         self._setup_configuration(cfg, norm_kwargs)
         self.lookups = lookups
-        # self.load_lookups()
 
         # 2. Raw Data Filtering
         df = drop_rows_in_DECam_data(
@@ -109,11 +108,7 @@ class OfflineDataset(torch.utils.data.Dataset):
                 base_features=cfg.data.bin_features, 
                 cyclical_features=CYCLICAL_FEATURE_NAMES, 
                 action_space=cfg.data.action_space,
-                fid2radec=self.lookups.fid2radec,
-                night2fieldvisits=self.lookups.night2fid_visit_hist,
-                fieldfilter2maxvisits=self.lookups.target_fidfilt_counts,
-                night2filtervisithistory=self.lookups.night2fidfilt_visit_hist,
-                fid2maxvisits=self.lookups.target_fid_counts,
+                lookups=self.lookups,  # <-- REFACTORED: Single source of truth
                 do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', True),
                 do_local_mean_z_score=self.do_local_mean_z_score
             )
@@ -469,18 +464,3 @@ def load_field_lookup_df(filepath):
     field_lookup_df = pd.read_json(filepath)
     _validate_field_lookup_df(field_lookup_df)
     return field_lookup_df
-
-def save_fid2radec(fid2radec_df, outdir):
-    outdir = Path(outdir)
-    outdir.mkdir(parents=True, exists_ok=True)
-    
-    fid2radec = {int(row['field_id']): (row['ra'], row['dec']) for _, row in fid2radec_df.iterrows()}
-    
-    outpath = outdir / "fid2radec.json"
-    with open(outpath, 'w') as f:
-        json.dump(fid2radec, f)
-    logger.info(f"Successfully saved fid2radec to {outpath}")
-    
-def load_fid2radec_as_numpy(filepath):
-    fid2radec = pd.read_json(filepath).T
-    return fid2radec.to_numpy()

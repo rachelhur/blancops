@@ -11,23 +11,26 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Agent:
-    def __init__(self, algorithm, cfg, lookups, field_choice_method='interp'):
-        self.algorithm = algorithm
+    def __init__(self, policy, cfg, lookups, field_choice_method='interp', device=None):
+        self.policy = policy
         self.lookups = lookups
         self.cfg = cfg
-        self.device = algorithm.device
+        self.device = device if device is not None else next(policy.parameters()).device
         self.field_choice_method = field_choice_method
         
-    def _choose_bin_and_filter(self, x_glob, x_bin, action_mask, epsilon):
-        action = self.algorithm.select_action(x_glob=x_glob, x_bin=x_bin, action_mask=action_mask, epsilon=epsilon)
+    def _choose_bin_and_filter(self, x_glob, x_bin, action_mask, epsilon=None):
+        # Delegate directly to the policy
+        action_tensor = self.policy.select_action(x_glob=x_glob, x_bin=x_bin, action_mask=action_mask)
+        action = int(action_tensor.item()) if hasattr(action_tensor, 'item') else int(action_tensor)
+        
         if 'filter' in self.cfg.data.action_space:
-            bin_idx = int(action // self.algorithm.policy.num_filters)
-            filter_idx = int(action % self.algorithm.policy.num_filters)
+            bin_idx = action // self.policy.num_filters
+            filter_idx = action % self.policy.num_filters
         else:
             bin_idx = action
             filter_idx = NO_FILTER_SIGNAL
         return bin_idx, filter_idx
-
+    
     def _determine_valid_fields(self, bin_idx, filter_idx, info):
         # Unpack info and get valid fields in bin
         valid_fields_per_bin = info.get('valid_fields_per_bin', {})
