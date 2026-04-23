@@ -2,24 +2,25 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-import math
 
 import torch
 import torch.nn.functional as F
 import gymnasium as gym
 
 import os
-import pickle
-import json
 
-from blancops.rl.trainer import Trainer
-from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config
-from blancops.rl.algorithms.builder import build_algorithm
+from blancops.configs.constants import get_workspace_dir
+from blancops.rl.runner import ScheduleGenerator
+from blancops.data.lookup import LookupTables
+from blancops.rl.agent import Agent
+from blancops.utils.sys_utils import seed_everything, load_model_config
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.constants import *
-from blancops.environment.online_env import OnlineBlancoEnv
+from blancops.environment.test_env import TestBlancoEnv
 from blancops.plotting.schedule_viz import *
 from blancops.data.dataset import load_fid2radec_as_numpy
+from blancops.rl.registry import build_algorithm
+
 
 import logging
 logger = logging.getLogger(__name__)
@@ -77,7 +78,6 @@ def main():
         raise AssertionError(f"Must pass `field_lookup_dir` or specify a test from {TEST_SUITE_NAMES}")
 
     # Get configs
-    gcfg = load_global_config()
     cfg_dir = args.trained_model_dir
     assert os.path.exists(cfg_dir), f"Directory {cfg_dir} does not exist"
     cfg = load_model_config(cfg_dir / "config.json")
@@ -154,6 +154,8 @@ def main():
             observing_night_strs = HP_OBSERVING_DATES
         elif schedule_name == 'magic-spring':
             observing_night_strs = MS_OBSERVING_DATES
+            lookups = LookupTables.load_from_dir(lookup_dirpath / , is_historic=True)
+
         elif schedule_name == 'magic-spring-1':
             if args.load_obs_history:
                 observing_night_strs = MS_OBSERVING_DATES[1:] # check second night onwards
@@ -182,42 +184,55 @@ def main():
     
     logger.info("Setting up agent...")
     algorithm = build_algorithm(cfg, device)
-    agent = Trainer(
+    algorithm.load(Path(args.trained_model_dir) / 'best_weights.pt')
+    
+    # BUILD AGENT
+    agent = Agent(algorithm=algorithm, cfg=cfg, lookups=lookups, field_choice_method=args.field_choice_method)
+    # BUILD RUNNER
+    runner = ScheduleGenerator(
+        agent=agent,
         algorithm=algorithm,
-        train_outdir=cfg_dir,
+        cfg=cfg,
+        lookups=lookups,
+        num_episodes=1,
+        outdir=schedule_outdir,
+        save_SISPI=False,
+        schedule_chunk_size=0,
     )
-    agent.load(cfg_dir / 'best_weights.pt')
+    # LOAD POLICY WEIGHTS
+    algorithm = build_algorithm(cfg, device)
+    algorithm.load(Path(args.trained_model_dir) / 'best_weights.pt')
+
+    # agent.load(cfg_dir / 'best_weights.pt')
 
     # Initialize environment
     logger.info("Setting up environment...")
     env_name = 'OnlineDECamEnv-v0'
     gym.register(
         id=f"gymnasium_env/{env_name}",
-        entry_point=OnlineBlancoEnv,
+        entry_point=TestBlancoEnv,
     )
 
     #pyephem requires sun horizon to be in string format if degrees (float if radians)
     sun_horizon = str(args.sun_horizon)
 
-    # Creat env
-
+    # CREATE ENVIRONMENT
     env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, data_dir=lookup_dirpath,
                     observing_night_strs=observing_night_strs, horizon=sun_horizon, max_nights=args.max_nights, airmass_limit=args.airmass_lim,
                     s_visits_cur=s_visits_cur, s_filter_visits_cur=fieldfilter2nvisits, night1_ts_start=args.night1_ts_start, field_priorities_arr=None)
     # fid2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
 
     # Evaluate
-    eval_metrics = agent.evaluate(env=env, cfg=cfg, num_episodes=1, field_choice_method=args.field_choice_method, eval_outdir=schedule_outdir,
-              fid2nvisits=fid2nvisits, fid2radec=fid2radec, save_SISPI=True, SISPI_fn=schedule_name + ".json", field_lookup=field_lookup)
+    diagnostics = agent.generate_schedule(env=env)
     
     logger.info("Generating plots...")
-    save_survey_diagnostics(eval_metrics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, action_space=action_space)
+    save_survey_diagnostics(diagnostics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, action_space=action_space)
     save_gifs(schedule_path=schedule_outdir / 'full_survey_schedule.csv', save_dir=schedule_outdir, 
               do_fieldbin=True, do_bin=False, do_mollefield=False, do_ortho=False, action_space=action_space, nside=nside, 
               fid2radec_filepath=lookup_dirpath / "fid2radec.json")
 
     if not args.no_night_diagnostics:
-        save_nightly_diagnostics(eval_metrics=eval_metrics, observing_night_strs=observing_night_strs, schedule_outdir=schedule_outdir, action_architecture=cfg['model']['action_architecture'],
+        save_nightly_diagnostics(eval_metrics=diagnostics, observing_night_strs=observing_night_strs, schedule_outdir=schedule_outdir, action_architecture=cfg['model']['action_architecture'],
                             nside=nside, lookup_dirpath=lookup_dirpath, env=env, num_actions=cfg['data']['num_actions'], action_space=action_space,
                             do_gifs=not args.do_night_gifs)
         
