@@ -13,6 +13,15 @@ import numpy as np
 from abc import ABC, abstractmethod
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
+from pathlib import Path
+
+import pandas as pd
+import numpy as np
+from abc import ABC, abstractmethod
+from blancops.data.lookup import LookupTables
+from blancops.ephemerides.ephemerides import HealpixGrid
+from blancops.live_scheduler.inference.helpers import build_env, generate_lookups_from_fields
+from blancops.live_scheduler.inference.model_loader import DeploymentAgentLoader, ModelDeploymentLoader
 
 
 class ModelRunner(ABC):
@@ -181,5 +190,11 @@ class AIModelRunner(ModelRunner):
             obs, reward, terminated, truncated, info = self.env.step(actions)
 
         print("[Model] Generating state features and running inference...")
-        # XXX Placeholder: generate a chunk of observations using the loaded model
+        
         return pd.DataFrame()
+
+    def update_lookups(self, new_fields: pd.DataFrame, new_dir=None):
+        new_lookups = generate_lookups_from_fields(new_fields)
+        self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir)
+        self.lookups.write_to_disk(new_dir)
+
