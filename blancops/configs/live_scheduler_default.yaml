@@ -39,6 +39,6 @@ telemetry_poll_rate_sec: 20
 # Observing Limits
 # =======================================================================================
 start_time: null
-start_sun_elevation_deg: -14
+start_sun_elevation_deg: null
 stop_time: null
-stop_sun_elevation_deg: -14
+stop_sun_elevation_deg: null

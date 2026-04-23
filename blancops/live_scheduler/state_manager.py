@@ -44,6 +44,35 @@ class StateManager:
         os.makedirs(self.output_dir, exist_ok=True)
         self.completed_fields = self._load_history()
 
+        # XXX sun-el-based conditions are tricky, since we can't reliably distinguish
+        # between rising and setting without additional logic and more assumptions,
+        # the user needs to be made super aware of for safety reasons. We should add
+        # some extra checks to make sure that the user isn't doing anything really
+        # stupid. Maybe an additional function that has hardcoded safety thresholds to
+        # make sure nothing runs in the unsafe time, unless we're explicitly using the
+        # mock API for testing purposes where no communication is happening with the
+        # real telescope control system.
+        # For instance, with starting/stopping on only sun el (and they use the same el)
+        # then the scheduler script won't enter the run loop until after the sun is set,
+        # which wastes valuable early setup time.
+        self.start_time = start_time
+        self.start_sun_elevation = start_sun_elevation
+        self.stop_time = stop_time
+        self.stop_sun_elevation = stop_sun_elevation
+        if self.start_sun_elevation is not None:
+            raise NotImplementedError(
+                "sun-elevation-based start conditions are not implemented yet."
+            )
+        if self.stop_sun_elevation is not None:
+            raise NotImplementedError(
+                "sun-elevation-based stop conditions are not implemented yet."
+            )
+        if self.start_time is None or self.stop_time is None:
+            raise ValueError(
+                "start_time and stop_time must be specified for now."
+            )
+            
+
     # XXX add a log sink so important scheduler messages are also written to disk
 
     def _generate_session_id(self):
@@ -121,8 +150,8 @@ class StateManager:
         # require both time and sun elevation start conditions to be met if specified
         if self.start_time is not None and now < self.start_time:
             return False
-        if self.start_sun_elevation is not None and el > self.start_sun_elevation:
-            return False
+        #if self.start_sun_elevation is not None and el > self.start_sun_elevation:
+        #    return False
         return True
 
     def check_end_condition(self):
@@ -137,6 +166,6 @@ class StateManager:
         # end if either time or sun elevation end conditions are met
         if self.stop_time is not None and now >= self.stop_time:
             return True
-        if self.stop_sun_elevation is not None and el > self.stop_sun_elevation:
-            return True
+        #if self.stop_sun_elevation is not None and el > self.stop_sun_elevation:
+        #    return True
         return False
