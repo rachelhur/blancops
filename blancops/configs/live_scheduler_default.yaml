@@ -1,6 +1,9 @@
 # Default Configuration for Live Scheduler
-#model_path: "path/to/default_model.pt"
+mode: mock
+mock_exposure_duration: 90
+model_path: "path/to/default_model.pt"
 chunk_size: 3
 observing_poll_rate_sec: 1
 telemetry_poll_rate_sec: 20
+output_directory: "./observing_logs"
 output_directory: "./observing_logs"

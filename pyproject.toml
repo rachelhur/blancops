@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "blancops"
 version = "0.1.0"
+dependencies = ["PyYAML"]
 
 [tool.setuptools.packages.find]
 include = ["blancops*"]
@@ -17,4 +18,4 @@ model-eval = "blancops.scripts.eval:main"
 model-schedule = "blancops.scripts.schedule:main"
 
 [tool.setuptools.package-data]
-"blancops.configs" = ["*.json"]
+"blancops" = ["configs/*.json", "configs/*.yaml"]
