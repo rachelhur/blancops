@@ -32,17 +32,8 @@ class BaseTelescopeEnv(gym.Env, ABC):
         super().reset(seed=seed)
         
         self._init_to_first_state()
-        state = self._get_state()
+        state = self.get_obs()
         info = self._get_info()
-        # if not self.observation_space.contains(state):
-        #     for (s_name, s), feat_names in zip(state.items(), [self.global_feature_names, self.bin_feature_names]):
-        #         logger.warning(s_name)
-        #         if s.max() > 2 or s.min() < -2:
-        #             for i, col in enumerate(state['bin_state'].T):
-        #                 logger.warning(f"Feature `{feat_names[i]}` is out of bounds vals {col[col < -2]}")
-        #                 logger.warning(f"Feature `{feat_names[i]}` is out of bounds vals {col[col > 2]}")
-        #                 # logger.warning(f"Feature `{feat_names[i]}` array: {col.max(), col.min(), col}")
-        #     raise ValueError
         return state, info
     
     @abstractmethod
@@ -67,7 +58,7 @@ class BaseTelescopeEnv(gym.Env, ABC):
         pass
 
     @abstractmethod
-    def _get_state(self):
+    def get_obs(self):
         """Converts internal state into the formal observation."""
         pass
 
@@ -154,7 +145,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         terminated = self._get_termination_status()
 
         # get obs and info
-        next_state = self._get_state()
+        next_state = self.get_obs()
         info = self._get_info()
 
         return next_state, reward, terminated, truncated, info
@@ -249,7 +240,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                                                 #   hpGrid=self.hpGrid, visited=self._s_visits_cur)
         self._update_action_masks()
 
-    def _get_state(self):
+    def get_obs(self):
         global_state = np.array(self._global_state, dtype=np.float32)
         global_state_normed = self.global_normalizer.transform(
             global_state,

@@ -13,7 +13,7 @@ from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data.features.normalizations import build_normalizer_kwargs, setup_feature_names
 
-from blancops.data.features.glob_features import calc_twilight
+from blancops.data.features.glob_features import calc_moon_phase, calc_sun_and_moon_positions, calc_twilight, calc_urgency
 from blancops.data.constants import *
 
 from blancops.environment.base import BaseBlancoEnv
@@ -22,19 +22,19 @@ from datetime import datetime, timezone, timedelta
 import logging
 logger = logging.getLogger(__name__)
 
-class OnlineBlancoEnv(BaseBlancoEnv):
+class TestBlancoEnv(BaseBlancoEnv):
     """
     A concrete Gymnasium environment implementation compatible with OfflineDataset.
     """
-    def __init__(self, cfg, chunk_size, observing_night_strs, lookups, global_normalizer, bin_normalizer, z_score_stats, 
-                 rel_norm_stats, n_time_lim=None, sun_el_lim='-12', airmass_lim=1.4, exp_time=20, t_start=None,
-                 night_portion: str = 'half1'):
+    def __init__(self, cfg, observing_night_strs, lookups, global_normalizer, bin_normalizer, z_score_stats, rel_norm_stats=None, n_obs_lim, n_time_lim=None, 
+                 sun_el_lim='-12', airmass_limit=1.4, s_visits_cur=None, s_filter_visits_cur=None, field_priorities_arr = None,
+                 night1_ts_start=None, t_survey_arr=None, survey_nights_total=None
+                 ):
         
         # Assign static attributes
-        self.exp_time = exp_time
-        self.night_portion = night_portion
-        # LOOKUPS NORMALIZTION
-        self._lookups = lookups
+        self._init_s_visits = s_visits_cur.copy() if s_visits_cur is not None else None
+        self._init_s_filter_visits = s_filter_visits_cur.copy() if s_filter_visits_cur is not None else None
+        
         self._rel_norm_stats = rel_norm_stats
         self._z_score_stats = z_score_stats
         self.global_normalizer = global_normalizer
@@ -43,21 +43,19 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         self.cyclical_feature_names = norm_kwargs.get('cyclical_feature_names', [])
         self.do_cyclical_norm = len(self.cyclical_feature_names) > 0
 
-        # Configuration flags
-        norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
-        self.cyclical_feature_names = norm_kwargs.get('cyclical_feature_names', [])
-        self.do_cyclical_norm = len(self.cyclical_feature_names) > 0
-        self.include_bin_features = cfg.data.bin_state_dim > 0
-        self.do_filt = 'filter' in self.action_space
-        self.nfilters = len(FILTER2IDX)
-        
-        self.include_bin_features = cfg.data.bin_state_dim > 0
-        self.hpGrid = ephemerides.HealpixGrid(nside=cfg.data.nside, is_azel=('azel' in cfg.data.action_space))
+
+        self.include_bin_features = len(cfg['data']['bin_features']) > 0
+        self.action_space = cfg['data']['action_space']
+        nside = cfg['data']['nside']
+        self.hpGrid = ephemerides.HealpixGrid(nside=nside, is_azel=('azel' in self.action_space))
         self.nbins = len(self.hpGrid.idx_lookup)
+        self._action_architecture = cfg['model']['action_architecture']
         self._has_historical_features = any(sub in main_str for main_str in cfg['data']['bin_features'] 
                                            for sub in ['num_unvisited_fields', 'num_incomplete_fields', 'min_tiling'])
-        self.sun_el_lim = sun_el_lim
-        self.ts_start = t_start
+        self.horizon = horizon
+        self.max_nights = max(len(observing_night_strs), max_nights) - 1
+        self.night1_ts_start = night1_ts_start
+        self._field_priorities_arr = field_priorities_arr
         
         self._night_info = []
         for obs_n_str in observing_night_strs:
@@ -68,7 +66,7 @@ class OnlineBlancoEnv(BaseBlancoEnv):
             midnight_dt = night_dt + (timedelta(days=1) - pd.Timedelta(nanoseconds=1))
             self._night_info.append((midnight_dt, night_portion))
 
-        self._airmass_limit = airmass_lim
+        self._airmass_limit = airmass_limit
         self.do_filt = 'filter' in self.action_space
         self.nfilters = len(FILTER2IDX)
 
@@ -95,6 +93,15 @@ class OnlineBlancoEnv(BaseBlancoEnv):
                 (all_fids, all_filters), 
                 all_visits
             )
+            # self._filter_idx_arr = self.field_lookup['filter_idx'].unique()
+            # self.fieldfilter2maxvisits = np.zeros((self.nfields, NUM_FILTERS)) # shape = (nfields, nfilters)
+            # for filt_idx in self._filter_idx_arr:
+            #     f_mask = (self.field_lookup['filter_idx'] == filt_idx).values
+            #     f_nvisits = (self.field_lookup['n_visits'][f_mask]).to_numpy()
+            #     print('fids = ', self._fids)
+            #     print('f_nvisits = ', f_nvisits)
+            #     print('fieldfilter2maxvisits = ', self.fieldfilter2maxvisits)
+            #     np.add.at(self.fieldfilter2maxvisits, (self._fids, filt_idx), f_nvisits)
             self.nfilters = len(FILTER2IDX)
             self.idx2filter = {v: k for k, v in FILTER2IDX.items()}
             self._max_s_filter_visits_arr = np.array([self.fieldfilter2maxvisits[fid] for fid in self._fids], dtype=np.int32)
@@ -146,95 +153,26 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         Initializes the internal state variables for the start of a new episode.
         """
         self._action_mask = np.ones(self.nbins, dtype=bool)
-        self._s_visits_cur = np.zeros(self.nfields, dtype=np.int32)
-        self._s_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-
+        self._night_idx = -1
+        if getattr(self, '_init_s_visits', None) is not None:
+            self._s_visits_cur = self._init_s_visits.copy()
+        else:
+            self._s_visits_cur = np.zeros(self.nfields, dtype=np.int32)
+            
+        if getattr(self, 'do_filt', False):
+            if getattr(self, '_init_s_filter_visits', None) is not None:
+                self._s_filter_visits_cur = self._init_s_filter_visits.copy()
+            else:
+                self._s_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
+        self._is_new_night = True
         self._start_new_night()
     
-    def _set_initial_features(self):
-        # global features
-        night_dt, night_portion = self._night_info[self._night_idx]
-        # night_ts = night_dt.timestamp()
-        self._sunset_ts = math.ceil(calc_twilight(night_dt.timestamp(), 'set', self.sun_el_lim))
-        self._sunrise_ts = math.ceil(calc_twilight(night_dt.timestamp(), 'rise', self.sun_el_lim))
-        self._field_id = ZENITH_FIELD_ID
-        self._bin_num = ZENITH_BIN_NUM
-        self._filter_idx = ZENITH_FILTER_IDX
-        self._night_end_ts = self._sunrise_ts
-        self._night_start_ts = self._sunset_ts
-        if night_portion != 'full':
-            half_night_duration = self._get_half_night_duration(self._sunset_ts, self._sunrise_ts)
-            if night_portion == 'half1':
-                self._night_end_ts -= half_night_duration
-            elif night_portion == 'half2':
-                self._night_start_ts += half_night_duration
-            else:
-                raise ValueError("Environment arg `observing_night_strs` must be of the form `YY-MM-dd-<night_portion> where night_portion in {'full', 'half1', 'half2'}")
-        if self.ts_start:
-            self._night_start_ts = self.ts_start
+    def _start_new_night(self):
+        self._night_idx += 1
+        if self._night_idx > self.max_nights:
+            logger.info('Reached maximum allowed nights.')
+            return
         
-        self._ts = self._night_start_ts
-        
-        self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-        self._global_state = self._calculate_global_features(field_id=self._field_id, filter_idx=ZENITH_FILTER_IDX, timestamp=self._ts, sunset_ts=self._sunset_ts, sunrise_ts=self._sunrise_ts,
-                                                             ra_arr=self._ra_arr, dec_arr=self._dec_arr)
-
-        # Get field visit counts at start of night
-        if self.do_filt:
-            self._n_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-
-        self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
-        if self.include_bin_features:
-            self._max_n_visits_arr = np.zeros_like(self._n_visits_cur)
-            self._in_n_plan = self._max_n_visits_arr > 0
-            self._bin_state = self._calculate_bin_features(timestamp=self._ts)
-            #self._max_n_visits_arr = np.bincount(self._fids[night_fids], minlength=self.nfields)
-
-            if self.do_filt:
-                self._max_n_filter_visits_arr = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-                # np.add.at(self._max_n_filter_visits_arr, (0, 0), 1)
-
-            if self._action_architecture in ACTION_ARCHITECTURES:
-                A, B = self.nbins, self.bin_state_dim
-                self._bin_state = np.array(self._bin_state).reshape((A, B))
-        else:
-            self._bin_state = np.array([])
-        self._update_action_masks()
-
-    def _fast_forward(self, timestamp, ras, decs, visited, max_visits):
-        incomplete_mask = visited < max_visits
-        incomplete_ras = ras[incomplete_mask]
-        incomplete_decs = decs[incomplete_mask]
-        
-        # If all fields complete, survey is terminated
-        if len(incomplete_ras) == 0:
-            return self._night_end_ts
-        test_timestamp = timestamp
-        step_size = 60*1 # inspect visibility every 5 mins
-
-        while test_timestamp < self._night_end_ts:
-            test_timestamp += step_size
-            _, fields_el = ephemerides.equatorial_to_topographic(ra=incomplete_ras, dec=incomplete_decs, time=test_timestamp)
-            fields_el = np.atleast_1d(fields_el)
-            cos_zenith = np.cos(90 * units.deg - fields_el[fields_el > 0])
-            airmass = 1 / np.clip(cos_zenith, a_min=1e-5, a_max=None)
-            if np.any(airmass < self._airmass_limit):
-                return test_timestamp
-        # If fields never above horizon, return sunrise time
-        return min(test_timestamp, self._night_end_ts)
-
-    def sync_telemetry(self, current_telemetry, user_modifications=None):
-        """Overrides the environment's internal state with ground truth."""
-        self.current_time = current_telemetry['time']
-        self.telescope_position = current_telemetry['position']
-        self.current_weather = current_telemetry['weather']
-        # Update historical counters if the user manually overrode the last chunk
-        if user_modifications:
-            self._update_history_from_manual_inputs(user_modifications)
-            
-    def _start_night(self):
-        # global features
-        self._ts = self.ts_start
         # global features
         night_dt, night_portion = self._night_info[self._night_idx]
         # night_ts = night_dt.timestamp()
@@ -283,3 +221,28 @@ class OnlineBlancoEnv(BaseBlancoEnv):
         else:
             self._bin_state = np.array([])
         self._update_action_masks()
+
+        # self._update_action_masks(self._ts, fid2maxvisits=self.fid2maxvisits, fieldfilter2maxvisits=self.fieldfilter2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
+                                                #   hpGrid=self.hpGrid, field_visits_arr=self._s_visits_cur, field_filter_visits_arr=self._s_filter_visits_cur)
+
+    def _fast_forward(self, timestamp, ras, decs, visited, max_visits):
+        incomplete_mask = visited < max_visits
+        incomplete_ras = ras[incomplete_mask]
+        incomplete_decs = decs[incomplete_mask]
+        
+        # If all fields complete, survey is terminated
+        if len(incomplete_ras) == 0:
+            return self._night_end_ts
+        test_timestamp = timestamp
+        step_size = 60*1 # inspect visibility every 5 mins
+
+        while test_timestamp < self._night_end_ts:
+            test_timestamp += step_size
+            _, fields_el = ephemerides.equatorial_to_topographic(ra=incomplete_ras, dec=incomplete_decs, time=test_timestamp)
+            fields_el = np.atleast_1d(fields_el)
+            cos_zenith = np.cos(90 * units.deg - fields_el[fields_el > 0])
+            airmass = 1 / np.clip(cos_zenith, a_min=1e-5, a_max=None)
+            if np.any(airmass < self._airmass_limit):
+                return test_timestamp
+        # If fields never above horizon, return sunrise time
+        return min(test_timestamp, self._night_end_ts)

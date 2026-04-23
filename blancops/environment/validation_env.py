@@ -90,10 +90,7 @@ class ValidationBlancoEnv(BaseBlancoEnv):
                                 cyclical_feature_names=CYCLICAL_FEATURE_NAMES,
                                 do_cyclical_norm=norm_kwargs['do_cyclical_norm'],
                                 )
-        if cfg.model.network == 'mlp':
-            self.state_feature_names = self.global_feature_names + self.bin_feature_names
-        else:
-            self.state_feature_names = self.global_feature_names
+        self.state_feature_names = self.global_feature_names + self.bin_feature_names
         
         self.global_pd_nightgroup = global_pd_nightgroup
         self.zenith_bin_states = zenith_bin_states
