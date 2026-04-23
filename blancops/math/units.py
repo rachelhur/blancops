@@ -11,16 +11,22 @@ import numpy as np
 
 # angle units
 rad = 1.0
+radian = rad
 deg = np.pi / 180.0
+degree = deg
 arcmin = deg / 60.0
 arcsec = arcmin / 60.0
 
 # time units
 sec = 1.0
+second = sec
 min = 60.0 * sec
+minute = min
 hr = 60.0 * min
+hour = hr
 day = 24.0 * hr
 yr = 365.25 * day
+year = yr
 
 # brightness units
 mag = 1.0

@@ -5,18 +5,18 @@ It interfaces directly with the telescope's control system, generating dynamic o
 
 ## Architecture
 
-The system is built as modular, continuous state machine:
+The system is built as a modular, continuous state machine:
 
 * **`TelescopeAPI` ([`api_client.py`](./api_client.py)):** The hardware abstraction layer. Handles all synchronous communication with the telescope (polling exposure status and telemetry, and submitting observations to the queue).
 * **`ModelRunner` ([`model_runner.py`](./model_runner.py)):** The inference engine. Keeps the ML model weights loaded in memory and generates "chunks" of proposed observations based on current state features.
 * **`UserInterface` ([`interface.py`](./interface.py)):** The human-in-the-loop presentation layer. Currently implemented as a blocking Command Line Interface (CLI) that displays Pandas DataFrames and Matplotlib sky plots for user approval.
-* **`StateManager` ([`state_manager.py`](./api_client.py)):** Handles memory and I/O. Logs completed observations to JSON Lines (`.jsonl`) files using a noon-to-noon session ID, allowing the system to seamlessly resume if interrupted.
+* **`StateManager` ([`state_manager.py`](./state_manager.py)):** Handles memory and I/O. Logs completed observations to JSON Lines (`.jsonl`) files using a noon-to-noon session ID, allowing the system to seamlessly resume if interrupted.
 * **`SchedulerOrchestrator` ([`orchestrator.py`](./orchestrator.py)):** The central control loop that ties all the above components together.
 
 ## Setup & Configuration
 
 Before running the scheduler, ensure your configuration parameters are set.
-The default configuration file is located at [`blancops/configs/live_scheduler_default.yaml`](../configs/live_scheduler_default.yaml).
+The default configuration file is located at [`configs/live_scheduler_default.yaml`](../../configs/live_scheduler_default.yaml).
 
 Key parameters to check:
 * `model_path`: Path to the trained AI model.
@@ -33,13 +33,13 @@ To start the observation loop, run the entry-point script:
 python scripts/run_live_scheduler.py
 ```
 
-# The Control Flow
+## The Control Flow
 1. **Proposal**: The system will fetch telemetry, generate a chunk of observations, and present the proposed chunk plan to the user.
 2. **Approval**: The system will pause and ask for `Y`/`N` approval.
- * `Y`: The system will proceed to waiting for schedule submission.
- * `N`: The chunk is rejected and a the system will regenerate a new proposal after masking the first selecting action from the rejected proposal.
+   * `Y`: The system will proceed to waiting for schedule submission.
+   * `N`: The chunk is rejected and the system will regenerate a new proposal after masking the first selected action from the rejected proposal.
 3. **Execution**: While an observation is exposing, the system continually polls the telescope control system. Once the exposure is finished, it logs the completion to disk and submits the first observation of the approved chunk. If significant telemetry changes are encountered while waiting, the system regenerates a chunk before submission.
 
 ## Safety & Interruptions
 * **Big Red Stop Button (Emergency Stop)**: To safely and immediately halt the system at any point, press `Ctrl+C` in the terminal. This will trigger a `KeyboardInterrupt` that catches the loop, halts new submissions, and safely exits. This will only stop the AI scheduling agent from making inference and submitting new observations, so the telescope will continue completing its current observing queue.
-* **Soft Interrupt (User Changes Mind While Waiting)**: ***Note: currently a placeholder, pending future Web UI development.*** This will allow a user to scrap the previously-approved chunk plan while the agent was otherwise waiting for submission.
+* **Soft Interrupt (User Changes Mind While Waiting)**: ***Note: currently a placeholder, pending future Web UI development.*** This will allow a user to scrap the previously approved chunk plan while the agent is otherwise waiting for submission.
