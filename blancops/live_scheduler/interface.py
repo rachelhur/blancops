@@ -1,29 +1,65 @@
+"""User-interface adapters for approving scheduler observation chunks.
+
+This module defines the scheduler-facing UI contract and a CLI implementation
+used for local, human-in-the-loop operation.
+"""
+
 from abc import ABC, abstractmethod
 import matplotlib.pyplot as plt
 from blancops.math import units
 
 
-# Abstract Base Class for User Interfaces (CLI, Web UI, etc.)
 class BaseInterface(ABC):
-    # display the proposed observing chunk to the user (as a DataFrame, plot, etc.)
+    """Abstract interface for user interaction with proposed observation chunks."""
+
     @abstractmethod
     def display_chunk(self, chunk_df):
+        """
+        Render the proposed observation chunk for operator review.
+
+        Arguments
+        ---------
+        chunk_df: pandas.DataFrame
+            Proposed observations and associated metadata.
+        """
+
         pass
 
-    # after generating a chunk plan, get user approval or rejection (regenerate plan)
     @abstractmethod
     def get_user_decision(self):
+        """
+        Get user approval/rejection for the current proposed chunk.
+
+        Returns
+        -------
+        approved: bool
+            Whether the user approves the proposed chunk for execution.
+        masked_fields: list
+            List of field IDs to mask in the next proposal if the chunk is rejected.
+        """
+
         pass
 
-    # soft interrupt, allowing a user to change their mind and signal a chunk replan
     @abstractmethod
     def check_for_replan_signal(self):
+        """
+        Check whether operator requested an asynchronous chunk replan.
+
+        Returns
+        -------
+        bool
+            True if a replan should be triggered.
+        """
+
         pass
 
 
-# CLI Implementation of the User Interface
 class CLIInterface(BaseInterface):
+    """Command-line interface for chunk preview and approval."""
+
     def display_chunk(self, chunk_df):
+        """Print the proposed chunk and save a simple RA/Dec plot."""
+
         # print the proposed chunk as a table in the terminal
         print("\n" + "=" * 88)
         print("[Interface] Proposed Observing Chunk")
@@ -31,7 +67,18 @@ class CLIInterface(BaseInterface):
         print(chunk_df.to_string(index=False))
         print("=" * 88)
 
-        # generate and save a plot of the chunk for visual inspection
+        # skip plotting when upstream returns an empty/malformed proposal
+        required_cols = {"ra", "dec"}
+        if chunk_df.empty:
+            print("[Interface] Chunk is empty; skipping plot generation.")
+            return
+        if not required_cols.issubset(chunk_df.columns):
+            print(
+                "[Interface] Chunk missing required ra/dec columns; skipping plot generation."
+            )
+            return
+
+        # Generate and save a plot for quick visual inspection.
         # XXX upgrade to a sky plot from the plotting utilities
         plt.figure(figsize=(8, 6))
         sc = plt.scatter(
@@ -50,20 +97,22 @@ class CLIInterface(BaseInterface):
         print("[Interface] Plot saved to 'current_chunk_proposal.png'.")
 
     def get_user_decision(self):
+        """Prompt for Y/N approval and return scheduler decision payload."""
+
         while True:
             resp = (
                 input("Approve this chunk? [Y]es, [N]o (mask fields): ").strip().upper()
             )
             if resp == "Y":
-                print("[Interface] Chunk accepted. Waiting to submit observation...")
-                return True, []
+                print("[Interface] Chunk accepted.")
+                return True
             elif resp == "N":
-                print("[Interface] Chunk rejected. Generating a new plan...")
-                # Placeholder: In a real CLI, we might ask for specific IDs to mask here
-                return False, [101]
+                print("[Interface] Chunk rejected.")
+                return False
             else:
-                print("Invalid input, please enter Y or N.")
+                print("[Interface] Invalid input, please enter Y or N.")
 
     def check_for_replan_signal(self):
-        # Soft Interrupt always False for CLI, as keyboard input blocks background loops
+        """CLI has no non-blocking soft-interrupt channel; always returns False."""
+
         return False
