@@ -1,7 +1,7 @@
 """User-interface adapters for approving scheduler observation chunks.
 
-This module defines the scheduler-facing UI contract and a CLI implementation
-used for local, human-in-the-loop operation.
+This module defines the scheduler-facing UI contract and a CLI implementation used for
+local, human-in-the-loop operation.
 """
 
 from abc import ABC, abstractmethod
