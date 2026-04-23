@@ -136,9 +136,6 @@ def main():
         field_lookup = pd.read_json(lookup_dirpath / "field_lookup.json")
         # fid2radec = field_lookup[['ra', 'dec']].to_numpy()
         
-        fid2radec = load_fid2radec_as_numpy(lookup_dirpath / "fid2radec.json")
-        fid2nvisits = np.array([n for n in field_lookup['n_visits'].values])
-        
         if schedule_name == 'gw-followup':
             print(f"Using GW followup test suite with predefined observing nights based on {args.observing_nights} set")
             if args.observing_nights[0] == 'good':
@@ -154,7 +151,7 @@ def main():
             observing_night_strs = HP_OBSERVING_DATES
         elif schedule_name == 'magic-spring':
             observing_night_strs = MS_OBSERVING_DATES
-            lookups = LookupTables.load_from_dir(lookup_dirpath / , is_historic=True)
+            lookups = LookupTables.load_from_dir(lookup_dirpath, is_historic=True)
 
         elif schedule_name == 'magic-spring-1':
             if args.load_obs_history:
@@ -174,8 +171,6 @@ def main():
         assert os.path.exists(filepath), f"Path to {f} not found in {lookup_dirpath}"
 
     field_lookup = pd.read_json(lookup_dirpath / "field_lookup.json")
-    fid2radec = load_fid2radec_as_numpy(lookup_dirpath / "fid2radec.json")
-    fid2nvisits = np.array([n for n in field_lookup['n_visits'].values])
 
     # Check that field_lookup has all required columns needed to run environment
     required_columns = ['field_id', 'exptime', 'ra', 'dec', 'n_visits', 'filter'] # 'dithers','object', 'priorities'
@@ -223,7 +218,7 @@ def main():
     # fid2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
 
     # Evaluate
-    diagnostics = agent.generate_schedule(env=env)
+    diagnostics = runner.generate_schedule(env=env)
     
     logger.info("Generating plots...")
     save_survey_diagnostics(diagnostics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, action_space=action_space)
