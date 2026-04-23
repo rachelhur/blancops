@@ -15,3 +15,6 @@ The trained model can be evaluated for a validation night (e.g., for date 2017/0
 ```model-eval -t <path/to/train/dir/containing/best/weights> -y 2017 -m 1 -d 5```
 
 and results will be saved in a directory in the trained model directory
+
+
+For instructions on deploying the real-time observation scheduling agent, see the [live scheduler documentation](./blancops/live_scheduler/README.md).
