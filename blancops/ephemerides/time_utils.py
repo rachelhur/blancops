@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from dateutil.parser import parse
 
 
 def utc_now():
@@ -61,3 +62,46 @@ def unix_to_local_datetime(ts):
         Corresponding timezone-aware datetime object in the local timezone.
     """
     return unix_to_datetime(ts).astimezone()
+
+
+def standardize_time(t):
+    """
+    Ensures a time variable is in standard format: UNIX timestamp in UTC. Assumes that
+    numerical inputs are already in correct format. Parses string inputs using dateutil
+    for flexibility. Objects without a clear timezone are assumed to be in UTC.
+
+
+    Arguments
+    ---------
+    t: float, str, datetime
+        Time variable to standardize.
+
+    Returns
+    -------
+    float
+        UNIX timestamp in UTC.
+    """
+    # helper function to check if a string can be parsed as a number
+    def is_number(s):
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+
+    # keep numerical inputs as is, parse strings into numbers if possible else datetime
+    if isinstance(t, (int, float)):
+        return t
+    elif isinstance(t, str):
+        if is_number(t):
+            return float(t)
+        dt = parse(t)
+    elif isinstance(t, datetime):
+        dt = t
+    else:
+        raise ValueError("Unsupported time format")
+
+    # assume datetimes without timezone info are in UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()

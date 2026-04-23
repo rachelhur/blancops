@@ -237,6 +237,10 @@ def main():
     args = parse_args()
     if args.min_chunk_size is not None:  # XXX implement this
         raise NotImplementedError("min_chunk_size is not implemented yet.")
+    if args.start_time is not None:
+        args.start_time = time_utils.standardize_time(args.start_time)
+    if args.stop_time is not None:
+        args.stop_time = time_utils.standardize_time(args.stop_time)
 
     # initialize requested API client
     print("Initializing blancops Live Scheduler...")
