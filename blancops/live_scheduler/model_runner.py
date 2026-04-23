@@ -11,6 +11,7 @@ import random
 import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
+from blancops.data.constants import IDX2FILTER
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
 from pathlib import Path
@@ -21,7 +22,7 @@ from abc import ABC, abstractmethod
 from blancops.data.lookup import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.live_scheduler.inference.helpers import build_env, generate_lookups_from_fields
-from blancops.live_scheduler.inference.model_loader import DeploymentAgentLoader, ModelDeploymentLoader
+from blancops.live_scheduler.inference.model_loader import DeploymentAgentLoader
 
 
 class ModelRunner(ABC):
@@ -165,7 +166,7 @@ class AIModelRunner(ModelRunner):
     def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size, new_fields=None, new_lookup_dir=None) -> pd.DataFrame:
         obs, info = None, None
         
-        # UPDATE TELEMETRY/LOOKUPS
+        # UPDATE TELEMETRY/FIELD LOOKUPS
         telemetry = self.process_telemetry(telemetry)
         self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
         
