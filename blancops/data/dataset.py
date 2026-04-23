@@ -10,15 +10,12 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader, Subset, RandomSampler
 
-from blancops.configs.schema import NormalizationConfig
 from blancops.ephemerides import ephemerides
 from blancops.math import geometry
 
 from blancops.data.preprocessing import drop_rows_in_DECam_data
 from blancops.data.constants import *
-from blancops.configs.constants import (
-    CYCLICAL_FEATURE_NAMES, SIN_NORM_FEATURE_NAMES, LOG_NORM_FEATURE_NAMES,
-)
+from blancops.configs.constants import CYCLICAL_FEATURE_NAMES
 
 from blancops.data.features.glob_features import GlobalFeatureEngineer, calc_inst_teff_rate
 from blancops.data.features.bin_features import BinFeatureEngineer

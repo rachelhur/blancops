@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import os
 from pathlib import Path
 from typing import Dict, List, Literal
@@ -39,9 +40,9 @@ GLOBAL_FEATURES = [
     "airmass", 
     "sun_ra", "sun_dec", "sun_az", "sun_el", 
     "moon_ra", "moon_dec", "moon_az", "moon_el",
-    "survey_num_unvisited_fields", # ie, survey progress dim
-    "survey_num_incomplete_fields", # ie, survey progress dim
-    "survey_min_tiling", # survey progress 
+    "survey_num_unvisited_fields",
+    "survey_num_incomplete_fields",
+    "survey_min_tiling",
     "filter_wave", "filter_idx",
     "is_filter_g", "is_filter_r", "is_filter_i", "is_filter_z", "is_filter_Y",
     "urgency_g", "urgency_r", "urgency_i", "urgency_z", "urgency_Y",
@@ -174,9 +175,26 @@ DEFAULT_NORM_MAPPING = {
     'survey_num_visits_done': ['fractional'],
 }
 
+EMPTY_SISPI_DICT = OrderedDict([
+    ("object",  None),
+    ("seqnum",  None), # 1-indexed
+    ("seqtot",  1),
+    ("seqid",   ""),
+    ("expTime", 90),
+    ("RA",      None),
+    ("dec",     None),
+    ("filter",  None),
+    ("count",   1),
+    ("expType", "object"),
+    ("program", None),
+    ("wait",    "False"),
+    ("propid",  None),
+    ("comment", ""),
+])
+
 CYCLICAL_FEATURE_NAMES = ["ra", "az", "ha", "lst"]
-SIN_NORM_FEATURE_NAMES = []
-LOG_NORM_FEATURE_NAMES = ["fwhm", "urgency"]
-FRACTIONAL_FEATURE_NAMES = ["moon_phase", "t_night", "t_survey", "survey_num_visits_done"]
-Z_SCORE_NORM_FEATURE_NAMES = ["airmass", "pointing_distance", "moon_distance", "sky_brightness", "fwhm", "delta_az", "delta_el", "urgency", "el", "dec"]
-LOCAL_MEAN_Z_SCORE_FEATURE_NAMES = ["rel_num_unvisited_fields", "rel_num_incomplete_fields", "rel_min_tiling", "rel_moon_distance", "rel_ha"]
+# SIN_NORM_FEATURE_NAMES = []
+# LOG_NORM_FEATURE_NAMES = ["fwhm", "urgency"]
+# FRACTIONAL_FEATURE_NAMES = ["moon_phase", "t_night", "t_survey", "survey_num_visits_done"]
+# Z_SCORE_NORM_FEATURE_NAMES = ["airmass", "pointing_distance", "moon_distance", "sky_brightness", "fwhm", "delta_az", "delta_el", "urgency", "el", "dec"]
+# LOCAL_MEAN_Z_SCORE_FEATURE_NAMES = ["rel_num_unvisited_fields", "rel_num_incomplete_fields", "rel_min_tiling", "rel_moon_distance", "rel_ha"]

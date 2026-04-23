@@ -14,7 +14,7 @@ import logging
 
 from blancops.configs.enums import LookupKeys
 from blancops.configs.schema import load_and_validate
-from blancops.core.runner import ScheduleGenerator
+from blancops.rl.runner import ScheduleGenerator
 from blancops.data.lookup import LookupTables
 from blancops.data.features.normalizations import load_normalization_stats
 from blancops.plotting.plotting import plot_schedule_from_file

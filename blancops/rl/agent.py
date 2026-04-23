@@ -19,21 +19,6 @@ class Agent:
         self.field_choice_method = field_choice_method
         
     def _choose_bin_and_filter(self, x_glob, x_bin, action_mask, epsilon):
-        """Selects an action using the underlying algorithm.
-
-        Args:
-            x_glob (array-like):
-                Pointing and global state features (normalized if applicable).
-            x_bin (array-like):
-                Per-bin features (normalized if applicable).
-            action_mask (array-like | None):
-                Boolean mask indicating which actions are legal.
-            epsilon (float | None):
-                Epsilon for epsilon-greedy exploration. If None, selects greedily.
-
-        Returns:
-            int: Selected action index.
-        """
         action = self.algorithm.select_action(x_glob=x_glob, x_bin=x_bin, action_mask=action_mask, epsilon=epsilon)
         if 'filter' in self.cfg.data.action_space:
             bin_idx = int(action // self.algorithm.policy.num_filters)

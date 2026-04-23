@@ -14,11 +14,11 @@ import json
 
 from blancops.configs.constants import get_workspace_dir
 from blancops.rl.trainer import Trainer
-from blancops.utils.sys_utils import seed_everything, load_global_config, load_model_config
+from blancops.utils.sys_utils import seed_everything, load_model_config
 from blancops.rl.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.constants import *
-from blancops.environment.online_env import OnlineBlancoEnv
+from blancops.environment.test_env import TestBlancoEnv
 from blancops.plotting.schedule_viz import *
 from blancops.data.dataset import load_fid2radec_as_numpy
 
@@ -78,7 +78,6 @@ def main():
         raise AssertionError(f"Must pass `field_lookup_dir` or specify a test from {TEST_SUITE_NAMES}")
 
     # Get configs
-    gcfg = load_global_config()
     cfg_dir = args.trained_model_dir
     assert os.path.exists(cfg_dir), f"Directory {cfg_dir} does not exist"
     cfg = load_model_config(cfg_dir / "config.json")
@@ -194,7 +193,7 @@ def main():
     env_name = 'OnlineDECamEnv-v0'
     gym.register(
         id=f"gymnasium_env/{env_name}",
-        entry_point=OnlineBlancoEnv,
+        entry_point=TestBlancoEnv,
     )
 
     #pyephem requires sun horizon to be in string format if degrees (float if radians)
@@ -202,7 +201,7 @@ def main():
 
     # Creat env
 
-    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, data_dir=lookup_dirpath,
+    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, data_dir=lookup_dirpath,
                     observing_night_strs=observing_night_strs, horizon=sun_horizon, max_nights=args.max_nights, airmass_limit=args.airmass_lim,
                     s_visits_cur=s_visits_cur, s_filter_visits_cur=fieldfilter2nvisits, night1_ts_start=args.night1_ts_start, field_priorities_arr=None)
     # fid2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
