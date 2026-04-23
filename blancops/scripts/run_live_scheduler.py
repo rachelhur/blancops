@@ -14,6 +14,7 @@ from blancops.live_scheduler.model_runner import MockModelRunner, AIModelRunner
 from blancops.live_scheduler.interface import CLIInterface
 from blancops.live_scheduler.state_manager import StateManager
 from blancops.live_scheduler.orchestrator import SchedulerOrchestrator
+from blancops.math import units
 
 
 DEFAULT_CONFIG_PATH = (
@@ -107,6 +108,42 @@ def parse_args():
         default=defaults.get("session_id", None),
         help="Optional observing-session identifier.",
     )
+    parser.add_argument(
+        "--start-time",
+        type=str,
+        default=defaults.get("start_time", None),
+        help=(
+            "Optional start time. Both this and sun elevation conditions must be met "
+            "to start the observing session."
+        ),
+    )
+    parser.add_argument(
+        "--start-sun-elevation-deg",
+        type=float,
+        default=defaults.get("start_sun_elevation_deg", -14),
+        help=(
+            "Optional sun elevation threshold. Both this and start time must be met "
+            "to start the observing session."
+        ),
+    )
+    parser.add_argument(
+        "--stop-time",
+        type=str,
+        default=defaults.get("stop_time", None),
+        help=(
+            "Optional stop time. Either this or sun elevation condition being met "
+            "will end the observing session."
+        ),
+    )
+    parser.add_argument(
+        "--stop-sun-elevation-deg",
+        type=float,
+        default=defaults.get("stop_sun_elevation_deg", -14),
+        help=(
+            "Optional sun elevation threshold. Either this or stop time being met "
+            "will end the observing session."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -114,10 +151,11 @@ def parse_args():
 def main():
     """Run the live scheduler with YAML defaults and optional CLI overrides."""
 
+    # parse and validate CLI arguments, with defaults loaded from YAML config
     args = parse_args()
-    print("Initializing blancops Live Scheduler...")
 
     # initialize components for running the scheduler
+    print("Initializing blancops Live Scheduler...")
     if args.mode == "mock":
         api = MockTelescopeAPI(exposure_duration=args.mock_exposure_duration)
         model = MockModelRunner()
@@ -125,7 +163,14 @@ def main():
         api = BlancoTelescopeAPI()
         model = AIModelRunner(model_path_or_alias=args.model_path)
     ui = CLIInterface()
-    state = StateManager(output_dir=args.output_directory, session_id=args.session_id)
+    state = StateManager(
+        output_dir=args.output_directory,
+        session_id=args.session_id,
+        start_time=args.start_time,
+        start_sun_elevation=args.start_sun_elevation_deg * units.deg,
+        stop_time=args.stop_time,
+        stop_sun_elevation=args.stop_sun_elevation_deg * units.deg,
+    )
     orchestrator = SchedulerOrchestrator(
         api,
         model,

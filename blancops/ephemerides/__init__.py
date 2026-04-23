@@ -1,5 +1,5 @@
 """Ephemerides and coordinate-transform helpers."""
 
-from . import ephemerides
+from . import ephemerides, time_utils
 
-__all__ = ["ephemerides"]
+__all__ = ["ephemerides", "time_utils"]

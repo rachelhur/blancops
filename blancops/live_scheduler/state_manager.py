@@ -2,13 +2,13 @@
 
 import json
 import os
-from datetime import datetime, timedelta
+from blancops.ephemerides import time_utils, ephemerides
 
 
 class StateManager:
     """Track the current observing session and log completed fields to disk."""
 
-    def __init__(self, output_dir, session_id=None):
+    def __init__(self, output_dir, session_id=None, start_time=None, start_sun_elevation=None, stop_time=None, stop_sun_elevation=None):
         """
         Initialize session metadata, output paths, and persisted history.
 
@@ -18,6 +18,14 @@ class StateManager:
             Directory where observing history should be written.
         session_id: str, optional
             Explicit observing-session identifier. If omitted, one is generated.
+        start_time: float, optional
+            Unix timestamp for the start of the observing session.
+        start_sun_elevation: float, optional
+            Sun elevation threshold for the start of the observing session.
+        stop_time: float, optional
+            Unix timestamp for the end of the observing session.
+        stop_sun_elevation: float, optional
+            Sun elevation threshold for the end of the observing session.
         """
 
         self.output_dir = output_dir
@@ -96,14 +104,30 @@ class StateManager:
         """
         Return whether conditions have been met to start the observing session.
         """
+        # get current conditions
+        now = time_utils.utc_now()
+        ra, dec = ephemerides.get_source_ra_dec('sun', time=now)
+        az, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=now)
 
-        # XXX call start condition checks here.
+        # require both time and sun elevation start conditions to be met if specified
+        if self.start_time is not None and now < self.start_time:
+            return False
+        if self.start_sun_elevation is not None and el > self.start_sun_elevation:
+            return False
         return True
 
     def check_end_condition(self):
         """
         Return whether conditions have been met to end the observing session.
         """
+        # get current conditions
+        now = time_utils.utc_now()
+        ra, dec = ephemerides.get_source_ra_dec('sun', time=now)
+        az, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=now)
 
-        # XXX call end condition checks here.
+        # end if either time or sun elevation end conditions are met
+        if self.stop_time is not None and now >= self.stop_time:
+            return True
+        if self.stop_sun_elevation is not None and el > self.stop_sun_elevation:
+            return True
         return False

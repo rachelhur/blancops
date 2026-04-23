@@ -6,4 +6,7 @@ chunk_size: 3
 observing_poll_rate_sec: 1
 telemetry_poll_rate_sec: 20
 output_directory: "./observing_logs"
-output_directory: "./observing_logs"
+start_time: null
+start_sun_elevation_deg: -14
+stop_time: null
+stop_sun_elevation_deg: -14

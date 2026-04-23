@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import numpy as np
 import healpy as hp
 from blancops.math import units
+from blancops.ephemerides import time_utils
 
 
 def blanco_observer(time=None):
@@ -28,12 +29,8 @@ def blanco_observer(time=None):
     observer.elevation = 2206.8  # m
 
     # initialize time
-    if time is None:
-        observer.date = datetime.now(tz=timezone.utc).strftime("%Y/%m/%d %H:%M:%S")
-    else:
-        observer.date = datetime.fromtimestamp(time, tz=timezone.utc).strftime(
-            "%Y/%m/%d %H:%M:%S"
-        )
+    time = time if time is not None else time_utils.utc_now()
+    observer.date = time_utils.unix_to_datetime(time).strftime("%Y/%m/%d %H:%M:%S")
 
     return observer
 
