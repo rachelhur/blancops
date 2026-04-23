@@ -134,29 +134,51 @@ class MockModelRunner(ModelRunner):
 
 
 class AIModelRunner(ModelRunner):
-    """Placeholder ML-backed runner for production inference."""
+    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, field_choice_method,device='cpu', **kwargs):
+        self.device = device
+        loader = DeploymentAgentLoader()
+        
+        self.agent, self.cfg = loader.build_agent(
+            model_path_or_alias=model_path_or_alias,
+            device=self.device,
+            field_lookup_dir=Path(field_lookup_dir),
+            field_choice_method=field_choice_method
+        )
+        
+        self.lookups = LookupTables().load_from_dir(field_lookup_dir, is_training=False, is_historic=False)
+        self.model_dir = loader._resolve_model_dir(self.model_name)
+        self.env = build_env(self.cfg, self.model_dir, self.lookups)
+        self.fields_dir = None
+        self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
+        
+        print(f"[Model] Loaded model weights from {self.model_dir} into memory.")
 
-    def __init__(self, model_path):
-        """
-        Initialize model resources.
-
-        Arguments
-        ---------
-        model_path: str
-            Filesystem path to serialized model artifacts.
-        """
-
-        self.model_path = model_path
-        # XXX Placeholder: Load model architecture and weights into memory
-        print(f"[Model] Loaded model weights from {model_path} into memory.")
-
-    def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size):
-        """
-        Generate an observation chunk from model inference.
-
-        This implementation is a placeholder and currently returns an empty
-        DataFrame until model feature generation and inference is wired in.
-        """
+    def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size, new_fields=None, new_lookup_dir=None) -> pd.DataFrame:
+        obs, info = None, None
+        
+        # UPDATE TELEMETRY/LOOKUPS
+        telemetry = self.process_telemetry(telemetry)
+        self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
+        
+        # UPDATE ENV AND GET OBS
+        self.env.sync_to_telemetry(telemetry)
+        obs = env.get_obs()
+        
+        proposed_schedule = {'agent_bin_id': np.zeros(chunk_size, dtype=np.int32),
+                            'agent_field_id': np.zeros(chunk_size, dtype=np.int32),
+                            'agent_filter': np.zeros(chunk_size, dtype=str),
+                            'agent_timestamp': np.zeros(chunk_size, dtype=np.int32),
+                            }
+        
+        # GENERATE SCHEDULE
+        for i in range(chunk_size):
+            bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, self.hpGrid)
+            actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
+            proposed_schedule['agent_bin_id'].append(bin_idx)
+            proposed_schedule['agent_field_id'].append(field_id)
+            proposed_schedule['agent_filter'].append(IDX2FILTER[filter_idx])
+            proposed_schedule['agent_timestamp'].append(info.get('timestamp'))
+            obs, reward, terminated, truncated, info = self.env.step(actions)
 
         print("[Model] Generating state features and running inference...")
         # XXX Placeholder: generate a chunk of observations using the loaded model

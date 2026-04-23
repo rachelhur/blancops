@@ -123,7 +123,7 @@ def main():
         model = MockModelRunner()
     else:
         api = BlancoTelescopeAPI()
-        model = AIModelRunner(model_path=args.model_path)
+        model = AIModelRunner(model_path_or_alias=args.model_path)
     ui = CLIInterface()
     state = StateManager(output_dir=args.output_directory, session_id=args.session_id)
     orchestrator = SchedulerOrchestrator(
