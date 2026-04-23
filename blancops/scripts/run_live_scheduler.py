@@ -9,7 +9,7 @@ import yaml
 # Ensure blancops is in the path if running directly
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from blancops.live_scheduler.api_client import MockTelescopeAPI, BlancoTelescopeAPI
+from blancops.live_scheduler.api_client import BlancoTelescopeAPI, MockTelescopeAPI, BlancoAPI
 from blancops.live_scheduler.model_runner import MockModelRunner, AIModelRunner
 from blancops.live_scheduler.interface import CLIInterface
 from blancops.live_scheduler.state_manager import StateManager
