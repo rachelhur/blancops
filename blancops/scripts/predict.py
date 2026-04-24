@@ -18,7 +18,6 @@ from blancops.utils.sys_utils import setup_logger, get_device
 from blancops.data.constants import *
 from blancops.environment.test_env import TestBlancoEnv
 from blancops.plotting.schedule_viz import *
-from blancops.data.dataset import load_fid2radec_as_numpy
 from blancops.rl.registry import build_algorithm
 
 
