@@ -18,7 +18,7 @@ from blancops.ephemerides import ephemerides
 from blancops.data.lookup import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.live_scheduler.inference.helpers import build_env
-from blancops.live_scheduler.inference.model_loader import DeploymentAgentLoader
+from blancops.rl.agent_factory import AgentFactory
 
 
 class ModelRunner(ABC):
