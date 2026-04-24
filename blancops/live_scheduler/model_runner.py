@@ -13,6 +13,7 @@ import numpy as np
 from pathlib import Path
 from abc import ABC, abstractmethod
 from blancops.data.constants import IDX2FILTER
+from blancops.ephemerides.time_utils import utc_now
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
 from blancops.data.lookup import LookupTables
@@ -162,80 +163,104 @@ class MockModelRunner(ModelRunner):
 
 class AIModelRunner(ModelRunner):
     def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu", 
-                 field_choice_method: str = "interp", chunk_size: int = 10, testing_mode=True):
+                 field_choice_method: str = "interp"):
         self.device = device
-        self.testing_mode = testing_mode
+        self.TESTING_MODE = True # REMOVE WHEN ENVIRONMENT IS FULLY FUNCTIONING
         
         # Fields and Lookups
         self.fields_dir = Path(field_lookup_dir)
         self.lookups = self._get_lookups(fields_path, self.fields_dir)
         
         # Agent and Model
-        agent_loader = DeploymentAgentLoader()
-        self.agent, self.cfg = agent_loader.build_agent(
+        factory = AgentFactory() # Defaults to WORKSPACE / "deployable_models"
+        self.agent, self.cfg, norm_stats = factory.build_agent(
             model_path_or_alias=model_path_or_alias,
             lookups=self.lookups,
             field_choice_method=field_choice_method,
-            device=self.device,
+            device=self.device
         )
         
-        self.model_dir = agent_loader.resolve_model_dir(model_path_or_alias)
-        self.env = None
-        # self.env = build_env(self.cfg, self.model_dir, self.lookups, chunk_size=chunk_size)
+        self.model_dir = factory.resolve_model_dir(model_path_or_alias)
+        self.env = build_env(self.cfg, self.model_dir, self.lookups)
         self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
         print(f"[Model] Loaded model weights from {self.model_dir} into memory.")
 
-    def _get_lookups(self, fields_path, fields_dir):
+    @staticmethod
+    def _get_lookups(fields_path, fields_dir):
         if fields_path:
-            lookups = LookupTables.generate_lookups_from_fields(fields_path=fields_path, outdir=self.fields_dir, write_to_disk=True)
+            lookups = LookupTables.generate_lookups_from_fields(fields_path=fields_path, outdir=fields_dir, write_to_disk=True)
         else:
-            lookups = LookupTables.load_from_dir(self.fields_dir, is_training=False, is_historic=False, construct_if_missing=True)
+            lookups = LookupTables.load_from_dir(fields_dir, is_training=False, is_historic=False, construct_if_missing=True)
         return lookups
         
     def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size, new_fields=None, new_lookup_dir=None) -> pd.DataFrame:
-        obs, info = None, None
         
-        # UPDATE TELEMETRY/FIELD LOOKUPS
-        telemetry = self.process_telemetry(telemetry)
-        self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
-        
-        # UPDATE ENV AND GET OBS
-        self.env.sync_to_telemetry(telemetry)
-        obs = self.env.get_obs()
-        
-        proposed_schedule = {'bin_idx': np.zeros(chunk_size, dtype=np.int32),
-                            'field_id': np.zeros(chunk_size, dtype=np.int32),
-                            'filter': np.zeros(chunk_size, dtype=str),
-                            'timestamp': np.zeros(chunk_size, dtype=np.int32),
-                            'ra': np.zeros(chunk_size, dtype=np.float32),
-                            'dec': np.zeros(chunk_size, dtype=np.float32),
-                            }
-        
-        # GENERATE SCHEDULE
-        for i in range(chunk_size):
-            bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, self.hpGrid)
-            actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
+        if self.TESTING_MODE:
+            obs, info = self.env.get_obs(), self.env.get_info()
+            # ra, dec = telemetry["pointing_ra"], telemetry["pointing_dec"]
             
-            proposed_schedule['bin_idx'][i] = bin_idx
-            proposed_schedule['field_id'][i] = field_id
-            proposed_schedule['filter'][i] = IDX2FILTER[filter_idx]
-            proposed_schedule['timestamp'][i] = info.get('timestamp')
+            # self.env.step()
+            raise NotImplementedError
+        else:
+            # UPDATE TELEMETRY/FIELD LOOKUPS
+            telemetry = self.process_telemetry(telemetry)
+            self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
             
-            ra, dec = self.lookups.fid2radec[field_id]
-            proposed_schedule['ra'][i] = ra
-            proposed_schedule['dec'][i] = dec
+            # UPDATE ENV AND GET CURRENT STATE/OBS
+            self.env.sync_to_telemetry(telemetry)   # will sync up with (1) telemetry time
+                                                                    # (2) current ra, dec 
+                                                                    # (3) its counters for (field, filter) for *successful* exposures that have occured since last 
+                                                                    # chunk generation
+                                                    # note to self, should reset environment counters back to "original state" at the end of policy rollout 
+            obs, info = self.env.get_obs(), self.env.get_info()
             
-            obs, reward, terminated, truncated, info = self.env.step(actions)
-
-        print("[Model] Generating state features and running inference...")
-        
-        return pd.DataFrame(proposed_schedule)
+            # GENERATE SCHEDULE
+            print("[Model] Generating state features and running inference...")
+            proposed_schedule = self.rollout_policy(init_obs=obs, init_info=info, chunk_size=chunk_size)
+            return proposed_schedule
 
     def update_lookups(self, new_fields_path, new_dir=None):
         if not new_fields_path: 
             return self.lookups
         
         new_lookups = LookupTables.generate_lookups_from_fields(fields_path=new_fields_path, write_to_disk=False)
-        self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir)
-        self.lookups.write_to_disk(new_dir)
+        self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir) # writes to disk if new_dir is not None
         return self.lookups
+    
+    def rollout_policy(self, init_obs: dict, init_info: dict, chunk_size: int) -> pd.DataFrame:
+        proposed_schedule = {'bin_idx': [],
+                    'field_id': [],
+                    'filter': [],
+                    'timestamp': [],
+                    'ra': [],
+                    'dec': [],
+                    }
+        
+        obs, info = init_obs, init_info
+        for i in range(chunk_size):
+            bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, self.hpGrid)
+            actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
+            
+            proposed_schedule['bin_idx'].append(bin_idx)
+            proposed_schedule['field_id'].append(field_id)
+            proposed_schedule['filter'].append(IDX2FILTER[filter_idx])
+            proposed_schedule['timestamp'].append(info.get('timestamp'))
+            
+            ra, dec = self.lookups.fid2radec[field_id]
+            proposed_schedule['ra'].append(ra)
+            proposed_schedule['dec'].append(dec)
+            
+            obs, reward, terminated, truncated, info = self.env.step(actions)
+            if terminated or truncated: #ie, end of night - orchestrator default stops this, but doesn't hurt to have extra check here
+                break
+        
+        for key, val in proposed_schedule.items():
+            if key in ['bin_idx', 'field_id', 'timestamp']:
+                dtype = np.int64
+            elif key in ['ra', 'dec']:
+                dtype = np.float64
+            proposed_schedule[key] = np.array(val, dtype=dtype)
+        
+        self.env.reset_to_original_state()
+            
+        return pd.DataFrame(proposed_schedule)
