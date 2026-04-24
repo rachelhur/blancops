@@ -7,6 +7,7 @@ local, human-in-the-loop operation.
 from abc import ABC, abstractmethod
 import matplotlib.pyplot as plt
 from blancops.math import units
+from blancops.plotting import live_scheduling_viz
 import pathlib
 
 
@@ -101,19 +102,8 @@ class CLIInterface(BaseInterface):
             return
 
         # Generate and save a plot for quick visual inspection.
-        # XXX upgrade to a sky plot from the plotting utilities
-        plt.figure(figsize=(8, 6))
-        sc = plt.scatter(
-            chunk_df["ra"] / units.degree,
-            chunk_df["dec"] / units.degree,
-            c=range(len(chunk_df)),
-            cmap="viridis",
-        )
-        plt.colorbar(sc, label="Observation Order")
-        plt.xlabel("RA [deg]")
-        plt.ylabel("Dec [deg]")
-        plt.title("Proposed Chunk Pointings")
-        plt.grid(True)
+        # XXX update to include completed, future, and current fields in the plot
+        skymap = live_scheduling_viz.plot_live_schedule_snapshot(proposed_df=chunk_df)
         if self.output_dir is not None:
             plt.savefig(self.output_dir / "current_chunk_proposal.png")
             print(

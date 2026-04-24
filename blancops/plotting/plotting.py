@@ -185,6 +185,8 @@ class SkyMap:
         # draw the text
         lon = self.ra_to_lon(ra)
         lat = np.asarray(dec)
+        lon = float(np.ravel(lon)[0])
+        lat = float(np.ravel(lat)[0])
         txt = self.ax.text(
             lon / units.deg, lat / units.deg, label, transform=self.input_crs, **kwargs
         )
