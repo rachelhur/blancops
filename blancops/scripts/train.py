@@ -14,8 +14,8 @@ from blancops.data.preprocessing import preprocess_train_df
 from blancops.data.dataset import OfflineDataset
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 from blancops.rl.registry import build_algorithm, build_network
-from blancops.configs.schema import load_and_validate, resolve_and_save
-from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
+from blancops.configs.schema import ExperimentConfig, load_and_validate, resolve_and_save
+from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, BIN_FEATURES, WORKSPACE
 
 import argparse
 import logging
@@ -28,29 +28,44 @@ def get_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-c', '--cfg', type=str, default=None, required=True, help="Path to config file. If passed, all other arguments are ignored")
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
+    parser.add_argument('--resume_from_checkpoint', action='store_true', help='Whether to resume training from a checkpoint.')
 
     args = parser.parse_args()
     return args
 
-def get_results_outdirs(cfg):
-    # Define standard output directories based on the workspace
-    results_outdir = Path(cfg.experiments_directory) / Path(cfg.experiment_name)
-    results_outdir.mkdir(parents=True, exist_ok=True)
-    fig_outdir = results_outdir / 'figures'
-    return results_outdir, fig_outdir
+def setup_result_outdirs(cfg: ExperimentConfig):
+    parent = Path(cfg.parent_dir)
+    if not parent.is_absolute():
+        parent = WORKSPACE / parent
+
+    if cfg.outdir:
+        outdir = Path(cfg.outdir)
+        if not outdir.is_absolute():
+            outdir = WORKSPACE / outdir
+    else:
+        outdir = parent / cfg.experiment_name
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / 'figures').mkdir(parents=True, exist_ok=True)
+    (outdir / 'checkpoints').mkdir(parents=True, exist_ok=True)
+    (outdir / 'metrics').mkdir(parents=True, exist_ok=True)
+    (outdir / 'configs').mkdir(parents=True, exist_ok=True)
+    (outdir / 'logs').mkdir(parents=True, exist_ok=True)
+
+    cfg.outdir = str(outdir)
+    
+    return outdir
 
 def main():
 
     # --- SETUP EXPERIMENT FROM ARGS AND CONFIG --- #
     args = get_args()
     cfg = load_and_validate(args.cfg)
-    exp_outdir, fig_outdir = get_results_outdirs(cfg)    
-    exp_outdir.mkdir(parents=True, exist_ok=True)
-    fig_outdir.mkdir(parents=True, exist_ok=True)
+    outdir = setup_result_outdirs(cfg)    
     # ---------------------- #
 
     # --- SET UP LOGGER --- #
-    logger = setup_logger(save_dir=exp_outdir, logging_filename='training.log')
+    logger = setup_logger(save_dir=outdir / "logs", logging_filename='train.log')
     # ---------------------- #
 
     # --- SEED AND GET DEVICE --- #
@@ -71,9 +86,9 @@ def main():
     # ---------------------- #
 
     #  --- BASIC PLOTTING --- #
-    plot_bin_membership(train_dataset, fig_outdir)
-    plot_global_feature_distributions(train_dataset, fig_outdir)
-    plot_bin_feature_distributions(train_dataset, fig_outdir)
+    plot_bin_membership(train_dataset, outdir / "figures")
+    plot_global_feature_distributions(train_dataset, outdir / "figures")
+    plot_bin_feature_distributions(train_dataset, outdir / "figures")
     #  ---------------------- #
 
     # --- DATALOADERS --- #
@@ -82,7 +97,7 @@ def main():
     #  ---------------------- #
     
     # --- SAVE VAL DATA FOR VALIDATION --- #
-    cache_path = exp_outdir / "val_cache.pt"
+    cache_path = outdir / "val_cache.pt"
     val_data_list = []
     for batch in valloader:
         val_data_list.append(batch)
@@ -102,12 +117,22 @@ def main():
     
     # --- BUILD ALGORITHM --- #
     cfg = resolve_and_save(cfg=cfg, dataset_dims=train_dataset.dataset_dims, dataset_feature_names=train_dataset.dataset_feature_names, 
-                           lr_scheduler_kwargs=lr_scheduler_kwargs, val_nights=train_dataset.val_nights, outdir=exp_outdir)
+                           lr_scheduler_kwargs=lr_scheduler_kwargs, val_nights=train_dataset.val_nights, outdir=outdir / "configs")
     algorithm = build_algorithm(cfg, device=device)
 
+    latest_ckpt_path = outdir / "checkpoints" / "latest_checkpoint.pt"
+
+    if latest_ckpt_path.exists():
+        # We are resuming a crashed run!
+        start_epoch = trainer.resume_from_checkpoint(latest_ckpt_path)
+    else:
+        # We are starting fresh!
+        start_epoch = 0
+        
     trainer = Trainer(
         algorithm=algorithm,
-        train_outdir=str(exp_outdir) + '/',
+        train_outdir=outdir,
+        start_epoch=start_epoch
     )
     # ---------------------- #
 
@@ -115,22 +140,24 @@ def main():
 
     # Train agent
     start_time = time.time()
+    
     trainer.fit(
         num_epochs=cfg.train.max_epochs,
         trainloader=trainloader,
         valloader=valloader,
         batch_size=cfg.train.batch_size,
         patience=cfg.train.patience,
-        hpGrid=train_dataset.hpGrid
+        hpGrid=train_dataset.hpGrid,
+        norm_stats=train_dataset.get_norm_stats()
     )
     end_time = time.time()
     logger.info(f'Total train time = {end_time - start_time}s on {device}')
     logger.info("Training complete.")
     
-    logger.info(f'Results saved in {exp_outdir}')
+    logger.info(f'Results saved in {outdir}')
     
     logger.info("Plotting metrics...")
-    plot_train_metrics(exp_outdir, dataset=train_dataset)
+    plot_train_metrics(outdir, dataset=train_dataset)
 
 if __name__ == "__main__":
     main()

@@ -13,10 +13,10 @@ import pandas as pd
 import logging
 
 from blancops.configs.enums import LookupKeys
-from blancops.configs.schema import load_and_validate
+from blancops.configs.schema import EnvConfig, load_and_validate
+from blancops.rl.agent_factory import AgentFactory
 from blancops.rl.runner import ScheduleGenerator
 from blancops.data.lookup import LookupTables
-from blancops.data.features.normalizations import load_normalization_stats
 from blancops.plotting.plotting import plot_schedule_from_file
 from blancops.rl.agent import Agent
 from blancops.rl.registry import build_algorithm
@@ -38,6 +38,30 @@ from datetime import datetime
 import re
 
 from pathlib import Path
+
+def get_checkpoint(trained_model_dir,):
+    checkpoints_dir = trained_model_dir / 'checkpoints'
+
+    history_file = checkpoints_dir / "checkpoint_history.json"
+    
+    if history_file.exists():
+        with open(history_file, 'r') as f:
+            history = json.load(f)
+            
+        if history:
+            # Your Checkpointer sorts the list so the best model is always at index 0
+            best_checkpoint = history[0]
+            weights_path = Path(best_checkpoint['filepath'])
+            logger.info(f"Auto-detected best checkpoint from history: {weights_path.name} (Metric: {best_checkpoint['metric']:.4f})")
+        else:
+            raise ValueError("checkpoint_history.json is empty!")
+    else:
+        logger.info("No checkpoint_history.json found. Falling back to latest_checkpoint.pt")
+        weights_path = checkpoints_dir / 'latest_checkpoint.pt'
+
+    assert weights_path.exists(), f"Weights file not found at {weights_path}"
+
+    return weights_path
 
 def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None, is_azel=False, whole=False, fid2radec_filepath=None):
     # Save timestamps, field_ids, and bin numbers
@@ -64,7 +88,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
     output_filepath = save_dir + 'schedule.csv'
     df.to_csv(output_filepath, index=False)
 
-    # schedule = pd.read_csv(output_filepath)
     logger.info("Creating fieldbin movies")
     # Create binfield movies
     plot_schedule_from_file(
@@ -192,8 +215,6 @@ def save_schedule(night_metrics, pd_group, save_dir, make_gifs=True, nside=None,
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--seed', type=int, default=10, help='Random seed for reproducibility')
-    # Test data selection
-    # parser.add_argument('--SISPI_file', type=str, help='Path to a SISPI-like json file with a list of fields.')
     parser.add_argument('-t', '--trained_model_dir', type=Path, required=True, help='Directory of the trained model to evaluate')
     parser.add_argument('-n', '--evaluation_name', type=str, default=None, help='Directory name for this evaluation run')
     parser.add_argument('-y', '--years', type=int, nargs='*', default=None, help='Specific years to include in the test dataset')
@@ -204,19 +225,13 @@ def main():
     parser.add_argument('-z', '--start_at_zenith', action='store_true', help='Whether to start evaluation episodes at zenith or not. If False, starts at the first observation of the night.')
     parser.add_argument('--field_choice_method', type=str, default='interp', help="Options: random, interp")
     parser.add_argument('--fits_path', type=str, default='../data/decam-exposures-20251211.fits', help='Path to offline dataset file')
-    parser.add_argument('--json_path', type=str, default='../data/decam-exposures-20251211.json', help='Path to offline dataset metadata json file')
-    parser.add_argument('--make_gifs', action='store_true', help="Whether to create the set of gifs. Currently can only choose to make all or none.")
-
-    # Evaluation hyperparameters
+    parser.add_argument('--make_gifs', action='store_true', help="Whether to create the set of gifs.")
     parser.add_argument('--num_episodes', type=int, default=1, help='Number of evaluation episodes to run')
 
-    # Parse args
     args = parser.parse_args()
-    # Get configs
     args.trained_model_dir = args.trained_model_dir.resolve()
-    cfg = load_and_validate(args.trained_model_dir / "resolved_config.yaml")
+    cfg = load_and_validate(args.trained_model_dir / "configs" / "resolved_config.yaml")
 
-    # Define eval outdir
     evaluation_name = args.evaluation_name
     if getattr(args, 'evaluation_name', None) is None:
         date_postfix = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -224,31 +239,25 @@ def main():
     else:
         evaluation_name = args.evaluation_name
 
-    assert os.path.exists(args.trained_model_dir / 'best_weights.pt'), f"There is no best_weights.pt file in {args.trained_model_dir}"
+    weights_path = get_checkpoint(args.trained_model_dir)
+    assert os.path.exists(weights_path), f"There is no best_weights.pt file in {args.trained_model_dir}"
     eval_outdir = os.path.join(args.trained_model_dir, evaluation_name)
 
     if not os.path.exists(eval_outdir):
         os.makedirs(eval_outdir)
     else:
         while os.path.exists(eval_outdir):
-            # Group 1 captures the prefix (e.g., "eval_2026-03-06_")
-            # Group 2 captures the number suffix (e.g., "0")
             match = re.search(r"^(.*?)(\d+)$", evaluation_name)
-            
             if match:
                 base_name = match.group(1)
                 num_group = int(match.group(2))
                 evaluation_name = f"{base_name}{num_group + 1}"
             else:
-                # Fallback just in case the user provided a custom name without a number
                 evaluation_name = f"{evaluation_name}_1"
-                
             eval_outdir = os.path.join(args.trained_model_dir, evaluation_name)
-            
         os.makedirs(eval_outdir)
     eval_outdir += '/'
         
-    # Set up logging
     logger = setup_logger(save_dir=Path(eval_outdir).resolve(), logging_filename='eval.log', logging_level=args.logging_level)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     logging.getLogger("pytorch").setLevel(logging.WARNING)
@@ -258,21 +267,28 @@ def main():
     logging.getLogger("cartopy").setLevel(logging.WARNING)
 
     logger.info("Saving results in " + eval_outdir)
-
-    # Seed everything
     seed_everything(args.seed)
-
     device = get_device()
-    logger.info("Loading raw data...")
     
+    logger.info("Loading raw data...")
     df = preprocess_train_df(TRAIN_DATA_PATH)
     survey_nights_total = df['night'].nunique()
-    
     nside = cfg.data.nside
-    zscore_stats, rel_norm_stats = load_normalization_stats(args.trained_model_dir)
-    logger.info(f"Loaded z-score stats: {zscore_stats}")
-    logger.info(f"Loaded rel_norm_stats: {rel_norm_stats}")
+
+    logger.info(f"Loading checkpoint and normalization stats from {weights_path}")
+    checkpoint = torch.load(weights_path, map_location=device)
     
+    if 'norm_stats' in checkpoint:
+        zscore_stats = checkpoint['norm_stats'].get('z_score', {})
+        rel_norm_stats = checkpoint['norm_stats'].get('rel_norm', {})
+        logger.info("Successfully extracted norm_stats directly from checkpoint file.")
+    else:
+        # Fallback for models trained before the update
+        logger.warning("norm_stats not found in checkpoint! Falling back to disk load...")
+        from blancops.data.features.normalizations import load_normalization_stats
+        zscore_stats, rel_norm_stats = load_normalization_stats(args.trained_model_dir)
+        
+        
     from blancops.data.features.normalizations import build_normalizer_kwargs, StateNormalizer
     norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
     global_normalizer = StateNormalizer(
@@ -283,6 +299,7 @@ def main():
         state_feature_names=cfg.data.bin_features, 
         **norm_kwargs
     )
+    
     lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, is_historic=True)
     logger.info("Loading test dataset with same config as training dataset...")
     test_dataset = OfflineDataset(
@@ -293,25 +310,21 @@ def main():
         months=args.months,
         days=args.days,
         filters=args.filters,
-        global_normalizer=global_normalizer, # Pass normalizers instead of raw stats!
+        global_normalizer=global_normalizer, 
         bin_normalizer=bin_normalizer,
         z_score_stats=zscore_stats,
         rel_norm_stats=rel_norm_stats
-        ) 
+    ) 
     
     from scipy.interpolate import CubicSpline
 
-    # GET INTERPOLATED FEATURES
     fwhm_night_interps = []
     for n, ng in test_dataset._df.groupby('night'):
         _ts = ng['timestamp'].values
         _fwhms = ng['fwhm'].values
         cs = CubicSpline(_ts, _fwhms)
-        # plt.scatter(_ts, _fwhms, s=1)
-        # plt.plot(_ts, cs(_ts), color='red')
         fwhm_night_interps.append(cs)
 
-    # ENVIRONMENT SETUP
     logger.info("Setting up environment...")
     env_name = 'OfflineDECamTestingEnv-v0'
     gym.register(
@@ -319,7 +332,6 @@ def main():
         entry_point=ValidationBlancoEnv,
     )
         
-    # get initial state per night from dataset
     global_pd_nightgroup = test_dataset._df.groupby('night')
     if not args.start_at_zenith:
         global_pd_nightgroup = global_pd_nightgroup.apply(lambda x: x.iloc[1:]).reset_index(drop=True).groupby('night')
@@ -332,38 +344,36 @@ def main():
     else:
         night_start_bin_states = None
     
-    
-    # env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, max_nights=None, global_pd_nightgroup=global_pd_nightgroup, \
-    #                zenith_bin_states=night_start_bin_states, z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, t_survey_arr=t_survey_arr, survey_nights_total=survey_nights_total,
-    #                fwhm_night_interps=fwhm_night_interps)
-    # logger.debug("Directly instantiating to find bug...")
-    
-    # CREATE ENVIRONMENT
+    env_cfg = EnvConfig()
     env = ValidationBlancoEnv(
-        cfg=cfg, 
+        cfg=cfg,
+        env_cfg=env_cfg,
         lookups=lookups,
         global_normalizer=global_normalizer,
         bin_normalizer=bin_normalizer,
-        max_nights=None, 
         global_pd_nightgroup=global_pd_nightgroup, 
         zenith_bin_states=night_start_bin_states, 
         z_score_stats=zscore_stats, 
-        rel_norm_stats=rel_norm_stats, 
-        t_survey_arr=t_survey_arr, 
-        survey_nights_total=survey_nights_total,
-        fwhm_night_interps=fwhm_night_interps
+        rel_norm_stats=rel_norm_stats,
+        # t_survey_arr=t_survey_arr, 
+        # survey_nights_total=survey_nights_total,
+        # fwhm_night_interps=fwhm_night_interps
     )
     
-    # BUILD ALGORITHM
-    algorithm = build_algorithm(cfg, device)
-    algorithm.load(Path(args.trained_model_dir) / 'best_weights.pt')
+    factory = AgentFactory(base_model_dir=args.trained_model_dir.parent)
     
-    # BUILD AGENT
-    agent = Agent(algorithm=algorithm, cfg=cfg, lookups=lookups, field_choice_method=args.field_choice_method)
-    # BUILD RUNNER
+    agent, cfg, norm_stats = factory.build_agent(
+        model_path_or_alias=args.trained_model_dir,
+        lookups=lookups,
+        field_choice_method=args.field_choice_method,
+        device=device
+    )
+    
+    zscore_stats = norm_stats.get('z_score', {})
+    rel_norm_stats = norm_stats.get('rel_norm', {})
+    
     runner = ScheduleGenerator(
         agent=agent,
-        algorithm=algorithm,
         cfg=cfg,
         lookups=lookups,
         num_episodes=1,
@@ -372,7 +382,6 @@ def main():
         schedule_chunk_size=0,
     )
 
-    # -------------- GET SINGLE STEP PREDICTIONS -------------- #
     cur_idxs = test_dataset.current_state_idxs
     with torch.no_grad():
         q_vals = runner.algorithm.policy.core_net(test_dataset.states[cur_idxs].to(device), test_dataset.bin_states[cur_idxs].to(device) if test_dataset.bin_states is not None else None)
@@ -381,7 +390,7 @@ def main():
     exp_actions = test_dataset.actions.detach().numpy()    
     exp_mask = test_dataset.actions != ZENITH_BIN_NUM
     ag_mask = agent_actions != ZENITH_BIN_NUM
-    # Get expert and agent actions (bin and filter)
+
     if 'filter' in cfg.data.action_space:
         expert_filters = exp_actions[exp_mask] % NUM_FILTERS
         agent_filters = agent_actions[ag_mask] % NUM_FILTERS
@@ -392,12 +401,10 @@ def main():
         expert_bins = exp_actions[exp_mask]
         agent_bins = agent_actions[ag_mask]
     
-    # Get expert times
     time_idx = np.where(np.array(test_dataset.global_feature_names) == 't_night')[0]
     expert_times = test_dataset.states[test_dataset.next_state_idxs, time_idx].detach().numpy()
     assert len(expert_bins) == len(agent_bins) == len(expert_times), f"Shape mismatch: expert bins {expert_bins.shape}, agent_bins {agent_bins.shape} expert_times {expert_times.shape}"
     
-    # Plot expert vs agent actions
     fig, axs = plt.subplots(2, figsize=(10,5), sharex=True)
     axs[0].plot(expert_times, expert_bins, marker='*', alpha=.3, label='true')
     axs[0].plot(expert_times, agent_bins, marker='o', alpha=.3, label='pred')
@@ -424,28 +431,20 @@ def main():
         axs[1].set_ylabel('Filter Index residuals (Agent - Expert)')
         axs[1].set_xlabel('Time since sunrise (normalized)')
         fig.savefig(eval_outdir + 'single_step_filters_vs_time.png')
-    # ............................................. #
 
-    # -------------- EVALUATE POLICY -------------- #
     logger.info("Starting evaluation...")
     diagnostics = runner.generate_schedule(env=env)
     logger.info("Evaluation complete.")
     with open(eval_outdir + 'eval_metrics.pkl', 'rb') as handle:
         diagnostics = pickle.load(handle)
     logger.info("Generating static plots...")
-    # ............................................. #
     
-    # ------------ PLOT RESULTS -------------- #
     ep_num = 0
     diagnostics = diagnostics[f'ep-{ep_num}']
 
-    # 1. Create a DataFrame of ONLY the valid "current" states.
-    # This perfectly aligns (1-to-1) with test_dataset.bin_actions and test_dataset.dones
     valid_transitions_df = test_dataset._df.iloc[test_dataset.current_state_idxs].reset_index(drop=True)
 
-    # 2. Iterate cleanly over the unique nights
     for night_idx, night_name in enumerate(test_dataset.unique_nights):
-        # Get date in string form for plots
         date = night_name.date()
         date_str = f"{date.year}-{date.month}-{date.day}"
         logger.info(f'Drawing plots for night {date_str}')
@@ -453,11 +452,9 @@ def main():
         if not os.path.exists(night_dir):
             os.makedirs(night_dir)
 
-        # 3. Get the DataLoader indices belonging strictly to this night
         night_mask = (valid_transitions_df['night'] == night_name).values
         night_dl_idxs = np.where(night_mask)[0]
         
-        # 4. Extract Agent Metrics
         metrics = diagnostics[f'night-{night_idx}']
         
         if len(night_dl_idxs) < 2 or len(metrics['timestamp']) < 2:
@@ -465,13 +462,11 @@ def main():
             continue
             
         night_compact_idxs = test_dataset.curr_compact_idxs[night_dl_idxs]
-        
         night_df = valid_transitions_df.iloc[night_dl_idxs]
         
         if test_dataset._prenorm_bin_states is not None:
             expert_bin_states = test_dataset._prenorm_bin_states[night_compact_idxs]
     
-        # Get plot time axis as hours since sunset
         sunset = calc_twilight(metrics['timestamp'][0], event_type='set')
         
         agent_zenith_mask = metrics['field_id'] != ZENITH_FIELD_ID
@@ -481,14 +476,13 @@ def main():
         agent_timestamps = (agent_timestamps - sunset) / 3600
         expert_timestamps = (night_df['timestamp'].values - sunset) / 3600
     
-        # Plot bins vs timestamp        
         fig_b, axb = plt.subplots()
         axb.plot(agent_timestamps[agent_zenith_mask],
-                      metrics['bin'][agent_zenith_mask],
-                      marker='o', label='pred', alpha=.5)
+                    metrics['bin'][agent_zenith_mask],
+                    marker='o', label='pred', alpha=.5)
         axb.plot(expert_timestamps[expert_zenith_mask],
-                      night_df['bin'].values.astype(int)[expert_zenith_mask],
-                      marker='o', label='true', alpha=.5)
+                    night_df['bin'].values.astype(int)[expert_zenith_mask],
+                    marker='o', label='true', alpha=.5)
         axb.legend()
         axb.set_xlabel('Hours since sunset \n (-10 deg)')
         axb.set_ylabel('bin')
@@ -497,12 +491,9 @@ def main():
         fig_b.savefig(night_dir + f'bin_vs_step.png')
         plt.close()
 
-        # Plot state features vs timestamp for first episode
         fig, axs = plt.subplots(len(test_dataset.global_feature_names), figsize=(10, len(test_dataset.global_feature_names)*5))
-        
         feature_mappings = cfg.data.norm.feature_mappings
         
-        # 1. Safely extract the global stats dictionaries BEFORE the loop
         global_z_stats = zscore_stats.get('global_features', {})
         global_rel_stats = rel_norm_stats.get('global_features', {})
         
@@ -510,7 +501,6 @@ def main():
             feat_name = test_dataset.global_feature_names[i]
             agent_data = feature_row.copy()
             
-            # Get requested norms for this feature (default to empty list if none)
             norms_applied = feature_mappings.get(feat_name, [])
             
             if 'z_score' in norms_applied:
@@ -522,7 +512,6 @@ def main():
                 std = global_rel_stats[feat_name]['std']
                 agent_data = agent_data * std
                 
-            # 2. Reverse Stateless Normalizations Second
             if 'fractional' in norms_applied:
                 agent_data = (agent_data / 2.0) + 0.5
             if 'log' in norms_applied:
@@ -540,7 +529,6 @@ def main():
         fig.savefig(night_dir + f'state_features_vs_time.png')
         plt.close()
         
-        # Plot static bin and field radec scatter plots
         bin2coord = {int(i): (lon, lat) for i, (lon, lat) in enumerate(zip(test_dataset.hpGrid.lon/units.deg, test_dataset.hpGrid.lat/units.deg))}
 
         agent_bin_radecs = np.array([bin2coord[bin_num] for bin_num in metrics['bin'].astype(int) if bin_num != ZENITH_BIN_NUM])
@@ -550,7 +538,6 @@ def main():
         orig_field_radecs = np.array([lookups.fid2radec[field_id] for field_id in night_df['field_id'].values.astype(int) if field_id != ZENITH_FIELD_ID])
         
         if len(orig_field_radecs) != 1:
-            # Plot bins
             fig, axs = plt.subplots(1, 2, figsize=(10,5), sharex=True, sharey=True)
             axs[0].scatter(orig_bin_radecs[:, 0], orig_bin_radecs[:, 1], label='expert', cmap='Reds', c=np.arange(len(orig_bin_radecs)))
             axs[1].scatter(agent_bin_radecs[:, 0], agent_bin_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(agent_bin_radecs)))
@@ -562,7 +549,6 @@ def main():
             fig.savefig(night_dir + f'bins_ra_vs_dec.png')
             plt.close()
             
-            # Plot fields
             fig, axs = plt.subplots(1, 2, figsize=(10,5), sharex=True, sharey=True)
             axs[0].scatter(orig_field_radecs[:, 0], orig_field_radecs[:, 1], label='expert', cmap='Reds', c=np.arange(len(orig_field_radecs)), s=10)
             axs[1].scatter(agent_field_radecs[:, 0], agent_field_radecs[:, 1], label='agent', cmap='Blues', c=np.arange(len(agent_field_radecs)), s=10)
@@ -577,9 +563,8 @@ def main():
         logger.info(f'Creating schedule gif for {night_idx}th night')
         
         save_schedule(night_metrics=metrics, pd_group=night_df, save_dir=night_dir, nside=nside, make_gifs=args.make_gifs, 
-                      is_azel=test_dataset.hpGrid.is_azel, fid2radec_filepath=TRAIN_DATA_DIR / LookupKeys.FID2RADEC.value
+                    is_azel=test_dataset.hpGrid.is_azel, fid2radec_filepath=TRAIN_DATA_DIR / LookupKeys.FID2RADEC.value
         )
-        # --------------------------------------- #
         
 if __name__ == "__main__":
     main()

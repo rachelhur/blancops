@@ -6,9 +6,9 @@ from blancops.math import units
 import matplotlib.pyplot as plt
 
 def plot_train_metrics(results_outdir, dataset):
-    with open(results_outdir / 'train_metrics.pkl', 'rb') as f:
+    with open(results_outdir / 'metrics' / 'train_metrics.pkl', 'rb') as f:
         train_metrics = pickle.load(f)
-    with open(results_outdir / 'val_metrics.pkl', 'rb') as f:
+    with open(results_outdir / 'metrics' / 'val_metrics.pkl', 'rb') as f:
         val_metrics = pickle.load(f)
     
     # Plot Loss, Accuracy, and Angular separation

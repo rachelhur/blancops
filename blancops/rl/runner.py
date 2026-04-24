@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 class ScheduleGenerator:
-    def __init__(self, agent, algorithm, cfg, lookups, num_episodes=1, 
+    def __init__(self, agent, policy,cfg, lookups, num_episodes=1, 
                  outdir=None, save_SISPI=False, SISPI_fn="survey_schedule", schedule_chunk_size=None,
                  ):
         self.agent = agent
         self.cfg = cfg
-        self.algorithm = algorithm
+        self.policy = policy
         self.num_episodes = num_episodes
         self.lookups = lookups
         self.field_choice_method = self.agent.field_choice_method
@@ -58,7 +58,7 @@ class ScheduleGenerator:
         return new_night_dict
     
     def generate_schedule(self, env):
-        self.algorithm.policy.eval()
+        self.policy.eval()
         diagnostics = {}
         episode_rewards = []
 

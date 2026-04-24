@@ -296,38 +296,6 @@ class DDQN(AlgorithmBase):
         # update target network
         for target_param, param in zip(self.target_net.parameters(), self.policy.parameters()):
             target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
-    
-    def select_action(self, x_glob, x_bin, action_mask, epsilon=None):
-        # if random sample less than epsilon, take random action
-        if epsilon is not None:
-            if np.random.random() < epsilon:
-                valid_actions = np.where(action_mask)[0]
-                action = np.random.choice(valid_actions)
-                return int(action)
-
-        # greedy selection from policy
-        with torch.no_grad():
-            # 1. Convert to tensors efficiently
-            x_glob = torch.as_tensor(x_glob, dtype=torch.float32, device=self.device)
-            x_bin = torch.as_tensor(x_bin, dtype=torch.float32, device=self.device)
-            
-            # 2. Handle batch dimensions for single environment steps
-            if x_glob.dim() == 1:
-                x_glob = x_glob.unsqueeze(0)
-            if x_bin.dim() == 1:  # Assuming bin_states also needs batch dim
-                x_bin = x_bin.unsqueeze(0)
-                
-            # 3. Pass updated arguments to policy
-            q_values = self.policy.core_net(x_glob=x_glob, x_bin=x_bin).squeeze(0)
-            
-            # 4. Mask invalid actions
-            action_mask_tensor = torch.as_tensor(action_mask, device=self.device, dtype=torch.bool)
-            q_values[~action_mask_tensor] = -1e9 # Using -1e9 to match your train_step
-            
-            action = torch.argmax(q_values).item()
-            
-        return int(action)
-
 
 def calculate_distance_matrix(nside, is_azel):
     hpGrid = HealpixGrid(nside, is_azel)

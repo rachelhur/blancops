@@ -1,7 +1,9 @@
+import datetime
+
 from pydantic import BaseModel, Field, computed_field, model_validator
 import yaml
 from pathlib import Path
-from typing import List, Union, Literal, Dict
+from typing import Any, List, Union, Literal, Dict
 import numpy as np
 
 from typing import Optional
@@ -11,6 +13,12 @@ from blancops.data.constants import FILTER2IDX
 
 from blancops.configs.constants import ALLOWED_NORMS_PER_FEATURE, NORM_TYPES
 
+class EnvConfig(BaseModel):
+    sun_el_lim: float = -12
+    airmass_lim: float = 2.0
+    
+    
+    
 class NormalizationConfig(BaseModel):
     feature_mappings: Dict[str, List[NORM_TYPES]] = Field(
         default_factory=lambda: {k: v.copy() for k, v in DEFAULT_NORM_MAPPING.items()})
@@ -117,22 +125,37 @@ AnyModelConfig = Union[BCModelConfig, DDQNModelConfig]
 
 class ExperimentConfig(BaseModel):
     experiment_name: str
-    experiments_directory: str
-    experiment_outdir: Optional[str] = None
+    parent_dir: str = "experiments/"
+    outdir: Optional[str] = None
     data: TrainDataConfig
     model: AnyModelConfig = Field(discriminator="algorithm")
     reward: RewardConfig
     train: TrainConfig
     device: str = 'cuda'
-    
-    @computed_field
-    @property
-    def experimentoutdir(self) -> str:
-        if self.experiment_outdir is not None:
-            return self.experiment_outdir
-        else:
-            return str(Path(self.experiments_directory) / self.experiment_name)
+
+    @model_validator(mode='before')
+    @classmethod
+    def set_outdir(cls, data: Any) -> Any:
+        """Intercepts the raw dictionary to compute outdir before validation."""
+        if isinstance(data, dict) and data.get('outdir') is None:
+            exp_name = data.get('experiment_name')
+            parent = data.get('parent_dir', 'experiments/')
+            
+            if exp_name:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                data['outdir'] = str(Path(parent) / exp_name / f"run_{timestamp}")
+                
+                data['outdir'] = str(Path(parent) / exp_name)
+                    
+        return data # Return the modified dictionary
         
+    # @model_validator(mode='before')
+    # @classmethod
+    # def set_outdir(self) -> 'ExperimentConfig':
+    #     if self.outdir is None:
+    #         self.outdir = str(Path(self.parent_dir) / self.experiment_name)
+    #     return self
+    
 class ScheduleConfig(BaseModel):
     model_dir: str
     data: BaseDataConfig
@@ -168,10 +191,10 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
     })
     
     # CONSTRUCT EXPERIMENT_OUTDIR CONFIG FIELD AND SAVE RESOLVED CONFIG
-    if resolved_cfg.experiment_outdir is None:
-        resolved_cfg.experiment_outdir = str(Path(resolved_cfg.experiments_directory) / resolved_cfg.experiment_name)
-    Path(resolved_cfg.experiment_outdir).mkdir(parents=True, exist_ok=True)
-    with open(Path(resolved_cfg.experiment_outdir) / "resolved_config.yaml", "w") as f:
+    if resolved_cfg.outdir is None:
+        resolved_cfg.outdir = str(Path(resolved_cfg.outdir))
+    Path(Path(resolved_cfg.outdir) / "configs" ).mkdir(parents=True, exist_ok=True)
+    with open(Path(resolved_cfg.outdir) / "configs" /"resolved_config.yaml", "w") as f:
         # Use mode='json' to force Pydantic to convert complex types (like Enums) to strings
         resolved_dict = resolved_cfg.model_dump(mode='json') 
         yaml.dump(resolved_dict, f, default_flow_style=False, sort_keys=False)

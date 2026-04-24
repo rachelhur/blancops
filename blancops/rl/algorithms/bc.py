@@ -80,24 +80,3 @@ class BehaviorCloning(AlgorithmBase):
 
         metrics_dict['val_loss'] = loss.item()
         return metrics_dict
-
-    def select_action(self, x_glob, x_bin, action_mask, epsilon=None):
-        self.policy.eval()
-        with torch.no_grad():
-            x_glob = torch.as_tensor(x_glob, dtype=torch.float32, device=self.device)
-            if x_bin is not None: # if filter only
-               x_bin = torch.as_tensor(x_bin, dtype=torch.float32, device=self.device)
-            action_mask = torch.as_tensor(action_mask, dtype=torch.bool, device=self.device)
-            
-            # Handle unbatched environment steps
-            if x_glob.dim() == 1:
-                x_glob = x_glob.unsqueeze(0)
-            if x_bin.dim() == 2:
-                x_bin = x_bin.unsqueeze(0)
-            if action_mask.dim() == 1:
-                action_mask = action_mask.unsqueeze(0)
-            
-            with torch.amp.autocast(device_type=self.device_type_str, dtype=self.amp_dtype):
-                action_tensor = self.policy.select_action(x_glob, x_bin, action_mask)
-
-            return int(action_tensor.item())
