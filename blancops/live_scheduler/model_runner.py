@@ -74,6 +74,7 @@ class MockModelRunner(ModelRunner):
 
     def __init__(self, chunk_size):
         self.chunk_size = chunk_size
+        self.current_field_id = 0
 
     def generate_next_observation(self, telemetry, masked_fields):
         """
@@ -87,7 +88,6 @@ class MockModelRunner(ModelRunner):
 
         current_ra, current_dec = telemetry["pointing_ra"], telemetry["pointing_dec"]
         ra, dec = current_ra, current_dec
-        masked_fields = np.asarray(masked_fields)
 
         # rejection-sample nearby pointings until one passes all validity checks
         valid = False
@@ -106,7 +106,9 @@ class MockModelRunner(ModelRunner):
 
             # keep away from user/system-masked fields
             if len(masked_fields) > 0:
-                angsep = geometry.angular_separation((ra, dec), masked_fields)
+                angsep = geometry.angular_separation(
+                    (ra, dec), masked_fields[["ra", "dec"]].values.T
+                )
                 valid_angsep = np.all(angsep > 5 * units.deg)  # 5deg threshold
             else:
                 valid_angsep = True
@@ -146,12 +148,14 @@ class MockModelRunner(ModelRunner):
             # keep output schema aligned with scheduler expectations
             out.append(
                 {
+                    "field_id": self.current_field_id,
                     "time": i,
                     "ra": ra,
                     "dec": dec,
                     "filter": random.choice(["g", "r", "i", "z", "Y"]),
                 }
             )
+            self.current_field_id += 1
 
         return pd.DataFrame(out)
 

@@ -2,6 +2,7 @@
 
 import time
 from blancops.ephemerides import time_utils
+import pandas as pd
 
 
 class SchedulerOrchestrator:
@@ -51,7 +52,9 @@ class SchedulerOrchestrator:
         self.telemetry_poll_rate_sec = telemetry_poll_rate_sec
 
         # track the state of the current session
-        self.session_masked_fields = [] # XXX update this logic
+        self.session_masked_fields = pd.DataFrame(
+            columns=["field_id", "ra", "dec", "filter"]
+        )  # XXX update this logic
         self.first_exposure = True
         self.last_submitted_obs = {}
         self.last_telemetry_check = -float("inf")
@@ -74,14 +77,19 @@ class SchedulerOrchestrator:
             # XXX pick up new field files
 
             # combine manually masked fields with already completed fields
-            all_masks = self.session_masked_fields + self.state.completed_fields
+            all_masks = pd.concat(
+                [self.session_masked_fields, self.state.completed_fields],
+                ignore_index=True,
+            ).convert_dtypes()  # XXX update this logic
 
             # create the new chunk
-            chunk_df = self.model.generate_chunk( # XXX update the call to this function
-                telemetry=telemetry,
-                available_fields=[],  # XXX Placeholder
-                masked_fields=all_masks,
-                chunk_size=self.chunk_size,
+            chunk_df = (
+                self.model.generate_chunk(  # XXX update the call to this function
+                    telemetry=telemetry,
+                    available_fields=[],  # XXX Placeholder
+                    masked_fields=all_masks,
+                    chunk_size=self.chunk_size,
+                )
             )
 
             # guard against placeholder/failed model output
@@ -91,15 +99,18 @@ class SchedulerOrchestrator:
 
             # get user approval for the chunk before executing
             self.ui.display_chunk(chunk_df)
-            approved, new_masks = self.ui.get_user_decision()
+            approved = self.ui.get_user_decision()
+            new_masks = []
             if not approved:
-                self.session_masked_fields.extend(new_masks) # XXX we don't want these permanently masked, have it reset after we finally have an approved chunk
+                # self.session_masked_fields.extend(new_masks) # XXX we don't want these permanently masked, have it reset after we finally have an approved chunk
                 continue
 
             # ==========================================================================
             # Execute waiting/submission loop with the approved chunk
             # ==========================================================================
-            obs_row = chunk_df.iloc[0] # XXX add a loop when we implement min_chunk_size
+            obs_row = chunk_df.iloc[
+                0
+            ]  # XXX add a loop when we implement min_chunk_size
             exposure_finished = self.api.check_exposure_status()
 
             # end observing for the night if end condition is met
@@ -107,15 +118,18 @@ class SchedulerOrchestrator:
                 continue
 
             # wait for a valid submission point while monitoring interrupts/drift
+            print("\n[Orchestrator] Waiting to execute the approved chunk...")
             submitted = False
-            while not submitted:
+            while not submitted and not self.state.check_end_condition():
                 # submit the observation the first time through without waiting further
                 if self.first_exposure and self.state.check_start_condition():
                     self.api.submit_observation(obs_row)
                     self.last_submitted_obs = obs_row
                     self.first_exposure = False
                     submitted = True
-                    print(f"[Orchestrator] First observation submitted: {obs_row['field_id']}")
+                    print(
+                        f"[Orchestrator] First observation submitted: {obs_row['field_id']}"
+                    )
                     continue
 
                 # otherwise wait for current exposure to finish
@@ -123,7 +137,11 @@ class SchedulerOrchestrator:
                 exposure_finished = self.api.check_exposure_status()
 
                 # submit the next observation if exposure is finished and start condition is met
-                if exposure_finished and self.state.check_start_condition():
+                if (
+                    not self.first_exposure
+                    and exposure_finished
+                    and self.state.check_start_condition()
+                ):
                     self.api.submit_observation(obs_row)
                     print(
                         f"[Orchestrator] Observation [{obs_row['field_id']}] submitted after [{self.last_submitted_obs['field_id']}] finished."
@@ -141,17 +159,18 @@ class SchedulerOrchestrator:
                 # periodically check for telemetry, field list changes => trigger replan
                 delta = time_utils.utc_now() - self.last_telemetry_check
                 if delta > self.telemetry_poll_rate_sec:
+                    print("[Orchestrator] Performing periodic telemetry/field check")
                     new_telemetry = self.api.get_telemetry()
                     self.last_telemetry_check = time_utils.utc_now()
-                    telemetry_changed = False # XXX check telemetry changes
+                    telemetry_changed = False  # XXX check telemetry changes
                     if telemetry_changed:
-                        print("\n[Orchestrator] Telemetry change detected.")
-                    fields_changed = False # XXX check field list changes
+                        print("[Orchestrator] Telemetry change detected.")
+                    fields_changed = False  # XXX check field list changes
                     if fields_changed:
-                        print("\n[Orchestrator] Field list change detected.")
+                        print("[Orchestrator] Field list change detected.")
                     if telemetry_changed or fields_changed:
                         print(
-                            "\n[Orchestrator] Telemetry or field list changed; aborting chunk."
+                            "[Orchestrator] Telemetry or field list changed; aborting chunk."
                         )
                         break
 

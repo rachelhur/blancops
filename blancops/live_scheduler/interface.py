@@ -7,13 +7,14 @@ local, human-in-the-loop operation.
 from abc import ABC, abstractmethod
 import matplotlib.pyplot as plt
 from blancops.math import units
+import pathlib
 
 
 class BaseInterface(ABC):
     """Abstract interface for user interaction with proposed observation chunks."""
 
     @abstractmethod
-    def __init__(self, output_dir=None):
+    def __init__(self, output_dir, show_plots):
         """
         Initialize the interface.
 
@@ -21,6 +22,8 @@ class BaseInterface(ABC):
         ---------
         output_dir: str or pathlib.Path, optional
             Directory to save any generated outputs (e.g. plots).
+        show_plots: bool
+            Whether to display plots interactively or just save to disk.
         """
 
         pass
@@ -70,8 +73,11 @@ class BaseInterface(ABC):
 class CLIInterface(BaseInterface):
     """Command-line interface for chunk preview and approval."""
 
-    def __init__(self, output_dir=None):
-        self.output_dir = output_dir
+    def __init__(self, output_dir=None, show_plots=True):
+        self.output_dir = pathlib.Path(output_dir) if output_dir is not None else None
+        self.show_plots = show_plots
+        if self.output_dir is None and not self.show_plots:
+            print("[Interface] Warning: No plots will be saved or displayed.")
 
     def display_chunk(self, chunk_df):
         """Print the proposed chunk and save a simple RA/Dec plot."""
@@ -108,9 +114,14 @@ class CLIInterface(BaseInterface):
         plt.ylabel("Dec [deg]")
         plt.title("Proposed Chunk Pointings")
         plt.grid(True)
-        plt.savefig("current_chunk_proposal.png")
+        if self.output_dir is not None:
+            plt.savefig(self.output_dir / "current_chunk_proposal.png")
+            print(
+                f"[Interface] Plot saved to '{self.output_dir / 'current_chunk_proposal.png'}'."
+            )
+        if self.show_plots:
+            plt.show()
         plt.close()
-        print("[Interface] Plot saved to 'current_chunk_proposal.png'.")
 
     def get_user_decision(self):
         """Prompt for Y/N approval and return scheduler decision payload."""

@@ -15,6 +15,7 @@ from blancops.live_scheduler.interface import CLIInterface
 from blancops.live_scheduler.state_manager import StateManager
 from blancops.live_scheduler.orchestrator import SchedulerOrchestrator
 from blancops.math import units
+from blancops.ephemerides import time_utils
 
 
 DEFAULT_CONFIG_PATH = (
@@ -241,6 +242,10 @@ def main():
         args.start_time = time_utils.standardize_time(args.start_time)
     if args.stop_time is not None:
         args.stop_time = time_utils.standardize_time(args.stop_time)
+    if args.start_sun_elevation_deg is not None:
+        args.start_sun_elevation_deg = args.start_sun_elevation_deg * units.deg
+    if args.stop_sun_elevation_deg is not None:
+        args.stop_sun_elevation_deg = args.stop_sun_elevation_deg * units.deg
 
     # initialize requested API client
     print("Initializing blancops Live Scheduler...")
@@ -274,9 +279,9 @@ def main():
         output_dir=args.output_directory,
         session_id=args.session_id,
         start_time=args.start_time,
-        start_sun_elevation=args.start_sun_elevation_deg * units.deg,
+        start_sun_elevation=args.start_sun_elevation_deg,
         stop_time=args.stop_time,
-        stop_sun_elevation=args.stop_sun_elevation_deg * units.deg,
+        stop_sun_elevation=args.stop_sun_elevation_deg,
     )
 
     # initialize orchestrator with all components for running the scheduler loop
@@ -299,7 +304,6 @@ def main():
         print("\n\n" + "!" * 88)
         print("EMERGENCY STOP TRIGGERED (Ctrl+C)")
         print("Halting all scheduler loops.")
-        print("Ensuring telescope queue is cleared (XXX Placeholder).")
         print("!" * 88)
         sys.exit(0)
 

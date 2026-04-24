@@ -3,6 +3,7 @@
 import json
 import os
 from blancops.ephemerides import time_utils, ephemerides
+import pandas as pd
 
 
 class StateManager:
@@ -105,21 +106,17 @@ class StateManager:
 
                     # skip malformed lines instead of failing the whole restart
                     try:
-                        field_id = json.loads(line).get("field_id")
+                        fields.append(json.loads(line))
                     except json.JSONDecodeError:
                         print(
                             f"[State] Skipping malformed history line in {self.history_file}."
                         )
                         continue
 
-                    # store the successfully parsed field ID
-                    if field_id is not None:
-                        fields.append(field_id)
-
             print(
                 f"[State] Resumed with {len(fields)} completed fields from {self.history_file}."
             )
-        return fields
+        return pd.DataFrame(fields).convert_dtypes()
 
     def record_completion(self, obs_row):
         """
@@ -134,9 +131,10 @@ class StateManager:
         obs_dict = obs_row.to_dict() if hasattr(obs_row, "to_dict") else dict(obs_row)
         with open(self.history_file, "a") as f:
             f.write(json.dumps(obs_dict) + "\n")
-        field_id = obs_dict.get("field_id")
-        if field_id is not None:
-            self.completed_fields.append(field_id)
+        self.completed_fields = pd.concat(
+            [self.completed_fields, pd.DataFrame([obs_dict])],
+            ignore_index=True
+        ).convert_dtypes()
 
     def check_start_condition(self):
         """
@@ -150,8 +148,8 @@ class StateManager:
         # require both time and sun elevation start conditions to be met if specified
         if self.start_time is not None and now < self.start_time:
             return False
-        #if self.start_sun_elevation is not None and el > self.start_sun_elevation:
-        #    return False
+        if self.start_sun_elevation is not None and el > self.start_sun_elevation:
+            return False
         return True
 
     def check_end_condition(self):
@@ -166,6 +164,6 @@ class StateManager:
         # end if either time or sun elevation end conditions are met
         if self.stop_time is not None and now >= self.stop_time:
             return True
-        #if self.stop_sun_elevation is not None and el > self.stop_sun_elevation:
-        #    return True
+        if self.stop_sun_elevation is not None and el > self.stop_sun_elevation:
+            return True
         return False

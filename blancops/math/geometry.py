@@ -23,6 +23,16 @@ def angular_separation(pos1, pos2):
     az1, el1 = pos1
     az2, el2 = pos2
 
+    # cast to arrays if not already
+    scalar = (
+        np.isscalar(az1) and np.isscalar(el1) and np.isscalar(az2) and np.isscalar(el2)
+    )
+    if not scalar:
+        az1 = np.asarray(np.atleast_1d(az1), dtype=float)
+        el1 = np.asarray(np.atleast_1d(el1), dtype=float)
+        az2 = np.asarray(np.atleast_1d(az2), dtype=float)
+        el2 = np.asarray(np.atleast_1d(el2), dtype=float)
+
     # precalculate repeated terms
     daz = np.abs(az2 - az1)
     cos_daz = np.cos(daz)
@@ -32,13 +42,19 @@ def angular_separation(pos1, pos2):
     sin_el2 = np.sin(el2)
 
     # use Vincenty formula
-    return np.arctan2(
+    distance = np.arctan2(
         np.sqrt(
             (cos_el2 * np.sin(daz)) ** 2
             + (cos_el1 * sin_el2 - sin_el1 * cos_el2 * cos_daz) ** 2
         ),
         sin_el1 * sin_el2 + cos_el1 * cos_el2 * cos_daz,
     )
+
+    # return scalar if inputs were scalar, otherwise return array of distances
+    if scalar:
+        return distance.item()
+    else:
+        return distance
 
 
 def blanco_slew_time(distance):
