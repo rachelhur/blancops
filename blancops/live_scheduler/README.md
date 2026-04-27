@@ -7,16 +7,16 @@ It interfaces directly with the telescope's control system, generating dynamic o
 
 The system is built as a modular, continuous state machine:
 
-* **`TelescopeAPI` ([`api_client.py`](./api_client.py)):** The hardware abstraction layer. Handles all synchronous communication with the telescope (polling exposure status and telemetry, and submitting observations to the queue).
+* **`TelescopeClient` ([`client.py`](./client.py)):** The hardware abstraction layer. Handles all synchronous communication with the telescope (polling exposure status and telemetry, and submitting observations to the queue).
 * **`ModelRunner` ([`model_runner.py`](./model_runner.py)):** The inference engine. Keeps the ML model weights loaded in memory and generates "chunks" of proposed observations based on current state features.
 * **`UserInterface` ([`interface.py`](./interface.py)):** The human-in-the-loop presentation layer. Currently implemented as a blocking Command Line Interface (CLI) that displays Pandas DataFrames and Matplotlib sky plots for user approval.
-* **`StateManager` ([`state_manager.py`](./state_manager.py)):** Handles memory and I/O. Logs completed observations to JSON Lines (`.jsonl`) files using a noon-to-noon session ID, allowing the system to seamlessly resume if interrupted.
+* **`ProgressManager` ([`progress_manager.py`](./progress_manager.py)):** Tracks observing progress, including checking start/stop conditions, logging completed observations, and resuming previous status if the system was restarted. Logs status to JSON Lines (`.jsonl`) files using a noon-to-noon session ID.
 * **`SchedulerOrchestrator` ([`orchestrator.py`](./orchestrator.py)):** The central control loop that ties all the above components together.
 
 ## Setup & Configuration
 
 Before running the scheduler, ensure your configuration parameters are set.
-The default configuration file is located at [`configs/live_scheduler_default.yaml`](../../configs/live_scheduler_default.yaml).
+The default configuration file is located at [`blancops/configs/live_scheduler_default.yaml`](../configs/live_scheduler_default.yaml).
 
 Key parameters to check:
 * `model_path`: Path to the trained AI model.
