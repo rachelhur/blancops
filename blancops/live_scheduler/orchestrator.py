@@ -13,7 +13,7 @@ class SchedulerOrchestrator:
         api,
         model,
         ui,
-        state,
+        progress,
         chunk_size=3,
         observing_poll_rate_sec=1,
         telemetry_poll_rate_sec=20,
@@ -24,14 +24,14 @@ class SchedulerOrchestrator:
 
         Arguments
         ---------
-        api: TelescopeAPI
-            Telescope API adapter used for telemetry and queue submission.
+        client: TelescopeClient
+            Telescope client adapter used for telemetry and queue submission.
         model: ModelRunner
             Model runner that proposes observation chunks.
         ui: BaseInterface
             User interface adapter for review/approval.
-        state: StateManager
-            State manager handling session history and night boundaries.
+        progress: ProgressManager
+            Progress manager handling session history and night boundaries.
         chunk_size: int [3]
             Number of observations generated per proposal chunk.
         observing_poll_rate_sec: float [1]
@@ -41,10 +41,10 @@ class SchedulerOrchestrator:
         """
 
         # scheduler components
-        self.api = api
+        self.client = client
         self.model = model
         self.ui = ui
-        self.state = state
+        self.progress = progress
 
         # operational settings
         self.chunk_size = chunk_size
@@ -69,16 +69,16 @@ class SchedulerOrchestrator:
         # - check initial field lookup
         # - check API connectivity
 
-        while not self.state.check_end_condition():
+        while not self.progress.check_end_condition():
             # ==========================================================================
             # Generate observing chunk, get user approval
             # ==========================================================================
-            telemetry = self.api.get_telemetry()
+            telemetry = self.client.get_telemetry()
             # XXX pick up new field files
 
             # combine manually masked fields with already completed fields
             all_masks = pd.concat(
-                [self.session_masked_fields, self.state.completed_fields],
+                [self.session_masked_fields, self.progress.completed_fields],
                 ignore_index=True,
             ).convert_dtypes()  # XXX update this logic
 
@@ -111,19 +111,19 @@ class SchedulerOrchestrator:
             obs_row = chunk_df.iloc[
                 0
             ]  # XXX add a loop when we implement min_chunk_size
-            exposure_finished = self.api.check_exposure_status()
+            exposure_finished = self.client.check_exposure_status()
 
             # end observing for the night if end condition is met
-            if self.state.check_end_condition():
+            if self.progress.check_end_condition():
                 continue
 
             # wait for a valid submission point while monitoring interrupts/drift
             print("\n[Orchestrator] Waiting to execute the approved chunk...")
             submitted = False
-            while not submitted and not self.state.check_end_condition():
+            while not submitted and not self.progress.check_end_condition():
                 # submit the observation the first time through without waiting further
-                if self.first_exposure and self.state.check_start_condition():
-                    self.api.submit_observation(obs_row)
+                if self.first_exposure and self.progress.check_start_condition():
+                    self.client.submit_observation(obs_row)
                     self.last_submitted_obs = obs_row
                     self.first_exposure = False
                     submitted = True
@@ -134,19 +134,19 @@ class SchedulerOrchestrator:
 
                 # otherwise wait for current exposure to finish
                 time.sleep(self.observing_poll_rate_sec)
-                exposure_finished = self.api.check_exposure_status()
+                exposure_finished = self.client.check_exposure_status()
 
                 # submit the next observation if exposure is finished and start condition is met
                 if (
                     not self.first_exposure
                     and exposure_finished
-                    and self.state.check_start_condition()
+                    and self.progress.check_start_condition()
                 ):
-                    self.api.submit_observation(obs_row)
+                    self.client.submit_observation(obs_row)
                     print(
                         f"[Orchestrator] Observation [{obs_row['field_id']}] submitted after [{self.last_submitted_obs['field_id']}] finished."
                     )
-                    self.state.record_completion(self.last_submitted_obs)
+                    self.progress.record_completion(self.last_submitted_obs)
                     self.last_submitted_obs = obs_row
                     submitted = True
                     continue
@@ -160,7 +160,7 @@ class SchedulerOrchestrator:
                 delta = time_utils.utc_now() - self.last_telemetry_check
                 if delta > self.telemetry_poll_rate_sec:
                     print("[Orchestrator] Performing periodic telemetry/field check")
-                    new_telemetry = self.api.get_telemetry()
+                    new_telemetry = self.client.get_telemetry()
                     self.last_telemetry_check = time_utils.utc_now()
                     telemetry_changed = False  # XXX check telemetry changes
                     if telemetry_changed:
@@ -175,7 +175,7 @@ class SchedulerOrchestrator:
                         break
 
         # announce session end
-        if self.state.check_end_condition():
+        if self.progress.check_end_condition():
             print("[Orchestrator] Observing run complete (end condition met).")
         else:
             print("[Orchestrator] Observing run complete (unknown exit).")

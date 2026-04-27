@@ -9,10 +9,10 @@ import yaml
 # Ensure blancops is in the path if running directly
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from blancops.live_scheduler.api_client import BlancoTelescopeAPI, MockTelescopeAPI
+from blancops.live_scheduler.client import BlancoTelescopeClient, MockTelescopeClient
 from blancops.live_scheduler.model_runner import MockModelRunner, AIModelRunner
 from blancops.live_scheduler.interface import CLIInterface
-from blancops.live_scheduler.state_manager import StateManager
+from blancops.live_scheduler.progress_manager import ProgressManager
 from blancops.live_scheduler.orchestrator import SchedulerOrchestrator
 from blancops.math import units
 from blancops.ephemerides import time_utils
@@ -63,16 +63,16 @@ def parse_args():
     )
 
     # ==================================================================================
-    # API Settings
+    # Client Settings
     # ==================================================================================
-    api_group = parser.add_argument_group("API Settings")
-    api_group.add_argument(
-        "--api-mode",
+    client_group = parser.add_argument_group("Client Settings")
+    client_group.add_argument(
+        "--client-mode",
         choices=("mock", "blanco"),
-        default=defaults.get("api_mode", "mock"),
+        default=defaults.get("client_mode", "mock"),
         help='Scheduler mode to run. Choose "mock" for offline testing.',
     )
-    api_group.add_argument(
+    client_group.add_argument(
         "--mock-exposure-duration",
         type=float,
         default=defaults.get("mock_exposure_duration", 90),
@@ -247,12 +247,12 @@ def main():
     if args.stop_sun_elevation_deg is not None:
         args.stop_sun_elevation_deg = args.stop_sun_elevation_deg * units.deg
 
-    # initialize requested API client
+    # initialize requested telescope client
     print("Initializing blancops Live Scheduler...")
-    if args.api_mode.lower() == "mock":
-        api = MockTelescopeAPI(exposure_duration=args.mock_exposure_duration)
+    if args.client_mode.lower() == "mock":
+        client = MockTelescopeClient(exposure_duration=args.mock_exposure_duration)
     else:
-        api = BlancoTelescopeAPI()
+        client = BlancoTelescopeClient()
 
     # initialize model runner
     if args.model_path_or_alias.lower() == "mock":
@@ -274,8 +274,8 @@ def main():
     else:
         raise NotImplementedError(f"UI mode '{args.ui_mode}' is not implemented yet.")
 
-    # initialize state manager with session metadata and persisted history
-    state = StateManager(
+    # initialize progress manager with session metadata and persisted history
+    progress = ProgressManager(
         output_dir=args.output_directory,
         session_id=args.session_id,
         start_time=args.start_time,
@@ -286,10 +286,10 @@ def main():
 
     # initialize orchestrator with all components for running the scheduler loop
     orchestrator = SchedulerOrchestrator(
-        api,
+        client,
         model,
         ui,
-        state,
+        progress,
         chunk_size=args.chunk_size,
         observing_poll_rate_sec=args.observing_poll_rate_sec,
         telemetry_poll_rate_sec=args.telemetry_poll_rate_sec,

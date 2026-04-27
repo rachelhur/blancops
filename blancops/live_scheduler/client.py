@@ -2,8 +2,8 @@
 
 This module defines the scheduler-facing telescope interface and provides:
 
-- MockTelescopeAPI: local simulation of pointing, slew, and exposure timing.
-- BlancoTelescopeAPI: placeholder wrapper for the real observatory control path.
+- MockTelescopeClient: local simulation of pointing, slew, and exposure timing.
+- BlancoTelescopeClient: placeholder wrapper for the real observatory control path.
 """
 
 from abc import ABC, abstractmethod
@@ -11,7 +11,7 @@ from blancops.math import units, geometry
 from blancops.ephemerides import ephemerides, time_utils
 
 
-class TelescopeAPI(ABC):
+class TelescopeClient(ABC):
     """Abstract interface for telescope-control interactions used by the scheduler."""
 
     @abstractmethod
@@ -54,7 +54,7 @@ class TelescopeAPI(ABC):
         pass
 
 
-class MockTelescopeAPI(TelescopeAPI):
+class MockTelescopeClient(TelescopeClient):
     """In-memory telescope simulator for development and integration testing."""
 
     def __init__(self, exposure_duration=90):
@@ -110,7 +110,7 @@ class MockTelescopeAPI(TelescopeAPI):
         )
 
 
-class BlancoTelescopeAPI(TelescopeAPI):
+class BlancoTelescopeClient(TelescopeClient):
     """Placeholder for the production telescope control-system integration."""
 
     def __init__(self):
