@@ -227,14 +227,14 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             "propid": str(obs_row.get("propid", "UNKNOWN")) if self.propid is None else str(self.propid),
             "count": int(obs_row.get("count", 1)),
             "filter": "block", # XXX block for day-time testing #str(obs_row.get("filter", "None")),
-            "RA": self.current_ra / units.degree,
+            "ra": self.current_ra / units.degree,
             "dec": self.current_dec / units.degree,
             "object": str(obs_row.get("field_name", f"pointing_{self.current_time}")),
             "comment": "DO NOT USE", # XXX placeholder for day-time testing
         }
 
         # send the command and wait for the synchronous response
-        print(f"[Client] SUBMIT: RA={cmd['parameters']['RA']}, DEC={cmd['parameters']['dec']}, FILTER={cmd['parameters']['filter']}")
+        print(f"[Client] SUBMIT: RA={cmd['parameters']['ra']}, DEC={cmd['parameters']['dec']}, FILTER={cmd['parameters']['filter']}")
         try:
             response_str = self.scl_client.send_command(json.dumps(cmd))
             response = json.loads(response_str) if response_str else {}
