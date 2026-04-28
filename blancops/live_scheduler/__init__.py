@@ -1,16 +1,16 @@
-from .api_client import TelescopeAPI
-from .model_runner import ModelRunner
+from .client import TelescopeClient, MockTelescopeClient, BlancoTelescopeClient
+from .model_runner import ModelRunner, MockModelRunner, AIModelRunner
 from .interface import BaseInterface, CLIInterface
-from .state_manager import StateManager
+from .progress_manager import ProgressManager
 from .orchestrator import SchedulerOrchestrator
 
 __all__ = [
-    "MockTelescopeAPI",
-    "BlancoTelescopeAPI",
+    "MockTelescopeClient",
+    "BlancoTelescopeClient",
     "MockModelRunner",
     "AIModelRunner",
     "BaseInterface",
     "CLIInterface",
-    "StateManager",
+    "ProgressManager",
     "SchedulerOrchestrator",
 ]

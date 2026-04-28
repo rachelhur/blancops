@@ -1,4 +1,4 @@
-"""Persistent session state and observing-history management for the live scheduler."""
+"""Persistent session progress and observing-history management for the live scheduler."""
 
 import json
 import os
@@ -6,7 +6,7 @@ from blancops.ephemerides import time_utils, ephemerides
 import pandas as pd
 
 
-class StateManager:
+class ProgressManager:
     """Track the current observing session and log completed fields to disk."""
 
     def __init__(
@@ -87,7 +87,7 @@ class StateManager:
         else:
             session_date = local_now
         session_date = session_date.strftime("%Y-%m-%d")
-        print(f"[State] Generated session ID: {session_date}")
+        print(f"[Progress] Generated session ID: {session_date}")
         return session_date
 
     def _load_history(self):
@@ -109,12 +109,12 @@ class StateManager:
                         fields.append(json.loads(line))
                     except json.JSONDecodeError:
                         print(
-                            f"[State] Skipping malformed history line in {self.history_file}."
+                            f"[Progress] Skipping malformed history line in {self.history_file}."
                         )
                         continue
 
             print(
-                f"[State] Resumed with {len(fields)} completed fields from {self.history_file}."
+                f"[Progress] Resumed with {len(fields)} completed fields from {self.history_file}."
             )
         return pd.DataFrame(fields).convert_dtypes()
 

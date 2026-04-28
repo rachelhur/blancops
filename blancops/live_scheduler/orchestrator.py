@@ -6,11 +6,11 @@ import pandas as pd
 
 
 class SchedulerOrchestrator:
-    """Coordinate API, model, UI, and state manager during a live observing session."""
+    """Coordinate client, model, UI, and state manager during a live observing session."""
 
     def __init__(
         self,
-        api,
+        client,
         model,
         ui,
         progress,
@@ -67,7 +67,7 @@ class SchedulerOrchestrator:
         # XXX add in pre-loop checks:
         # - get initial telemetry
         # - check initial field lookup
-        # - check API connectivity
+        # - check client connectivity
 
         while not self.progress.check_end_condition():
             # ==========================================================================

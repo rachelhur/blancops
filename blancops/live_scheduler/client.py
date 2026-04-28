@@ -1,4 +1,4 @@
-"""Telescope API adapters for the live scheduler.
+"""Telescope Client adapters for the live scheduler.
 
 This module defines the scheduler-facing telescope interface and provides:
 
@@ -74,7 +74,7 @@ class MockTelescopeClient(TelescopeClient):
         # track current pointing to model stepping through observations
         self.current_ra, self.current_dec = ephemerides.get_source_ra_dec("zenith")
 
-        print("[API] Initialized mock telescope API connection.")
+        print("[Client] Initialized mock telescope client.")
 
     def get_telemetry(self):
         """Return the currently simulated telescope pointing."""
@@ -103,10 +103,10 @@ class MockTelescopeClient(TelescopeClient):
         self.current_dec = obs_row["dec"]
 
         print(
-            f"[API] SUBMITTED: RA={obs_row['ra']}, DEC={obs_row['dec']}, FILTER={obs_row['filter']}"
+            f"[Client] SUBMITTED: RA={obs_row['ra']}, DEC={obs_row['dec']}, FILTER={obs_row['filter']}"
         )
         print(
-            f"[API] Estimated time until ready for next submission: {self.slew_time + self.exposure_duration:.1f}s."
+            f"[Client] Estimated time until ready for next submission: {self.slew_time + self.exposure_duration:.1f}s."
         )
 
 
@@ -117,7 +117,7 @@ class BlancoTelescopeClient(TelescopeClient):
         """Initialize and confirm the connection to the observatory control system."""
 
         self.connected = True
-        print("[API] Initialized connection to telescope control system.")
+        print("[Client] Initialized connection to telescope control system.")
 
     def get_telemetry(self):
         """
@@ -149,7 +149,7 @@ class BlancoTelescopeClient(TelescopeClient):
         Current placeholder behavior prints the queued request.
         """
 
-        # Placeholder: Issue synchronous command to API
+        # Placeholder: Issue synchronous command to client
         print(
-            f"[API] SUBMITTED: RA={obs_row['ra']}, DEC={obs_row['dec']}, FILTER={obs_row['filter']}"
+            f"[Client] SUBMITTED: RA={obs_row['ra']}, DEC={obs_row['dec']}, FILTER={obs_row['filter']}"
         )
