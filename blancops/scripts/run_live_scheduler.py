@@ -9,7 +9,7 @@ import yaml
 # Ensure blancops is in the path if running directly
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from blancops.live_scheduler.client import BlancoTelescopeClient, MockTelescopeClient
+from blancops.live_scheduler.client import MockTelescopeClient, BlancoSCLTelescopeClient
 from blancops.live_scheduler.model_runner import MockModelRunner, AIModelRunner
 from blancops.live_scheduler.interface import CLIInterface
 from blancops.live_scheduler.progress_manager import ProgressManager
@@ -77,6 +77,27 @@ def parse_args():
         type=float,
         default=defaults.get("mock_exposure_duration", 90),
         help="Simulated exposure duration in seconds when running in mock mode.",
+    )
+    client_group.add_argument(
+        "--scl-server-ip",
+        type=str,
+        default=defaults.get("scl_server_ip", "observer4.ctio.noao.edu"),
+        help=(
+            "IP address of the SCL server for telescope control. Default is for "
+            "running on the Observer6 computer.",
+        ),
+    )
+    client_group.add_argument(
+        "--scl-server-port",
+        type=int,
+        default=defaults.get("scl_server_port", 20000),
+        help="TCP port of the SCL server for telescope control.",
+    )
+    client_group.add_argument(
+        "--propid",
+        type=str,
+        default=defaults.get("propid", "2019A-0305"), # XXX we should change default from alex
+        help="Proposal ID to include in observation submissions.",
     )
 
     # ==================================================================================
@@ -252,7 +273,11 @@ def main():
     if args.client_mode.lower() == "mock":
         client = MockTelescopeClient(exposure_duration=args.mock_exposure_duration)
     else:
-        client = BlancoTelescopeClient()
+        client = BlancoSCLTelescopeClient(
+            propid=args.propid,
+            server_ip=args.scl_server_ip,
+            server_port=args.scl_server_port
+        )
 
     # initialize model runner
     if args.model_path_or_alias.lower() == "mock":
@@ -305,6 +330,7 @@ def main():
         print("EMERGENCY STOP TRIGGERED (Ctrl+C)")
         print("Halting all scheduler loops.")
         print("!" * 88)
+        client.close()  # ensure any open connections are closed on exit
         sys.exit(0)
 
 

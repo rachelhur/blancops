@@ -9,6 +9,9 @@ This module defines the scheduler-facing telescope interface and provides:
 from abc import ABC, abstractmethod
 from blancops.math import units, geometry
 from blancops.ephemerides import ephemerides, time_utils
+from blancops.live_scheduler.scl import SCL
+import json
+from datetime import datetime
 
 
 class TelescopeClient(ABC):
@@ -49,6 +52,14 @@ class TelescopeClient(ABC):
         ---------
         obs_row: dict or pandas.Series
             Observation request containing at least RA, Dec, and filter fields.
+        """
+
+        pass
+
+    @abstractmethod
+    def close(self):
+        """
+        Clean up any open connections or resources when the client is no longer needed.
         """
 
         pass
@@ -109,47 +120,135 @@ class MockTelescopeClient(TelescopeClient):
             f"[Client] Estimated time until ready for next submission: {self.slew_time + self.exposure_duration:.1f}s."
         )
 
+    def close(self):
+        """No resources to clean up for the mock client."""
+        print("[Client] Closing mock telescope client (no resources to clean up).")
 
-class BlancoTelescopeClient(TelescopeClient):
-    """Placeholder for the production telescope control-system integration."""
 
-    def __init__(self):
-        """Initialize and confirm the connection to the observatory control system."""
+class BlancoSCLTelescopeClient(TelescopeClient):
+    """Blanco telescope control-system integration using SCL network."""
 
-        self.connected = True
-        print("[Client] Initialized connection to telescope control system.")
+    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000):
+        """Initialize and confirm the connection to the control system."""
+
+        # Initialize the TCP/IP communication client
+        print(f"[Client] Attempting to connect to SCLN server at {server_ip}:{server_port}...")
+        self.scl_client = SCL(server_ip, server_port)
+        self.transaction_id = 0
+        
+        # check if connection was successful
+        if self.scl_client.is_connected():
+            print(f"[Client] Initialized connection to SCLN server at {server_ip}:{server_port}.")
+        else:
+            print(f"[Client] WARNING: Could not connect to SCLN server at {server_ip}:{server_port}.")
+
+        # track current pointing based on submissions
+        self.current_ra, self.current_dec = None, None
+        self.current_time = datetime.now().isoformat(timespec='milliseconds')
+
+        self.propid = propid
+
+    def _build_base_message(self, msg_type):
+        """Helper to construct the standard JSON envelope for SCLN messages."""
+        if msg_type == "COMMAND":
+            self.current_time = datetime.now().isoformat(timespec='milliseconds')
+            cmd = {
+                "type": "COMMAND",
+                "source": "DECamAISched",
+                "target": "SISPI",
+                "timestamp": self.current_time,
+                "transaction_id": str(self.transaction_id),
+                "command": "EXPOSE",
+            }
+            self.transaction_id += 1
+        elif msg_type == "TELEMETRY":
+            cmd = {
+                "type": "TELEMETRY",
+                "command": "TELEMETRY",
+            }
+        else:
+            raise ValueError(f"[Client] Unsupported message type: {msg_type}")
+        return cmd
 
     def get_telemetry(self):
         """
         Fetch live telemetry.
-
-        Current placeholder behavior returns zenith coordinates.
         """
+        cmd = self._build_base_message("TELEMETRY")
+        
+        # send a request for telemetry and parse the response
+        try:
+            response_str = self.scl_client.send_command(json.dumps(cmd))
+            if not response_str:
+                return {"pointing_ra": None, "pointing_dec": None}
 
-        ra, dec = ephemerides.get_source_ra_dec("zenith")
-        return {"pointing_ra": ra, "pointing_dec": dec}
+            response = json.loads(response_str)
+            telemetry_data = response.get("telemetry", {})
+            
+            # extract current RA/Dec, falling back to last known values if not reported
+            # XXX should check if this is actually reported in response
+            ra = telemetry_data.get("ra", self.current_ra)
+            dec = telemetry_data.get("dec", self.current_dec)
+
+            return {"pointing_ra": ra, "pointing_dec": dec}
+            
+        except Exception as e:
+            print(f"[Client] Error fetching telemetry: {e}")
+            return {"pointing_ra": None, "pointing_dec": None}
 
     def check_exposure_status(self):
-        """
-        Return exposure readiness state from control system.
+        """Return exposure readiness state from control system."""
 
-        Current placeholder behavior always returns True. In production, this should
-        return True if the system is idle or the exposure is complete, and False if an
-        exposure is ongoing.
-        """
+        # send a request for telemetry
+        cmd = self._build_base_message("TELEMETRY")
+        try:
+            response_str = self.scl_client.send_command(json.dumps(cmd))
+            if not response_str:
+                return False
 
-        # Placeholder: True if idle/done, False if exposing.
-        # Mocked to True to simulate immediate completion for testing.
-        return True
+            # server provides a bool indicating if it can accept the next EXPOSE command
+            response = json.loads(response_str)
+            return response.get("readyToExpose", False)
+            
+        except Exception as e:
+            print(f"[Client] Error checking exposure status: {e}")
+            return False
 
-    def submit_observation(self, obs_row):
-        """
-        Submit one observation request to the control system.
+    def submit_observation(self, obs_row, exp_time=None):
+        """Submit one observation request to the control system."""
+        cmd = self._build_base_message("COMMAND")
+        
+        # map the desired observation to the command parameters expected by SCLN
+        self.current_ra = float(obs_row.get("ra", self.current_ra))
+        self.current_dec = float(obs_row.get("dec", self.current_dec))
+        cmd["parameters"] = {
+            "expTime": str(obs_row.get("expTime", 90)) if exp_time is None else str(exp_time), # XXX examples had this as str, but directions say int
+            "expType": "dark", # XXX dark for day-time testing #str(obs_row.get("expType", "object")),
+            "propid": str(obs_row.get("propid", "UNKNOWN")) if self.propid is None else str(self.propid),
+            "count": int(obs_row.get("count", 1)),
+            "filter": "block", # XXX block for day-time testing #str(obs_row.get("filter", "None")),
+            "RA": self.current_ra / units.degree,
+            "dec": self.current_dec / units.degree,
+            "object": str(obs_row.get("field_name", f"pointing_{self.current_time}")),
+            "comment": "DO NOT USE", # XXX placeholder for day-time testing
+        }
 
-        Current placeholder behavior prints the queued request.
-        """
+        # send the command and wait for the synchronous response
+        print(f"[Client] SUBMIT: RA={cmd['parameters']['RA']}, DEC={cmd['parameters']['dec']}, FILTER={cmd['parameters']['filter']}")
+        try:
+            response_str = self.scl_client.send_command(json.dumps(cmd))
+            response = json.loads(response_str) if response_str else {}
+            
+            if response.get("status") == "FAILED":
+                print(f"[Client] EXPOSURE FAILED: {response.get('message')}")
+                
+            return response
+            
+        except Exception as e:
+            print(f"[Client] Error submitting observation: {e}")
+            return None
 
-        # Placeholder: Issue synchronous command to client
-        print(
-            f"[Client] SUBMITTED: RA={obs_row['ra']}, DEC={obs_row['dec']}, FILTER={obs_row['filter']}"
-        )
+    def close(self):
+        """Clean up the SCL client connection."""
+        self.scl_client.close()
+        print("[Client] Closed connection to SCLN server.")

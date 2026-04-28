@@ -179,3 +179,4 @@ class SchedulerOrchestrator:
             print("[Orchestrator] Observing run complete (end condition met).")
         else:
             print("[Orchestrator] Observing run complete (unknown exit).")
+        self.client.close()
