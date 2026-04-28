@@ -84,7 +84,7 @@ def parse_args():
         default=defaults.get("scl_server_ip", "observer4.ctio.noao.edu"),
         help=(
             "IP address of the SCL server for telescope control. Default is for "
-            "running on the Observer6 computer.",
+            "running on the Observer6 computer."
         ),
     )
     client_group.add_argument(
