@@ -99,7 +99,7 @@ class MockTelescopeClient(TelescopeClient):
         delta = time_utils.utc_now() - self.last_exposure_submit_time
         return delta > self.slew_time + self.exposure_duration
 
-    def submit_observation(self, obs_row):
+    def submit_observation(self, obs_row, exp_time=None):
         """Submit an observation into the mock queue and update simulator state."""
 
         # approximate slew time from angular separation between old/new pointings
@@ -112,6 +112,8 @@ class MockTelescopeClient(TelescopeClient):
         self.last_exposure_submit_time = time_utils.utc_now()
         self.current_ra = obs_row["ra"]
         self.current_dec = obs_row["dec"]
+        if exp_time is not None:
+            self.exposure_duration = exp_time
 
         print(
             f"[Client] SUBMITTED: RA={obs_row['ra']}, DEC={obs_row['dec']}, FILTER={obs_row['filter']}"
