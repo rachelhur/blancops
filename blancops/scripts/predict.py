@@ -211,7 +211,7 @@ def main():
     sun_horizon = str(args.sun_horizon)
 
     # CREATE ENVIRONMENT
-    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, gcfg=gcfg, data_dir=lookup_dirpath,
+    env = gym.make(id=f"gymnasium_env/{env_name}", cfg=cfg, data_dir=lookup_dirpath,
                     observing_night_strs=observing_night_strs, horizon=sun_horizon, max_nights=args.max_nights, airmass_limit=args.airmass_lim,
                     s_visits_cur=s_visits_cur, s_filter_visits_cur=fieldfilter2nvisits, night1_ts_start=args.night1_ts_start, field_priorities_arr=None)
     # fid2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
