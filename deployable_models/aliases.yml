@@ -1,3 +1,4 @@
 # deployable_models/aliases.yaml
 
-testing: bc_v0_simple
+testing_deprecated: bc_v0_simple
+testing: bc_v0

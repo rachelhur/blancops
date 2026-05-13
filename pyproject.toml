@@ -16,7 +16,7 @@ workspace-init = "blancops.scripts.init:main"
 construct-train-lookups = "blancops.scripts.generate_train_lookups:main"
 run-train = "blancops.scripts.train:main"
 run-validate = "blancops.scripts.validate:main"
-run-predict = "blancops.scripts.predict:main"
+run-simulate = "blancops.scripts.predict:main"
 run-live-scheduler = "blancops.scripts.run_live_scheduler:main"
 
 [tool.setuptools.package-data]
