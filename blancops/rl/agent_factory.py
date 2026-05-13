@@ -51,7 +51,7 @@ class AgentFactory:
                 f"Could not find resolved_config.yaml in {model_dir} or {model_dir}/configs/"
             )
             
-        cfg = load_and_validate(config_path)
+        cfg = load_and_validate(config_path, model_dir / "original_config.yaml")
         
         # 1. Resolve which weights file to actually use
         weights_path = self._resolve_weights_path(model_dir, weights_filename)
