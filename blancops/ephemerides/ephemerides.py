@@ -497,3 +497,54 @@ class HealpixGrid:
         )
 
         return hour_angle
+
+    def get_time_until_set(self, time=None, observer=None):
+        """
+        Time until the sky patch currently in each pixel sets below the horizon.
+
+        For az/el grids, this means:
+        - Convert each pixel's current az/el to RA/Dec
+        - Compute time until that RA/Dec reaches el=0
+
+        Returns
+        -------
+        t_until_set : ndarray
+            Time until set in seconds.
+            np.inf for circumpolar or already-below-horizon pixels.
+        """
+        OMEGA_EARTH = 2 * np.pi / 86164.0905  # rad/s (sidereal)
+        observer = observer if observer is not None else blanco_observer(time=time)
+
+        if self.is_azel:
+            ra, dec = topographic_to_equatorial(
+                az=self.lon, el=self.lat, time=time, observer=observer
+            )
+        else:
+            ra, dec = self.lon, self.lat
+
+        # Current ha
+        ha = equatorial_to_hour_angle(
+            ra=ra, dec=dec, time=time, observer=observer
+        )
+
+        # Observer latitude
+        phi = float(observer.lat)
+
+        # cos(ha) at set
+        cos_ha_set = -np.tan(phi) * np.tan(dec)
+
+        # Check for circumpolar objects and calculate hour angle at set
+        mask = np.abs(cos_ha_set) <= 1
+        ha_set = np.arccos(cos_ha_set[mask])
+
+        # ha difference between current ha and ha_set (correcting for wrapping)
+        dH = (ha_set - ha[mask] + 2 * np.pi) % (2 * np.pi)
+
+        # Convert to seconds
+        t_until_set = np.full_like(dec, np.inf, dtype=float)
+        t_until_set[mask] = dH / OMEGA_EARTH
+
+        # Already below horizon → infinite
+        if self.is_azel:
+            t_until_set[self.lat <= 0] = np.inf
+        return t_until_set
