@@ -38,73 +38,38 @@ def get_workspace_dir() -> Path:
     # 3. Fallback to default
     return Path.home() / ".blancops"
 
-def load_model_config(config_path=None):
-    """Loads a custom config if provided, otherwise loads the default from the package."""
-    if config_path:
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-    else:
-        # Load the default config bundled inside your package (e.g., blancops/global_config.json)
-        config_text = pkg_resources.files('blancops').joinpath('configs/default_model_config.yaml').read_text()
-        return yaml.safe_load(config_text)
+# def load_model_config(config_path=None):
+#     """Loads a custom config if provided, otherwise loads the default from the package."""
+#     if config_path:
+#         with open(config_path, 'r') as f:
+#             return yaml.safe_load(f)
+#     else:
+#         # Load the default config bundled inside your package (e.g., blancops/global_config.json)
+#         config_text = pkg_resources.files('blancops').joinpath('configs/default_model_config.yaml').read_text()
+#         return yaml.safe_load(config_text)
 
-def save_config(args=None, config_dict=None, outdir=None):
-    """Saves the experiment arguments as YAML file."""
-    out_path = Path(outdir)
-    out_path.mkdir(parents=True, exist_ok=True)
+# def save_config(args=None, config_dict=None, outdir=None):
+#     """Saves the experiment arguments as YAML file."""
+#     out_path = Path(outdir)
+#     out_path.mkdir(parents=True, exist_ok=True)
     
-    # Convert argparse Namespace to nested dict
-    if args is not None:
-        config_dict = dict_to_nested(vars(args))
+#     # Convert argparse Namespace to nested dict
+#     if args is not None:
+#         config_dict = dict_to_nested(vars(args))
     
-    with open(out_path / "config.yaml", "w") as f:
-        yaml.dump(config_dict, f, indent=4)
+#     with open(out_path / "config.yaml", "w") as f:
+#         yaml.dump(config_dict, f, indent=4)
 
-def dict_to_nested(data):
-    """Converts {'model.lr': 0.1} to {'model': {'lr': 0.1}}"""
-    nested = {}
-    for key, value in data.items():
-        keys = key.split('.')
-        d = nested
-        for k in keys[:-1]:
-            d = d.setdefault(k, {})
-        d[keys[-1]] = value
-    return nested
-
-def setup_logger(save_dir, logging_filename=None, logging_level='debug'):
-    if save_dir is not None:
-        assert logging_filename is not None, "Must provide logging filename if saving logs to directory. Use save_dir=None if not saving logs."
-    # Create logger
-    # logger = logging.getLogger(__name__)
-    logger = logging.getLogger('blancops')
-    logger.propagate = False
-    
-    if logging_level == 'debug':
-        logger.setLevel(logging.DEBUG)
-        format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    elif logging_level == 'info':
-        logger.setLevel(logging.INFO)
-        format = '%(asctime)s - %(levelname)s - %(message)s'
-    else:
-        raise NotImplementedError
-    format = logging.Formatter(format, datefmt='%Y-%m-%d %H:%M:%S')
-
-    # Avoid duplicate handlers if called twice
-    if logger.handlers:
-        raise ValueError("Handler called twice")
-    
-    # Create console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(format)
-    logger.addHandler(console_handler)
-    
-    # Create file handler
-    if save_dir is not None:
-        file_handler = logging.FileHandler(save_dir / logging_filename, mode='w')
-        file_handler.setFormatter(format)
-        logger.addHandler(file_handler)
-
-    return logger
+# def dict_to_nested(data):
+#     """Converts {'model.lr': 0.1} to {'model': {'lr': 0.1}}"""
+#     nested = {}
+#     for key, value in data.items():
+#         keys = key.split('.')
+#         d = nested
+#         for k in keys[:-1]:
+#             d = d.setdefault(k, {})
+#         d[keys[-1]] = value
+#     return nested
 
 def get_device():
     device = torch.device(
