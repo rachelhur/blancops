@@ -24,11 +24,9 @@ class Reward(str, Enum):
     SURVEY_UNIFORMITY = "survey_uniformity"
 
 class LookupKeys(str, Enum):
-    FIELDS_TABLE = "fields.json"
-    FID2NAME = "fid2name.json"
-    FID2RADEC = "fid2radec.json"
-    FID2FILTERS = "fid2filters.pkl"
+    FIELDS = "fields_table.json"
     TARGET_FIDFILT_COUNTS = "target_counts_per_fidfilt.pkl"
+    FIDFILT_EXPTIME = "fidfilt_exptime.pkl"
     TARGET_FILT_COUNTS = "target_counts_per_filter.pkl"
     TARGET_FID_COUNTS = "target_counts_per_fid.pkl"
     

@@ -8,26 +8,27 @@ import numpy as np
 
 from typing import Optional
 from blancops.configs.enums import *
-from blancops.configs.constants import DEFAULT_NORM_MAPPING, TRAIN_DATA_PATH, BIN_FEATURES
-from blancops.data.constants import FILTER2IDX
+from blancops.configs.constants import _DEFAULT_NORM_MAPPING, TRAIN_DATA_PATH, _BIN_FEATURES
+from blancops.configs.constants import FILTER2IDX
 
-from blancops.configs.constants import ALLOWED_NORMS_PER_FEATURE, NORM_TYPES
+from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, NORM_TYPES
 
-class EnvConfig(BaseModel):
-    sun_el_lim: float = -12
-    airmass_lim: float = 2.0
-    
-    
+class ActionConstraints(BaseModel): 
+    sun_el_limit: float = -15
+    airmass_limit: float = 3.0
     
 class NormalizationConfig(BaseModel):
-    feature_mappings: Dict[str, List[NORM_TYPES]] = Field(
-        default_factory=lambda: {k: v.copy() for k, v in DEFAULT_NORM_MAPPING.items()})
+    # feature_names: List[str] = Field(
+    #     default_factory=lambda: list(DEFAULT_NORM_MAPPING.keys())
+    #     )
+    feature_norm_mappings: Dict[str, List[NORM_TYPES]] = Field(
+        default_factory=lambda: {k: v.copy() for k, v in _DEFAULT_NORM_MAPPING.items()})
     fix_nans: bool = True
 
     @model_validator(mode='after')
     def validate_legal_normalizations(self) -> 'NormalizationConfig':
-        for feature, requested_norms in self.feature_mappings.items():
-            allowed_norms = ALLOWED_NORMS_PER_FEATURE.get(feature)
+        for feature, requested_norms in self.feature_norm_mappings.items():
+            allowed_norms = _ALLOWED_NORMS_PER_FEATURE.get(feature)
             if allowed_norms is None:
                 raise ValueError(f"Feature '{feature}' is not recognized in allowed normalization rules.")
                 
@@ -64,7 +65,7 @@ class BaseDataConfig(BaseModel):
     @model_validator(mode='after')
     def validate_features(self) -> 'TrainDataConfig':
         for bin_feat in self.bin_features:
-            if bin_feat not in BIN_FEATURES:
+            if bin_feat not in _BIN_FEATURES:
                 raise ValueError(f"{bin_feat} is not implemented.")
         return self
       
@@ -198,5 +199,11 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
         # Use mode='json' to force Pydantic to convert complex types (like Enums) to strings
         resolved_dict = resolved_cfg.model_dump(mode='json') 
         yaml.dump(resolved_dict, f, default_flow_style=False, sort_keys=False)
+    
+    # SAVE ORIGINAL CONFIG
+    with open(Path(resolved_cfg.outdir) / "configs" /"original_config.yaml", "w") as f:
+        # Use mode='json' to force Pydantic to convert complex types (like Enums) to strings
+        cfg = cfg.model_dump(mode='json') 
+        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
         
     return resolved_cfg
