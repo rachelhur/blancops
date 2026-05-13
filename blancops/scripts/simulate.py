@@ -10,13 +10,14 @@ import gymnasium as gym
 import os
 
 from blancops.configs.constants import get_workspace_dir
-from blancops.rl.runner import ScheduleGenerator
-from blancops.data.lookup import LookupTables
+from blancops.rl.offline_runner import OfflineRunner
+from blancops.data.lookup_tables import LookupTables
 from blancops.rl.agent import Agent
 from blancops.utils.sys_utils import seed_everything, load_model_config
-from blancops.utils.sys_utils import setup_logger, get_device
-from blancops.data.constants import *
-from blancops.environment.test_env import TestBlancoEnv
+from blancops.io.logger_utils import setup_logger
+from blancops.utils.sys_utils import get_device
+from blancops.configs.constants import *
+from blancops.environment.sim_env import SimBlancoEnv
 from blancops.plotting.schedule_viz import *
 from blancops.rl.registry import build_algorithm
 
@@ -79,7 +80,7 @@ def main():
     # Get configs
     cfg_dir = args.trained_model_dir
     assert os.path.exists(cfg_dir), f"Directory {cfg_dir} does not exist"
-    cfg = load_model_config(cfg_dir / "config.json")
+    cfg = load_model_config(cfg_dir / "config.yaml")
     nside = cfg['data']['nside']
     action_space = cfg['data']['action_space']
     
@@ -183,7 +184,7 @@ def main():
     # BUILD AGENT
     agent = Agent(algorithm=algorithm, cfg=cfg, lookups=lookups, field_choice_method=args.field_choice_method)
     # BUILD RUNNER
-    runner = ScheduleGenerator(
+    runner = OfflineRunner(
         agent=agent,
         algorithm=algorithm,
         cfg=cfg,
@@ -201,10 +202,10 @@ def main():
 
     # Initialize environment
     logger.info("Setting up environment...")
-    env_name = 'OnlineDECamEnv-v0'
+    env_name = 'SimBlancoEnv-v0'
     gym.register(
         id=f"gymnasium_env/{env_name}",
-        entry_point=TestBlancoEnv,
+        entry_point=SimBlancoEnv,
     )
 
     #pyephem requires sun horizon to be in string format if degrees (float if radians)
@@ -217,7 +218,7 @@ def main():
     # fid2radec = np.array([[ra, dec] for ra, dec in zip(field_lookup['ra'].values(), field_lookup['dec'].values())])
 
     # Evaluate
-    diagnostics = runner.generate_schedule(env=env)
+    diagnostics = runner.run(env=env)
     
     logger.info("Generating plots...")
     save_survey_diagnostics(diagnostics, save_dir=schedule_outdir, field_lookup=field_lookup, nside=nside, action_space=action_space)

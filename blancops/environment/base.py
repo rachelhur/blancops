@@ -1,301 +1,383 @@
+"""Base class for all Blanco telescope environments.
+ 
+Owns shared physics, feature calculation, action/observation spaces, and the
+gym contract. Subclasses customize behavior through a small set of abstract
+lifecycle hooks (`_begin_episode`, `_advance_after_action`,
+`_episode_terminated`) plus optional feature-context hooks
+(`_get_t_survey`, `_get_fwhm`, etc.) that default to returning None.
+ 
+Time and per-night state arrive through `StateSnapshot` objects; the same
+primitive is used by `OfflineBlancoEnv._start_new_night` (per-night init)
+and by `OnlineBlancoEnv.sync_telemetry` (mid-episode hardware sync).
+"""
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 import logging
+from typing import Optional
+from dataclasses import dataclass
 from einops import rearrange
 import numpy as np
 import gymnasium as gym
 from collections import defaultdict
-from blancops.data.features.bin_features import calc_relative_survey_progress_features, get_delta_az_el, get_relative_feature
-from blancops.data.features.glob_features import calc_moon_phase, calc_sun_and_moon_positions, calc_urgency
+from blancops import math
+from blancops.configs.schema import ActionConstraints, ExperimentConfig
+from blancops.data.features.bin_features import (
+    # Shared per-timestep helpers — single source of truth for bin features.
+    _SURVEY_PROGRESS_BASE_KEYS,
+    compute_bin_ephemeris_features,
+    compute_bin_progress_features,
+    apply_relative_bin_features,
+    apply_cyclical_bin_features,
+    validate_history_bin_features,
+    replace_invalid_with_sentinel,
+    # Small math helpers still imported by other callers.
+    get_delta_az_el,
+    get_relative_feature,
+)
+from blancops.data.features.glob_features import (
+    # Shared per-timestep helpers — single source of truth for global features.
+    compute_global_time_only_features,
+    compute_global_pointing_features,
+    apply_cyclical_global_features,
+    calc_urgency,
+)
 from blancops.data.features.normalizations import normalize_timestamp
-from blancops.data_quality.sky_brightness import estimate_sky_brightness
+from blancops.environment.survey_tracker import SurveyProgressTracker
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-from blancops.data.constants import *
-from astropy.time import Time
+from blancops.configs.constants import *
 
 logger = logging.getLogger(__name__)
 
+@dataclass
+class StateSnapshot:
+    """A point-in-time snapshot of the env's mutable state.
+    Counters are optional; pass None to leave the existing value alone
+    """
+    timestamp: float
+    field_id: int = ZENITH_FIELD_ID
+    bin_num: int = ZENITH_BIN_NUM
+    filter_idx: int = ZENITH_FILTER_IDX
+    counts_cur : Optional[np.ndarray] = None # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
 
-class BaseTelescopeEnv(gym.Env, ABC):
-    def __init__(self):
+
+# ---------------------------------------------------------------------------
+# Feature → source requirements (consumed by _validate_feature_config)
+# ---------------------------------------------------------------------------
+#
+# Each entry maps a feature name to a list of (kind, target) checks:
+#
+#   ('hook', name) — type(self) must override the named method
+#   ('attr', name) — getattr(self, name) must be non-None at validation
+#   ('flag', name) — getattr(self, name) must be truthy at validation
+#                    (used to enforce do_filt for 2D-only features)
+#
+# Features not listed here are assumed to be unconditionally computable.
+
+_FILTER_NAMES = list(FILTER2IDX.keys())
+ 
+_FEATURE_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
+    "fwhm": [("hook", "_get_fwhm")],
+    "t_survey": [("hook", "_get_t_survey")],
+    **{
+        f"survey_progress_{f}": [
+            ("attr", "_survey_progress_tracker"),
+            ("flag", "do_filt"),
+        ]
+        for f in _FILTER_NAMES
+    },
+    **{
+        f"urgency_{f}": [
+            ("attr", "_survey_progress_tracker"),
+            ("flag", "do_filt"),
+            ("hook", "_get_survey_night_idx"),
+            ("hook", "_get_survey_nights_total"),
+        ]
+        for f in _FILTER_NAMES
+    },
+}
+
+class BaseBlancoEnv(gym.Env, ABC):
+    """Abstract base for all Blanco environments.
+ 
+    Owns physics (airmass / slew), feature calculation, action masks,
+    observation/action spaces, normalization, and the gym `step` / `reset`
+    contract. Subclasses fill in the lifecycle hooks declared below.
+    """
+    def __init__(
+        self, 
+        cfg: ExperimentConfig,
+        constraints_cfg: ActionConstraints,
+        lookups, 
+        global_normalizer, 
+        bin_normalizer, 
+        z_score_stats, 
+        rel_norm_stats
+    ):
         super().__init__()
-
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        
-        self._init_to_first_state()
-        state = self.get_obs()
-        info = self._get_info()
-        return state, info
-    
-    @abstractmethod
-    def step(self, action):
-        pass
-
-    @abstractmethod
-    def _init_to_first_state(self):
-        """Initializes the environment state for a new episode."""
-        pass
-
-    @abstractmethod
-    def _update_action_masks(self): # Note: ensure naming consistency (action_mask vs action_masks)
-        """Updates action masks."""
-        pass
-
-    @abstractmethod
-    def _update_state(self, action): 
-        # Note: Your online env uses _update_state instead of _update_obs. 
-        # ABCs will force you to unify this naming convention.
-        """Updates the internal state based on the action taken."""
-        pass
-
-    @abstractmethod
-    def get_obs(self):
-        """Converts internal state into the formal observation."""
-        pass
-
-    @abstractmethod
-    def get_info(self):
-        """Computes auxiliary information dictionary."""
-        pass
-
-    @abstractmethod
-    def _get_termination_status(self):
-        """Checks if episode has terminated."""
-        pass
-    
-    @abstractmethod
-    def _get_exposure_time(self):
-        """Get exposure time"""
-        pass
-
-    def _get_rewards(self, last_field, next_field):
-        '''
-        Calculates the reward for a single state transition.
-
-        Uses self._reward_func() if available, otherwise returns 1.
-
-        Args
-        ----
-            last_field (int): Field ID before taking the action.
-            next_field (int): Field ID after taking the action.
-
-        Returns
-        -------
-            float: The calculated reward value.
-        '''
-        if getattr(self, "_reward_func", None) is None:
-            return 1
-        return self._reward_func(last_field, next_field)    
-
-class BaseBlancoEnv(BaseTelescopeEnv):
-    """
-    Unified base class for Blanco Telescope environments.
-    Centralizes physics (airmass, slew), state updates, and feature calculation.
-    """
-    def __init__(self, model_cfg, env_cfg, lookups, global_normalizer, bin_normalizer, z_score_stats, rel_norm_stats):
-        self.cfg = model_cfg
+        # Configuration, Normalizations, and Lookups
+        self.cfg = cfg
         self.lookups = lookups
-        
-        # Configuration & Normalization
         self.global_normalizer = global_normalizer
         self.bin_normalizer = bin_normalizer
         self._z_score_stats = z_score_stats
         self._rel_norm_stats = rel_norm_stats
-        self.include_bin_features = model_cfg.data.bin_state_dim > 0
-        self.action_space = model_cfg.data.action_space
-        # Whether action space includes a filter dimension
-        self.do_filt = 'filter' in model_cfg.data.action_space
+        self.do_cyclical_norm = global_normalizer.do_cyclical_norm or bin_normalizer.do_cyclical_norm
+        self.airmass_limit = constraints_cfg.airmass_limit
+        self.sun_el_limit = constraints_cfg.sun_el_limit
+
+        # Feature Configs
+        self.global_feature_names = list(cfg.data.global_features).copy()
+        self.bin_feature_names = list(cfg.data.bin_features).copy()
+        self.include_bin_features = cfg.data.bin_state_dim > 0
+        self.do_filt = 'filter' in cfg.data.action_space
+        self.base_global_feature_names = list(cfg.data.global_features)
+        self.base_bin_feature_names = list(cfg.data.bin_features)
         
-        # Grid & Dimensions
+        self._has_historical_features = any(feat_substr in bf for feat_substr in _SURVEY_PROGRESS_BASE_KEYS  
+            for bf in self.bin_feature_names
+        )
+        
+        self.idx2filter = IDX2FILTER
+        self.nfilters = NUM_FILTERS
+        
+        # Heapix Grid
         self.hpGrid = ephemerides.HealpixGrid(
-            nside=model_cfg.data.nside, 
-            is_azel=('azel' in model_cfg.data.action_space)
+            nside=cfg.data.nside, 
+            is_azel=('azel' in cfg.data.action_space)
         )
         self.nbins = len(self.hpGrid.idx_lookup)
-        self.state_dim = model_cfg.data.state_dim
-        self.bin_state_dim = model_cfg.data.bin_state_dim
         
-        # Minimal feature name setup required by env:
-        self.base_global_feature_names = list(model_cfg.data.global_features)
-        self.base_bin_feature_names = list(model_cfg.data.bin_features)
-        self.global_feature_names = list(self.base_global_feature_names)
-        self.bin_feature_names = list(self.base_bin_feature_names)
-
-        # Telescope State
-        self._fids = np.array(list(lookups.fid2name.keys())).astype(np.int32)
+        # Field arrays sourced from lookups.fields, the canonical
+        # per-field DataFrame indexed by field_id. The contract that
+        # `field_id` doubles as a 0..N-1 array index is enforced in
+        # LookupTables.__post_init__.
+        self._fids = lookups.fields.index.to_numpy(dtype=np.int32)
+        self._ra_arr = lookups.fields["ra"].to_numpy()
+        self._dec_arr = lookups.fields["dec"].to_numpy()
         self.nfields = len(self._fids)
-        self._ra_arr = np.array([lookups.fid2radec[fid][0] for fid in self._fids])
-        self._dec_arr = np.array([lookups.fid2radec[fid][1] for fid in self._fids])
+
+        # Mutable runtime state — populated by reset() via _begin_episode        
+        self._ts: float | None = None
+        self._field_id: int = ZENITH_FIELD_ID
+        self._bin_num: int = ZENITH_BIN_NUM
+        self._filter_idx: int = ZENITH_FILTER_IDX
+        self._sunset_ts: float | None = None
+        self._sunrise_ts: float | None = None
+        self._night_end_ts: float | None = None
+        self._global_state: np.ndarray | None = None
+        self._bin_state: np.ndarray | None = None
+        self._action_mask: np.ndarray | None = None
+        self._is_new_night: bool = False
+        self._valid_fields_per_bin: dict | None = None
+                
+        # Coordinate-system-specific caches (RA/Dec mode only). Populated
+        # lazily by _compute_bin_assignments on first use.
+        self._field_bins_radec: np.ndarray | None = None
+        self._field_bins_radec_v_mask: np.ndarray | None = None
+        self._bins_membership_arr: list[np.ndarray] | None = None
+        self._active_bins_s: np.ndarray | None = None
+
+        # Survey progress tracker - built once at construction so that concrete subclasses can validate it
+        target_counts = self.lookups.target_fidfilt_counts if self.do_filt else self.lookups.target_fid_counts
+        self._survey_progress_tracker = SurveyProgressTracker(target_counts=target_counts)
         
-        # Physics Limits
-        self.sun_el_limit = getattr(env_cfg, 'sun_el_limit', '-12')
-        self.airmass_limit = getattr(env_cfg, 'airmass_limit', 1.4)
+        # Sentinel for inactive bins, written into history features at the
+        # tail end of `_calculate_bin_features`. Internal computation uses
+        # NaN; this is the external (on-disk) value.
+        self._bin_feat_sentinel = (
+            AZEL_BIN_FEAT_SENTINEL if self.hpGrid.is_azel
+            else RADEC_BIN_FEAT_SENTINEL
+        )
         
-        self._setup_action_and_obs_spaces()
-        super().__init__()
+        # Fail-fast
+        self._setup_action_and_obs_spaces(cfg.data.state_dim, cfg.data.bin_state_dim)
+        
+        # Validation is NOT called here; concrete subclasses call
+        # self._validate_feature_config() at the end of their __init__.
+
+    # -----------------------------------------------------------------------
+    # Gym contract — template methods. The shape of step/reset is fixed
+    # here; subclasses customize via the abstract hooks below.
+    # -----------------------------------------------------------------------
+ 
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+ 
+        # Zero out running counts by default. _begin_episode() may overwrite
+        # via a StateSnapshot (Historic loads recorded visits; Online keeps
+        # whatever the snapshot from telemetry contains).
+        self._survey_progress_tracker.zero_counts()
+        
+        # Subclass-defined episode start: load night 0, sync telemetry, etc.
+        self._begin_episode()
+        self._is_new_night = True
+ 
+        self._update_action_masks()
+        self._global_state = self._calculate_global_features()
+        if self.include_bin_features:
+            self._bin_state = self._calculate_bin_features()
+ 
+        return self.get_obs(), self.get_info()
+
+    def step(self, action: dict):
+        assert self.action_space.contains(action), f"Invalid action {action}"
+        last_field_id = np.int32(self._field_id)
+ 
+        # Subclass-defined: advance time, update visit counters, possibly roll
+        # into a new night (offline) or fast-forward on WAIT (online).
+        self._advance_after_action(action)
+        
+        self._update_action_masks()
+        self._global_state = self._calculate_global_features()
+        if self.include_bin_features:
+            self._bin_state = self._calculate_bin_features()
+ 
+        reward = self._get_rewards(last_field_id, self._field_id)
+        terminated = self._episode_terminated()
+        truncated = False
+ 
+        return self.get_obs(), reward, terminated, truncated, self.get_info()
+
+    # -----------------------------------------------------------------------
+    # Abstract lifecycle hooks
+    # -----------------------------------------------------------------------
 
     @abstractmethod
-    def _get_night_config(self, night_idx: int):
-        """Retrieve the start/end/meta information for a specific night."""
+    def _begin_episode(self) -> None:
+        """Set up state for the start of an episode.
+ 
+        Offline subclasses load night 0; the live subclass syncs telemetry.
+        Implementations must populate `_ts`, `_sunset_ts`, `_sunrise_ts`,
+        `_night_end_ts`, and the pointing trio (`_field_id`, `_bin_num`,
+        `_filter_idx`) — typically by building a `StateSnapshot` and calling
+        `_apply_state_snapshot`.
+        """
+ 
+    @abstractmethod
+    def _advance_after_action(self, action: dict) -> None:
+        """Mutate `_ts`, pointing, and visit counters from an action.
+ 
+        Offline subclasses simulate by adding `exptime + slew_time`. The
+        live subclass reads the wall clock or telemetry, and may also
+        handle `WAIT_SIGNAL` fast-forwarding.
+        """
+        pass
+ 
+    @abstractmethod
+    def _episode_terminated(self) -> bool:
+        """Whether the current episode has ended."""
         pass
 
-    def _start_new_night(self):
-        """Centralized logic for beginning a new observing night."""
-        self._night_idx += 1
-        config = self._get_night_config(self._night_idx)
+    # -----------------------------------------------------------------------
+    # Optional feature-context hooks. Default to None; subclasses override
+    # only the ones they actually populate. `_calculate_global_features`
+    # adds the corresponding feature only when the hook returns non-None.
+    # -----------------------------------------------------------------------
+ 
+    def _get_t_survey(self) -> Optional[float]:
+        """Time-since-survey-start in units of days (discrete), or None if not provided."""
+        return None
+ 
+    def _get_fwhm(self, timestamp: float) -> Optional[float]:
+        """Seeing FWHM at the given timestamp, or None."""
+        return None
+ 
+    def _get_raw_survey_progress(self) -> Optional[np.ndarray]:
+        """Per-filter survey-wide visit counts (mutable), or None."""
+        return None
+ 
+    def _get_survey_nights_total(self) -> Optional[int]:
+        """Total scheduled survey nights; used by urgency calculation."""
+        return None
+ 
+    def _get_survey_night_idx(self) -> Optional[int]:
+        """Current night index within the wider survey, if known."""
+        return None
+ 
+    # -----------------------------------------------------------------------
+    # Shared primitive — used by both telemetry sync and per-night init
+    # -----------------------------------------------------------------------
+ 
+    def _apply_state_snapshot(self, snap: StateSnapshot) -> None:
+        """Mutate internal state from a `StateSnapshot`.
+ 
+        Counters are only overwritten when the snapshot provides them, so
+        e.g. `OnlineBlancoEnv.sync_telemetry` can update pointing without
+        clobbering the running visit history.
+        """
+        self._ts = snap.timestamp
+        self._field_id = snap.field_id
+        self._bin_num = snap.bin_num
+        self._filter_idx = snap.filter_idx
         
-        self._ts = config['start_ts']
-        self._sunset_ts = config['sunset_ts']
-        self._sunrise_ts = config['sunrise_ts']
-        self._night_end_ts = config['end_ts']
-        
-        # Reset nightly counters
-        self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
-        if hasattr(self, 'do_filt') and self.do_filt:
-            self._n_filter_visits_cur = np.zeros((self.nfields, NUM_FILTERS), dtype=np.int32)
-        
-        # Initialize state
-        self._field_id = ZENITH_FIELD_ID
-        # Set bin and filter indices for zenith/start state
-        self._bin_num = ZENITH_BIN_NUM
-        self._filter_idx = ZENITH_FILTER_IDX
-        self._update_action_masks()
-        self._global_state = self._calculate_global_features(
-            field_id=self._field_id, 
-            filter_idx=self._filter_idx, 
-            timestamp=self._ts, 
-            sunset_ts=self._sunset_ts, 
-            sunrise_ts=self._sunrise_ts,
-            ra_arr=self._ra_arr, 
-            dec_arr=self._dec_arr
-        )
-
-    def _get_airmass(self, elevation_rad):
-        """
-        Calculates airmass using the simple plane-parallel approximation:
-        $$X = \frac{1}{\cos(z)} = \frac{1}{\sin(el)}$$
-        """
-        # Ensure elevation is valid for airmass calculation
-        el = np.clip(elevation_rad, 1e-5, np.pi/2)
-        return 1.0 / np.sin(el)
-
-    def _get_slew_time(self, last_fid, current_fid, overhead=30.0):
-        """Calculates time to move telescope between fields."""
-        if last_fid == ZENITH_FIELD_ID:
-            blanco = ephemerides.blanco_observer(time=self._ts)
-            last_pos = np.array(blanco.radec_of('0', '90'))
-        else:
-            last_pos = self._ra_arr[last_fid], self._dec_arr[last_fid]
-            
-        current_pos = self._ra_arr[current_fid], self._dec_arr[current_fid]
-        distance = ephemerides.geometry.angular_separation(last_pos, current_pos)
-        return ephemerides.geometry.blanco_slew_time(distance) + overhead
-    
-    def reset(self, seed=None, options=None):
-        """Gym-compatible reset that initializes nightly counters and returns (obs, info)."""
-        super().reset(seed=seed)
-        # Ensure number of filters is available
-        try:
-            NUM_FILTERS_CONST = NUM_FILTERS
-        except NameError:
-            from blancops.data.constants import NUM_FILTERS as NUM_FILTERS_CONST
-        if not hasattr(self, 'nfilters'):
-            self.nfilters = NUM_FILTERS_CONST
-
-        # Initialize night counter and visit trackers
-        self._night_idx = -1
-        self._s_visits_cur = np.zeros(self.nfields, dtype=np.int32)
-        if getattr(self, 'do_filt', True):
-            self._s_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
-
-        # Start the first night
-        self._start_new_night()
-
-        # Mark that this is the beginning of a new night
-        self._is_new_night = True
-
-        state = self.get_obs()
-        info = self.get_info()
-        return state, info
-
-    def _get_termination_status(self):
-        """
-        Checks if the episode has reached its termination condition.
-
-        Termination occurs when the total number of observations for the night
-        (based on the dataset) has been met, or, when all fields have been completely
-        visited.
-
-        Returns
-        -------
-            bool: True if the episode is terminated, False otherwise.
-        """
-        all_nights_completed = self._night_idx >= self.max_nights
-        if self.do_filt:
-            all_fields_visited = np.all(self._s_filter_visits_cur >= self._max_s_filter_visits_arr)
-        else:
-            all_fields_visited = np.all(self._s_visits_cur >= self._max_s_visits_arr)
-        # all_fields_visited = all(np.array([self._s_visits_cur[fid] >= self.fid2maxvisits[fid] for fid in self._fids]))
-        
-        terminated = all_nights_completed or all_fields_visited
-        if terminated:
-            fields_visited = np.count_nonzero(self._s_visits_cur)
-            if fields_visited == 0:
-                raise RuntimeError("Did not visit any fields. Abort.")
-            logger.info(f"Did not visit all fields ({fields_visited}/{len(self._s_visits_cur)})" if not all_fields_visited else "Visited all fields! :)")
-        return terminated
-
-    def _update_state(self, action):
-        """
-        Updates the internal state variables based on the action taken.
-
-        Args
-        ----
-            action (int): The chosen field ID to observe next.
-        """
-        bin_num, field_id, filter_idx = int(action['bin']), int(action['field_id']), int(action['filter_idx'])
-
-        # --- OnlineEnv Logic --- #
-        if bin_num == WAIT_SIGNAL:
-            old_ts = self._ts
-            self._ts = self._fast_forward(
-                timestamp=self._ts,
-                ras=self._ra_arr,
-                decs=self._dec_arr,
-                visited=self._s_visits_cur,
-                max_visits=self._max_s_visits_arr
+        if snap.counts_cur is not None:
+            tracker_shape = self._survey_progress_tracker.raw_counts.shape
+            assert snap.counts_cur.shape == tracker_shape, (
+                f"snapshot counts_cur shape {snap.counts_cur.shape} does not "
+                f"match tracker shape {tracker_shape}"
             )
-            logger.info(f'WAITED {(self._ts - old_ts)/60} MINUTES')
-            # Stay in same field and filter after waiting
-            field_id = self._field_id
-            filter_idx = self._filter_idx
-        # --- OnlineEnv Logic --- #
-        else:
-            last_field_id = self._field_id
-            exptime = self._get_exposure_time(field_id=str(field_id))
-            slew_time = self._get_slew_time(last_field_id, field_id)
-            self._ts += exptime + slew_time
+            self._survey_progress_tracker.set_counts(snap.counts_cur)
+ 
+    def _record_visit(self, field_id: int, filter_idx: int = None) -> None:
+        """Bookkeeping after a successful observation.
+ 
+        Single source of truth for visit accumulation: keeps
+        `_s_visits_cur`, `_s_filter_visits_cur`, and the survey-progress
+        tracker in sync. Called by `_advance_after_action` in each
+        concrete subclass for every non-wait action.
+        """
+        self._survey_progress_tracker.increment(
+            field_id = field_id, 
+            filter_idx = filter_idx if self.do_filt else None
+            )
 
-            self._n_visits_cur[field_id] += 1
-            self._s_visits_cur[field_id] += 1
-            if self.do_filt:
-                self._s_filter_visits_cur[field_id, filter_idx] += 1
-                self._n_filter_visits_cur[field_id, filter_idx] += 1  
-             
-        self._bin_num = bin_num
-        self._field_id = field_id
-        self._filter_idx = filter_idx
-        
-        self._global_state = self._calculate_global_features(field_id=field_id, filter_idx=filter_idx, timestamp=self._ts,
-                                                          sunset_ts=self._sunset_ts, sunrise_ts=self._sunrise_ts,
-                                                          ra_arr=self._ra_arr, dec_arr=self._dec_arr,
-                                                          )
-        self._bin_state = self._calculate_bin_features(timestamp=self._ts) if self.include_bin_features else np.array([])
-        # self._update_action_masks(timestamp=self._ts, fid2maxvisits=self.fid2maxvisits, field_ids=self._fids, ras=self._ra_arr, decs=self._dec_arr, 
-                                                #   hpGrid=self.hpGrid, visited=self._s_visits_cur)
+    # -----------------------------------------------------------------------
+    # Concrete helpers for setting action mask constraints
+    # -----------------------------------------------------------------------
+
+    def set_constraints(
+        self,
+        *,
+        airmass_limit: Optional[float] = None,
+        sun_el_limit: Optional[float] = None,
+    ) -> dict:
+        """Update mask-gating constraints, refresh the action mask,
+        and return a fresh info dict.
+ 
+        Use before running a chunk of exposures so the agent's first
+        choice in the chunk reads the correctly-gated mask:
+ 
+            info = env.set_constraints(airmass_limit=2.5, sun_el_limit=-15.0)
+            for _ in range(chunk_size):
+                action = agent.choose_action(obs, info)
+                obs, reward, terminated, truncated, info = env.step(action)
+ 
+        When sun_el currently exceeds sun_el_limit, the returned mask
+        is all-False, forcing the agent to pick WAIT_SIGNAL.
+ 
+        Note: in offline envs, twilight boundaries (`_sunset_ts`,
+        `_sunrise_ts`) are computed once at night start. Calling this
+        mid-night updates the mask but not the rollover schedule;
+        the next night will pick up the new limit via
+        `_get_night_config`.
+        """
+        if airmass_limit is not None:
+            self.airmass_limit = airmass_limit
+        if sun_el_limit is not None:
+            self.sun_el_limit = sun_el_limit
         self._update_action_masks()
+        return self.get_info()
 
+    
+    def compute_action_mask(self) -> np.ndarray:
+        """Recompute action mask under current constraints. Use after set_constraints."""
+        return self._update_action_masks()
+    # -----------------------------------------------------------------------
+    # Concrete helpers for all chilcdren
+    # -----------------------------------------------------------------------
+    
     def get_obs(self) -> dict:
         """Normalizes and returns the current state"""
         global_state = np.array(self._global_state, dtype=np.float32)
@@ -327,439 +409,530 @@ class BaseBlancoEnv(BaseTelescopeEnv):
         -------
             dict: A dictionary containing the current action mask.
         """
-        info_dict = {'action_mask': self._action_mask.copy(), 
-                's_visited': self._s_visits_cur.copy(),
-                'n_visited': self._n_visits_cur.copy(),
-                'valid_fields_per_bin': self._valid_fields_per_bin,
-                'timestamp': self._ts,
-                'is_new_night': bool(self._is_new_night),
-                'night_idx': int(self._night_idx),
-                'bin': int(self._bin_num),
-                'field_id': int(self._field_id),
+        info_dict = {
+            'action_mask': self._action_mask.copy(),
+            # 's_visited': self._s_visits_cur.copy(),
+            # 'n_visited': self._n_visits_cur.copy(),
+            'survey_progress_tracker': self._survey_progress_tracker,
+            'valid_fields_per_bin': self._valid_fields_per_bin,
+            'timestamp': self._ts,
+            'is_new_night': bool(self._is_new_night),
+            'night_idx': int(self._night_idx),
+            'bin': int(self._bin_num),
+            'field_id': int(self._field_id),
         }
-        if getattr(self, 'do_filt', True):
-            info_dict['s_filter_visits'] = self._s_filter_visits_cur.copy()
-            info_dict['max_s_filter_visits'] = self._max_s_filter_visits_arr.copy()
         return info_dict
+    
 
-    def _calculate_global_features(self, field_id, filter_idx, timestamp, sunset_ts, sunrise_ts, ra_arr, dec_arr) -> list:
-        new_features = {}
-        astro_time = Time(timestamp, format='unix', scale='utc')
-        lst = astro_time.sidereal_time('apparent', longitude=BLANCO_LON)
-        new_features['lst'] = lst.radian
-        
-        # --- OnlineEnv Logic --- #
-        if field_id == ZENITH_FIELD_ID:
+    def _get_airmass(self, elevation_rad):
+        """
+        Calculates airmass using the simple plane-parallel approximation:
+        $$X = \frac{1}{\cos(z)} = \frac{1}{\sin(el)}$$
+        """
+        # Ensure elevation is valid for airmass calculation
+        el = np.clip(elevation_rad, 1e-5, np.pi/2)
+        return 1.0 / np.sin(el)
+
+    def _get_slew_time(self, last_fid, current_fid, overhead=30.0):
+        """Calculates time to move telescope between fields."""
+        if last_fid == ZENITH_FIELD_ID:
+            blanco = ephemerides.blanco_observer(time=self._ts)
+            last_pos = np.array(blanco.radec_of('0', '90'))
+        else:
+            last_pos = self._ra_arr[last_fid], self._dec_arr[last_fid]
+            
+        current_pos = self._ra_arr[current_fid], self._dec_arr[current_fid]
+        distance = math.geometry.angular_separation(last_pos, current_pos)
+        return math.geometry.blanco_slew_time(distance) + overhead
+    
+    def _get_exposure_time(self, field_id=None, filter_idx=None):
+        """Per-(field, filter) exposure time from the lookups matrix.
+ 
+        Returns 0.0 for negative `field_id` (sentinel — no real
+        observation, so no time consumed) and the 90.0 s default when
+        `filter_idx` is None (e.g. when an offline env advances the
+        clock by an exposure-tick on a WAIT action without specifying
+        a filter).
+        """
+        if field_id is None or int(field_id) < 0:
+            return 0.0
+        if filter_idx is None:
+            return 90.0
+        return float(
+            self.lookups.fidfilt_exptime[int(field_id), int(filter_idx)]
+        )
+
+    
+    def _get_rewards(self, last_field, next_field):
+        '''
+        Calculates the reward for a single state transition.
+
+        Uses self._reward_func() if available, otherwise returns 1.
+
+        Args
+        ----
+            last_field (int): Field ID before taking the action.
+            next_field (int): Field ID after taking the action.
+
+        Returns
+        -------
+            float: The calculated reward value.
+        '''
+        if getattr(self, "_reward_func", None) is None:
+            return 1
+        return self._reward_func(last_field, next_field)    
+    
+    def _calculate_global_features(self) -> list:
+        """Compute the global feature vector for the current state.
+
+        Thin orchestration over the shared helpers in
+        ``blancops.data.features.glob_features``:
+
+          1. Time-only ephemeris via ``compute_global_time_only_features``
+             (LST, Sun/Moon positions and phase). LST is needed before
+             resolving the pointing in the zenith branch, so this runs first.
+          2. Resolve pointing RA/Dec (with the zenith / WAIT / real-field
+             fork from the original env).
+          3. Pointing-derived ephemeris via
+             ``compute_global_pointing_features`` (az/el/ha/airmass and
+             per-filter sky brightness).
+          4. Filter features (filter_wave / filter_idx / one-hot) — kept
+             inline because the live env's branchy zenith-vs-WAIT-vs-real
+             logic doesn't match the offline pipeline's df.map pattern.
+          5. Hook-derived features (fwhm, t_survey).
+          6. Tracker-derived per-filter features (survey_progress, urgency).
+          7. ``t_night`` from the env's cached sunrise/sunset boundaries.
+          8. Cyclical norms via ``apply_cyclical_global_features``.
+          9. Stack into a list in ``self.global_feature_names`` order;
+             raise on any NaN.
+
+        With ``_validate_feature_config`` having run at construction,
+        hooks/tracker/flags are guaranteed available for every feature in
+        ``self.global_feature_names``.
+        """
+        timestamp = self._ts
+
+        # 1. Time-only ephemeris (gives us LST so we can resolve zenith pointing).
+        new_features = compute_global_time_only_features(timestamp=timestamp)
+
+        # 2. Resolve pointing RA/Dec. Preserves the original env's zenith branch
+        #    (`lst, blanco.lon`) — see the migration notes; this disagrees with
+        #    `blanco.radec_of('0','90')` used elsewhere and is worth a separate
+        #    look, but isn't changed in this refactor.
+        if self._field_id == ZENITH_FIELD_ID:
             blanco = ephemerides.blanco_observer(time=timestamp)
             ra, dec = new_features['lst'], blanco.lon
-            new_features['ra'], new_features['dec'] = ra, dec 
+        else:
+            ra = self._ra_arr[self._field_id]
+            dec = self._dec_arr[self._field_id]
+        new_features['ra'] = ra
+        new_features['dec'] = dec
+
+        # 3. Pointing-derived ephemeris (az/el/ha/airmass + sky brightness).
+        new_features.update(
+            compute_global_pointing_features(timestamp=timestamp, ra=ra, dec=dec)
+        )
+
+        # 4. Filter features. The live env has three cases (zenith / WAIT or
+        #    no-filter-action / real-field-with-filter), all subtly different
+        #    from each other and from the offline df.map pipeline — kept
+        #    inline rather than abstracted.
+        if self._field_id == ZENITH_FIELD_ID:
             new_features['filter_wave'] = 0.
             new_features['filter_idx'] = ZENITH_FILTER_IDX
             for filt in FILTER2WAVE.keys():
                 new_features[f'is_filter_{filt}'] = 0
-        else: # if field_id is real field or is wait signal
-            ra = ra_arr[field_id]
-            dec = dec_arr[field_id]
-            new_features['ra'], new_features['dec'] = ra, dec
+        else:
             if self._bin_num == WAIT_SIGNAL or (not self.do_filt):
                 new_features['filter_wave'] = 0
-                new_features['filter_idx'] = filter_idx
+                new_features['filter_idx'] = self._filter_idx
             else:
-                new_features['filter_wave'] = 0 if (self._bin_num == WAIT_SIGNAL) or (not self.do_filt) else IDX2WAVE[filter_idx] / FILTERWAVENORM
-                new_features['filter_idx'] = filter_idx
-                if getattr(self, '_raw_survey_progress_arr', None) is not None:
-                    self._raw_survey_progress_arr[filter_idx] += 1
-            filt_str = IDX2FILTER[filter_idx]
+                new_features['filter_wave'] = IDX2WAVE[self._filter_idx] / FILTERWAVENORM
+                new_features['filter_idx'] = self._filter_idx
+            filt_str = IDX2FILTER[self._filter_idx]
             for filt in FILTER2WAVE.keys():
                 new_features[f'is_filter_{filt}'] = filt_str == filt
-      # --- OnlineEnv Logic --- #
-            
-        new_features['az'], new_features['el'] = ephemerides.equatorial_to_topographic(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
-        new_features['ha'] = ephemerides.equatorial_to_hour_angle(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
-        
-        # precision issue where el can be slightly negative just before sunrise/sunset, causing issues with airmass calculation - cap at pi/2
-        new_features['el'] = max(new_features['el'], 0)
-        new_features['el'] = min(new_features['el'], np.pi / 2)
 
-        cos_zenith = np.cos(np.pi / 2 - new_features['el'])
-        new_features['airmass'] = 1.0 / cos_zenith #if cos_zenith > 0 else 99.0
+        # 5. Hook-derived features — only populated if their source is available.
+        fwhm = self._get_fwhm(timestamp)
+        if fwhm is not None:
+            new_features['fwhm'] = fwhm
+        t_survey = self._get_t_survey()
+        if t_survey is not None:
+            new_features["t_survey"] = t_survey
 
-        sun_radec, sun_azel, moon_radec, moon_azel = calc_sun_and_moon_positions(timestamp)
-        
-        new_features['sun_ra'], new_features['sun_dec'] = sun_radec
-        new_features['sun_az'], new_features['sun_el'] = sun_azel
-        new_features['moon_ra'], new_features['moon_dec'] = moon_radec
-        new_features['moon_az'], new_features['moon_el'] = moon_azel
-        new_features['moon_phase'] = calc_moon_phase(timestamp)
-        if getattr(self, "_fwhm_night_interps", None) is not None:
-            new_features['fwhm'] = self._fwhm_night_interps[self._night_idx](timestamp)
-        if getattr(self, "_t_survey_arr", None) is not None:
-            new_features['t_survey'] = self._t_survey_arr[self._night_idx]
-        for filt, idx in FILTER2IDX.items():
-            sky_bright_filt = estimate_sky_brightness(time=timestamp, ra=ra, dec=dec, band=filt)
-            new_features[f'sky_brightness_{filt}'] = sky_bright_filt
-            if getattr(self, "_raw_survey_progress_arr", None) is not None:
-                new_features[f'survey_progress_{filt}'] = self._raw_survey_progress_arr[idx] / self.lookups.target_filt_counts[idx]
-                new_features[f'urgency_{filt}'] = calc_urgency(
-                    filter_counts_arr=self._raw_survey_progress_arr[idx], 
-                    filter_counts_max=self.lookups.target_filt_counts[idx], 
-                    survey_night_indices=self._survey_night_idx,
-                    survey_nights_max=self.survey_nights_total)
-        if sunrise_ts == sunset_ts:
-            raise AssertionError("Sunrise and sunset time is equal. Check night_str argument - it should be a time between sunset and sunrise")
-            # new_features['t_night'] = 0
-        else:
-            new_features['t_night'] = normalize_timestamp(timestamp, sunset_timestamp=sunset_ts, sunrise_timestamp=sunrise_ts)
-        
-        if getattr(self, 'do_cyclical_norm', False):
-            for feat_name in self.base_global_feature_names:
-                # Use the dynamic list from the YAML config instead of the hardcoded constant
-                if any(feat_name == cyc_feat or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in self.cyclical_feature_names):
-                    new_features[f'{feat_name}_cos'] = np.cos(new_features[feat_name])
-                    new_features[f'{feat_name}_sin'] = np.sin(new_features[feat_name])
-                    
-        global_state_features = [new_features.get(feat, np.nan) for feat in self.global_feature_names]
-        nan_feats = np.isnan(global_state_features)
-        if any(nan_feats):
-            nan_idxs = np.where(nan_feats == True)[0]
-            for idx in nan_idxs:
-                raise ValueError(f"Calculated nan value for global feature {self.global_feature_names[idx]}")
-        return global_state_features
-    
-    def _calculate_bin_features(self, timestamp):
-        features = {}
-
-        # --- OnlineEnv Logic --- #
-        if self._bin_num == WAIT_SIGNAL:
-            blanco = ephemerides.blanco_observer(time=timestamp)
-            pointing_radec = np.array(blanco.radec_of('0',  '90'))
-            pointing_azel = np.array([0, np.pi / 2])
-        else:
-            pointing_radec = np.array([self._ra_arr[self._field_id], self._dec_arr[self._field_id]])
-            pointing_azel = ephemerides.equatorial_to_topographic(ra=pointing_radec[0], dec=pointing_radec[1], time=timestamp)
-        # --- OnlineEnv Logic --- #
-
-        if self.hpGrid.is_azel:
-            lons, lats = ephemerides.topographic_to_equatorial(az=self.hpGrid.lon, el=self.hpGrid.lat, time=timestamp)
-            features['az'], features['el'] = self.hpGrid.lon, self.hpGrid.lat
-            features['ra'], features['dec'] = lons, lats
-            current_lon, current_lat = ephemerides.equatorial_to_topographic(ra=pointing_radec[0], dec=pointing_radec[1], time=timestamp)
-        else:
-            lons, lats = ephemerides.equatorial_to_topographic(ra=self.hpGrid.lon, dec=self.hpGrid.lat, time=timestamp)
-            features['ra'], features['dec'] = self.hpGrid.lon, self.hpGrid.lat
-            features['az'], features['el'] = lons, lats
-            current_lon, current_lat = pointing_radec[0], pointing_radec[1]
-        
-        # One-shot calculations
-        features['pointing_distance'] = self.hpGrid.get_angular_separations(lon=current_lon, lat=current_lat)
-        features['ha'] = self.hpGrid.get_hour_angle(time=timestamp)
-        features['airmass'] = self.hpGrid.get_airmass(timestamp)
-        features['moon_distance'] = self.hpGrid.get_source_angular_separations('moon', time=timestamp)
-        features['delta_az'], features['delta_el'] = get_delta_az_el(features['az'], features['el'], pointing_azel[0], pointing_azel[1])
-        
-        if self._has_historical_features:
-            sentinel_val = AZEL_BIN_FEAT_SENTINEL if self.hpGrid.is_azel else RADEC_BIN_FEAT_SENTINEL
-
-            # Setup active masks depending on coordinate space
-            if not self.hpGrid.is_azel:
-                bins_mem = self._bins_membership_arr
-                v_mask = slice(None) # select everything - assume all input fields are in survey plan
-                act_s = self._active_bins_s
-                act_n = (np.bincount(bins_mem, weights=self._in_n_plan, minlength=self.nbins) > 0) 
-                if self.do_filt:
-                    act_s_filter = np.zeros((self.nbins, self.nfilters), dtype=bool)
-                    act_n_filter = np.zeros((self.nbins, self.nfilters), dtype=bool)
-                    for f in range(self.nfilters):
-                        act_s_filter[:, f] = np.bincount(bins_mem, weights=(self._max_s_filter_visits_arr[:, f] > 0), minlength=self.nbins) > 0
-                        act_n_filter[:, f] = np.bincount(bins_mem, weights=(self._max_n_filter_visits_arr[:, f] > 0), minlength=self.nbins) > 0
-            else:
-                az, el = ephemerides.equatorial_to_topographic(ra=self._ra_arr, dec=self._dec_arr, time=timestamp)
-                bins = self.hpGrid.ang2idx(lon=az, lat=el)
-                bins = np.array([b if b is not None else ZENITH_BIN_NUM for b in bins], dtype=np.int32)
-                
-                v_mask = (el > 0) & (bins != ZENITH_BIN_NUM)
-                bins_mem = bins[v_mask].astype(np.int32) # bins_mem acts as valid_bins
-
-                in_s_plan = self._max_s_visits_arr[v_mask] > 0
-                in_n_plan = self._max_n_visits_arr[v_mask] > 0
-                
-                act_s = np.bincount(bins_mem, weights=in_s_plan, minlength=self.nbins) > 0
-                act_n = np.bincount(bins_mem, weights=in_n_plan, minlength=self.nbins) > 0
-
-                if self.do_filt:
-                    act_s_filter = np.zeros((self.nbins, self.nfilters), dtype=bool)
-                    act_n_filter = np.zeros((self.nbins, self.nfilters), dtype=bool)
-                    for f in range(self.nfilters):
-                        act_s_filter[:, f] = np.bincount(bins_mem, weights=(self._max_s_filter_visits_arr[v_mask, f] > 0), minlength=self.nbins) > 0
-                        act_n_filter[:, f] = np.bincount(bins_mem, weights=(self._max_n_filter_visits_arr[v_mask, f] > 0), minlength=self.nbins) > 0
-            
-            # Field counts
-            v_s_vis, v_n_vis = self._s_visits_cur[v_mask], self._n_visits_cur[v_mask]
-            v_max_s, v_max_n = self._max_s_visits_arr[v_mask], self._max_n_visits_arr[v_mask]
-            in_s_plan, in_n_plan = v_max_s > 0, v_max_n > 0
-            max_s_vis_adj = np.maximum(v_max_n, v_max_s)
-
-            # True denominators
-            bc_n = np.bincount(bins_mem, weights=in_n_plan, minlength=self.nbins)
-            bc_s = np.bincount(bins_mem, weights=in_s_plan, minlength=self.nbins)
-
-            def assign_state(m_n, m_s, count_n, count_s, act_n_msk, act_s_msk, key_n, key_s):
-                res_n, res_s = np.zeros(self.nbins, dtype=np.float32), np.zeros(self.nbins, dtype=np.float32)
-                
-                num_n = np.bincount(bins_mem, weights=m_n, minlength=self.nbins)
-                num_s = np.bincount(bins_mem, weights=m_s, minlength=self.nbins)
-                
-                np.divide(num_n, count_n, out=res_n, where=act_n_msk)
-                np.divide(num_s, count_s, out=res_s, where=act_s_msk)
-                
-                res_n[~act_n_msk] = 0.0 # Using 0.0 as your default sentinel
-                res_s[~act_s_msk] = 0.0
-                features[key_n] = res_n
-                features[key_s] = res_s
-
-            # Execute 1D
-            assign_state((v_n_vis == 0) & in_n_plan, (v_s_vis == 0) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_unvisited_fields', 'survey_num_unvisited_fields')
-            assign_state((v_n_vis < v_max_n) & in_n_plan, (v_s_vis < max_s_vis_adj) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_incomplete_fields', 'survey_num_incomplete_fields')
-            
-            # --- Calculate field-level tiling (s_til, n_til) ---
-            if getattr(self, '_field_priorities_arr', None) is not None:
-                s_til = self._get_priority_tiling(v_s_vis, v_mask, in_s_plan)
-                n_til = self._get_priority_tiling(v_n_vis, v_mask, in_n_plan)
-            else:
-                s_til, n_til = np.full_like(v_s_vis, 2.0, dtype=np.float32), np.full_like(v_n_vis, 2.0, dtype=np.float32)
-                np.divide(v_s_vis, max_s_vis_adj, out=s_til, where=in_s_plan)
-                np.divide(v_n_vis, v_max_n, out=n_til, where=in_n_plan)
-                
-            s_mins, n_mins = np.full(self.nbins, 2.0, dtype=np.float32), np.full(self.nbins, 2.0, dtype=np.float32)
-            np.minimum.at(s_mins, bins_mem, s_til); np.minimum.at(n_mins, bins_mem, n_til)
-            
-            s_mins[~act_s | (s_mins > 1.0)] = sentinel_val
-            n_mins[~act_n | (n_mins > 1.0)] = sentinel_val
-            
-            features['survey_min_tiling'] = s_mins
-            features['night_min_tiling'] = n_mins
-
-            # Filter counts
-            if self.do_filt:
-                v_s_f_vis, v_n_f_vis = self._s_filter_visits_cur[v_mask], self._n_filter_visits_cur[v_mask]
-                v_max_s_f, v_max_n_f = self._max_s_filter_visits_arr[v_mask], self._max_n_filter_visits_arr[v_mask]
-                in_s_f_plan, in_n_f_plan = v_max_s_f > 0, v_max_n_f > 0
-                max_s_f_vis_adj = np.maximum(v_max_n_f, v_max_s_f)
-                
-                if getattr(self, '_field_priorities_arr', None) is not None:
-                    s_f_til = self._get_filter_priority_tiling(v_s_f_vis, v_mask, in_s_f_plan)
-                    n_f_til = self._get_filter_priority_tiling(v_n_f_vis, v_mask, in_n_f_plan)
-                else:
-                    s_f_til, n_f_til = np.full_like(v_s_f_vis, 2.0, dtype=np.float32), np.full_like(v_n_f_vis, 2.0, dtype=np.float32)
-                    np.divide(v_s_f_vis, max_s_f_vis_adj, out=s_f_til, where=in_s_f_plan)
-                    np.divide(v_n_f_vis, v_max_n_f, out=n_f_til, where=in_n_f_plan)
-                
-                s_f_mins, n_f_mins = np.full((self.nbins, self.nfilters), 2.0, dtype=np.float32), np.full((self.nbins, self.nfilters), 2.0, dtype=np.float32)
-                s_f_til, n_f_til = np.full_like(v_s_f_vis, 2.0, dtype=np.float32), np.full_like(v_n_f_vis, 2.0, dtype=np.float32)
-                np.divide(v_s_f_vis, max_s_f_vis_adj, out=s_f_til, where=in_s_f_plan)
-                np.divide(v_n_f_vis, v_max_n_f, out=n_f_til, where=in_n_f_plan)
-
-                for f, filt_name in self.idx2filter.items():
-                    bc_n_f = np.bincount(bins_mem, weights=in_n_f_plan[:, f], minlength=self.nbins)
-                    bc_s_f = np.bincount(bins_mem, weights=in_s_f_plan[:, f], minlength=self.nbins)
-
-                    assign_state((v_n_f_vis[:, f] == 0) & in_n_f_plan[:, f], (v_s_f_vis[:, f] == 0) & in_s_f_plan[:, f], 
-                                 bc_n_f, bc_s_f, act_n_filter[:, f], act_s_filter[:, f], f'night_num_unvisited_fields_{filt_name}', f'survey_num_unvisited_fields_{filt_name}')
-                    assign_state((v_n_f_vis[:, f] < v_max_n_f[:, f]) & in_n_f_plan[:, f], (v_s_f_vis[:, f] < max_s_f_vis_adj[:, f]) & in_s_f_plan[:, f],
-                                 bc_n_f, bc_s_f, act_n_filter[:, f], act_s_filter[:, f], f'night_num_incomplete_fields_{filt_name}', f'survey_num_incomplete_fields_{filt_name}')
-                    
-                    np.minimum.at(s_f_mins[:, f], bins_mem, s_f_til[:, f])
-                    np.minimum.at(n_f_mins[:, f], bins_mem, n_f_til[:, f])
-                    s_f_mins[~act_s_filter[:, f] | (s_f_mins[:, f] > 1.0), f] = sentinel_val
-                    n_f_mins[~act_n_filter[:, f] | (n_f_mins[:, f] > 1.0), f] = sentinel_val
-                    
-                    features[f'survey_min_tiling_{filt_name}'] = s_f_mins[:, f]
-                    features[f'night_min_tiling_{filt_name}'] = n_f_mins[:, f]
-                
-            # FEATURE VALIDATION CHECK
-            # self._validate_bin_features(features, sentinel_val)
-
-        # GET "RELATIVE" FEATURES
-        el_mask = features['el'] > 0
-        features['rel_ha'] = get_relative_feature(features['ha'], el_mask=el_mask)
-        features['rel_moon_distance'] = get_relative_feature(features['moon_distance'], el_mask=el_mask)
-        if self._has_historical_features:
-            features |= calc_relative_survey_progress_features(features, el_mask)
-        
-        # Normalize periodic features here and add as df cols
-        # Normalize periodic features here and add as dict keys
-        if getattr(self, 'do_cyclical_norm', False):
-            for feat_name in self.base_bin_feature_names:
-                if any(feat_name == cyc_feat or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in self.cyclical_feature_names):
-                    if feat_name in features:
-                        features[f'{feat_name}_cos'] = np.cos(features[feat_name])
-                        features[f'{feat_name}_sin'] = np.sin(features[feat_name])
+        # 6. Tracker-derived per-filter features.
+        tracker = self._survey_progress_tracker
+        if tracker._is_field_filter:
+            survey_night_idx = self._get_survey_night_idx()
+            survey_nights_total = self._get_survey_nights_total()
+            for filt, idx in FILTER2IDX.items():
+                p_name = f"survey_progress_{filt}"
+                u_name = f"urgency_{filt}"
+                if p_name in self.global_feature_names:
+                    new_features[p_name] = tracker.get_filter_progress(idx)
+                if u_name in self.global_feature_names:
+                    visits = int(tracker.raw_counts[:, idx].sum())
+                    target = int(tracker.target_counts[:, idx].sum())
+                    if target == 0:
+                        new_features[u_name] = 0
                     else:
-                        raise ValueError(f"{feat_name} was not calculated. Is this feature implemented?")
-                    
-        final_arrays = []
-        for key in self.bin_feature_names:
-            if key in features:
-                final_arrays.append(features.pop(key))
-                assert not np.isnan(final_arrays[-1]).any(), f"NaN values found in calculated feature {key}: {final_arrays[-1]}"
-            else:
-                raise ValueError(f"Requested feature '{key}' was not calculated by the pipeline.")
-            
-        assert len(final_arrays) == len(self.bin_feature_names), "Number of final arrays should match number of requested bin features"
-        
-        bin_states = np.array(final_arrays)
-        bin_states = rearrange(bin_states, 'nfeats nbins -> nbins nfeats')
-        # bin_state = np.vstack([features.get(feat_name, np.full(self.nbins, np.nan, dtype=np.float32)) for feat_name in self.bin_feature_names]).T
-        # assert (bin_state != np.nan).all()
-        # assert (bin_state != np.inf).all()
-
-        return bin_states
-
-    def _get_priority_tiling(self, v_vis, v_mask, in_plan):
-        """Helper to compute 1D field-level tiling based on priority."""
-        v_priority = self._field_priorities_arr[v_mask]
-        base_til = (v_priority / 3.0).astype(np.float32)
-        dynamic_til = np.where(v_vis >= 1, 1.0, base_til)
-        return np.where(in_plan, dynamic_til, 2.0).astype(np.float32)
-
-    def _get_filter_priority_tiling(self, v_f_vis, v_mask, in_f_plan):
-        """Helper to compute 2D filter-level tiling based on priority."""
-        v_priority = self._field_priorities_arr[v_mask]
-        base_til_2d = np.expand_dims((v_priority / 3.0).astype(np.float32), axis=1)
-        dynamic_f_til = np.where(v_f_vis >= 1, 1.0, base_til_2d)
-        return np.where(in_f_plan, dynamic_f_til, 2.0).astype(np.float32)
-
-    def _validate_bin_features(self, features, sentinel_value):
-        if self.do_filt and self._has_historical_features:
-            for f, filt_name in self.idx2filter.items():
-                
-                # Fetch features for the current filter
-                unvisited = features.get(f'survey_num_unvisited_fields_{filt_name}')
-                incomplete = features.get(f'survey_num_incomplete_fields_{filt_name}')
-                min_tiling = features.get(f'survey_min_tiling_{filt_name}')
-
-                if unvisited is not None and incomplete is not None and min_tiling is not None:
-                    
-                    # 1. Bounds Check
-                    if np.any((unvisited < 0.0) | (unvisited > 1.0)):
-                        bad_bins = np.where((unvisited < 0.0) | (unvisited > 1.0))[0]
-                        raise RuntimeError(f"FATAL: 'survey_num_unvisited_fields_{filt_name}' out of bounds in bins {bad_bins}. Max: {np.max(unvisited)}, Min: {np.min(unvisited)}")
-                    
-                    if np.any((incomplete < 0.0) | (incomplete > 1.0)):
-                        bad_bins = np.where((incomplete < 0.0) | (incomplete > 1.0))[0]
-                        raise RuntimeError(f"FATAL: 'survey_num_incomplete_fields_{filt_name}' out of bounds in bins {bad_bins}. Max: {np.max(incomplete)}, Min: {np.min(incomplete)}")
-
-                    # 2. Subset Rule: Unvisited MUST be <= Incomplete
-                    subset_violation = unvisited > (incomplete + 1e-5)
-                    if np.any(subset_violation):
-                        bad_bins = np.where(subset_violation)[0]
-                        raise RuntimeError(
-                            f"FATAL LOGIC LEAK: In filter '{filt_name}', unvisited fraction strictly exceeds incomplete fraction in bins {bad_bins}.\n"
-                            f"Unvisited vals: {unvisited[bad_bins]}\n"
-                            f"Incomplete vals: {incomplete[bad_bins]}"
+                        new_features[u_name] = calc_urgency(
+                            filter_counts_arr=visits,
+                            filter_counts_max=target,
+                            survey_night_indices=survey_night_idx,
+                            survey_nights_max=survey_nights_total,
                         )
+                    # print(u_name, new_features[u_name])
 
-                    # 3. Tiling Floor: If unvisited > 0, min_tiling MUST be 0.0 
-                    # Note: We ignore inactive bins where min_tiling is explicitly set to -1.0
-                    active_bins = min_tiling != sentinel_value
-                    has_unvisited_fields = unvisited > 1e-5
-                    
-                    # Intersect: Active bins that have unvisited fields
-                    tiling_check_mask = active_bins & has_unvisited_fields
-                    
-                    if np.any(min_tiling[tiling_check_mask] > 1e-5):
-                        bad_bins = np.where(tiling_check_mask & (min_tiling > 1e-5))[0]
-                        raise RuntimeError(
-                            f"FATAL LOGIC LEAK: In filter '{filt_name}', bins {bad_bins} have unvisited fields, "
-                            f"but 'survey_min_tiling' is > 0.0 ({min_tiling[bad_bins]}). "
-                            f"Min tiling MUST be 0 if unvisited fields exist."
-                        )
-
-    def _setup_action_and_obs_spaces(self):
-        if self.include_bin_features:
-            bin_state_shape = (self.nbins, self.bin_state_dim, )
-        else:
-            bin_state_shape = (0,)
-    
-        # Define observation space 
-        self.observation_space = gym.spaces.Dict(
-            {
-                "global_state": gym.spaces.Box(-1e5, 1e5, shape=(self.state_dim,), dtype=np.float32),
-                "bin_state": gym.spaces.Box(-1e5, 1e5, shape=bin_state_shape, dtype=np.float32),
-            }
+        # 7. t_night from cached night boundaries.
+        if self._sunrise_ts <= self._sunset_ts:
+            raise AssertionError(
+                "Sunrise time is not after sunset time. Check night_str argument - "
+                "it should be a time between sunset and sunrise"
+            )
+        new_features['t_night'] = normalize_timestamp(
+            timestamp,
+            sunset_timestamp=self._sunset_ts,
+            sunrise_timestamp=self._sunrise_ts,
         )
 
-        # Define action space
+        # 8. Cyclical norms via the shared helper.
+        if self.global_normalizer.do_cyclical_norm:
+            apply_cyclical_global_features(
+                new_features,
+                self.base_global_feature_names,
+                self.global_normalizer.cyclical_feature_names,
+            )
+
+        # 9. Stack in requested order; surface any missing/NaN features loudly.
+        global_state_features = [
+            new_features.get(feat, np.nan) for feat in self.global_feature_names
+        ]
+        nan_feats = np.isnan(global_state_features)
+        if any(nan_feats):
+            nan_idx = int(np.where(nan_feats)[0][0])
+            raise ValueError(
+                f"Calculated nan value for global feature "
+                f"{self.global_feature_names[nan_idx]}"
+            )
+
+        return global_state_features
+    
+    # -----------------------------------------------------------------------
+    # Bin features — drives the shared helpers in bin_features.py.
+    # -----------------------------------------------------------------------
+
+    def _calculate_bin_features(self):
+        """Compute the bin feature tensor for the current state.
+
+        Thin orchestration over the shared helpers in
+        `blancops.data.features.bin_features`:
+
+          1. Resolve the current pointing in RA/Dec (handling the WAIT/zenith
+             fallback).
+          2. Compute ephemeris features via `compute_bin_ephemeris_features`.
+          3. If any history features are configured, compute the field->bin
+             assignment + visibility mask, then call
+             `compute_bin_history_features` (NaN sentinels for inactive bins).
+          4. Apply rel / cyclical norms over the per-timestep dict.
+          5. Validate history features (NaN-aware).
+          6. Convert internal NaN sentinels to the external value (-1.0).
+          7. Stack into `(nbins, nfeats)` in the order of
+             `self.bin_feature_names`.
+        """
+        timestamp = self._ts
+        tracker = self._survey_progress_tracker
+
+        # 1. Pointing in RA/Dec, with zenith fallback for WAIT / sentinel pointings.
+        if self._bin_num == WAIT_SIGNAL or self._field_id == ZENITH_FIELD_ID:
+            blanco = ephemerides.blanco_observer(time=timestamp)
+            pointing_radec = np.array(blanco.radec_of('0', '90'))
+        else:
+            pointing_radec = np.array(
+                [self._ra_arr[self._field_id], self._dec_arr[self._field_id]]
+            )
+
+        # 2. Ephemeris features (always produced for every key).
+        features = compute_bin_ephemeris_features(
+            timestamp=timestamp,
+            pointing_radec=pointing_radec,
+            hpGrid=self.hpGrid,
+            night_duration_in_sec=self._sunrise_ts - self._sunset_ts
+        )
+
+        # 3. History features (only when configured).
+        if self._has_historical_features:
+            bins_per_field, v_mask = self._compute_bin_assignments(timestamp)
+            current_counts, target_counts = self._tracker_counts_for_history(tracker)
+            features.update(
+                compute_bin_progress_features(
+                    current_counts=current_counts,
+                    target_counts=target_counts,
+                    bins_per_field=bins_per_field,
+                    v_mask=v_mask,
+                    nbins=self.nbins,
+                    do_filt=self.do_filt,
+                    idx2filter=self.idx2filter,
+                )
+            )
+
+        # 4. Relative + cyclical features (in place on the dict).
+        el_mask = features['el'] > 0
+        apply_relative_bin_features(
+            features, el_mask, self._has_historical_features, self.do_filt
+        )
+        if self.bin_normalizer.do_cyclical_norm:
+            apply_cyclical_bin_features(
+                features,
+                self.base_bin_feature_names,
+                self.bin_normalizer.cyclical_feature_names,
+            )
+
+        # 5. Validate (NaN-aware). Only meaningful when history features exist.
+        if self._has_historical_features:
+            validate_history_bin_features(
+                features, self.do_filt, self.idx2filter
+            )
+
+        # 6. Convert internal NaN sentinels (inactive bins) to the external value.
+        replace_invalid_with_sentinel(features, self._bin_feat_sentinel)
+
+        # 7. Stack in requested order. After step 6 there should be no NaNs;
+        #    a remaining NaN means a missing feature implementation or a leak
+        #    from a non-history feature, which we surface loudly.
+        final_arrays = []
+        for key in self.bin_feature_names:
+            if key not in features:
+                raise ValueError(
+                    f"Requested feature '{key}' was not calculated by the pipeline."
+                )
+            arr = features.pop(key)
+            assert not np.isnan(arr).any(), (
+                f"NaN values found in feature '{key}' after sentinel "
+                f"replacement: {arr}"
+            )
+            final_arrays.append(arr)
+        assert len(final_arrays) == len(self.bin_feature_names), (
+            "Number of final arrays should match number of requested bin features"
+        )
+
+        bin_states = np.array(final_arrays)
+        return rearrange(bin_states, 'nfeats nbins -> nbins nfeats')
+
+    def _compute_bin_assignments(self, timestamp):
+        """Return `(bins_per_field, v_mask)` appropriate for the coord system.
+
+        RA/Dec: bin assignment is static across time; cached on `self` after
+        the first call. The visibility mask is "has a valid (non-zenith)
+        bin" — RA/Dec features aren't horizon-gated at the bin level since
+        the field-to-bin mapping doesn't change with the sky's rotation.
+
+        AzEl: recomputed on every call because the field-to-bin mapping
+        changes as the sky rotates. The visibility mask additionally drops
+        fields below the horizon.
+        """
+        if not self.hpGrid.is_azel:
+            if self._field_bins_radec is None:
+                bins_raw = self.hpGrid.ang2idx(
+                    lon=self._ra_arr, lat=self._dec_arr
+                )
+                self._field_bins_radec = np.array(
+                    [b if b is not None else ZENITH_BIN_NUM for b in bins_raw],
+                    dtype=np.int32,
+                )
+                self._field_bins_radec_v_mask = (
+                    self._field_bins_radec != ZENITH_BIN_NUM
+                )
+            return self._field_bins_radec, self._field_bins_radec_v_mask
+
+        # AzEl — recompute every step.
+        az, el = ephemerides.equatorial_to_topographic(
+            ra=self._ra_arr, dec=self._dec_arr, time=timestamp
+        )
+        bins_raw = self.hpGrid.ang2idx(lon=az, lat=el)
+        bins = np.array(
+            [b if b is not None else ZENITH_BIN_NUM for b in bins_raw],
+            dtype=np.int32,
+        )
+        v_mask = (el > 0) & (bins != ZENITH_BIN_NUM)
+        return bins, v_mask
+
+    @staticmethod
+    def _tracker_counts_for_history(tracker):
+        """Pull `(current_counts, target_counts)` out of a survey tracker
+        in the shape expected by `compute_bin_progress_features`.
+
+        When the tracker is per-(field, filter), returns the 2D arrays
+        directly. When it's per-field only, returns 1D arrays. The shared
+        helper key off shape rather than a flag.
+        """
+        if tracker._is_field_filter:
+            return tracker.raw_counts, tracker.target_counts
+        return tracker.raw_counts, tracker.target_field_counts
+    
+    # -----------------------------------------------------------------------
+    # Action / observation spaces and masks
+    # -----------------------------------------------------------------------
+
+    def _setup_action_and_obs_spaces(self, state_dim, bin_state_dim):
+        if self.include_bin_features:
+            bin_state_shape = (self.nbins, bin_state_dim)
+        else:
+            bin_state_shape = (0,)
+ 
+        self.observation_space = gym.spaces.Dict({
+            "global_state": gym.spaces.Box(-1e5, 1e5, shape=(state_dim,), dtype=np.float32),
+            "bin_state": gym.spaces.Box(-1e5, 1e5, shape=bin_state_shape, dtype=np.float32),
+        })
+ 
         smallest_sentinel = min([WAIT_SIGNAL, ZENITH_BIN_NUM])
-        self.action_space = gym.spaces.Dict(
-            {
-                "bin": gym.spaces.Discrete(self.nbins - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_BIN_NUM])),
-                "field_id": gym.spaces.Discrete(len(self._fids) - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_FIELD_ID])),
-                "filter_idx": gym.spaces.Discrete(NUM_FILTERS - smallest_sentinel, start=min([WAIT_SIGNAL, ZENITH_FILTER_IDX]))
-            }
-        )       
-
-    def _get_half_night_duration(self, sunset_ts, sunrise_ts):
-        return (sunrise_ts - sunset_ts) // 2
-
+        self.action_space = gym.spaces.Dict({
+            "bin": gym.spaces.Discrete(
+                self.nbins - smallest_sentinel,
+                start=min([WAIT_SIGNAL, ZENITH_BIN_NUM]),
+            ),
+            "field_id": gym.spaces.Discrete(
+                len(self._fids) - smallest_sentinel,
+                start=min([WAIT_SIGNAL, ZENITH_FIELD_ID]),
+            ),
+            "filter_idx": gym.spaces.Discrete(
+                NUM_FILTERS - smallest_sentinel,
+                start=min([WAIT_SIGNAL, ZENITH_FILTER_IDX]),
+            ),
+        })
+ 
     def _update_action_masks(self):
-        """Constructs the action mask with shape (nfields, nfilter) based on airmass limit, horizon visibility, and target completion status."""
-        fields_az, fields_el = ephemerides.equatorial_to_topographic(ra=self._ra_arr, dec=self._dec_arr, time=self._ts)
-        mask_fields_below_horizon = fields_el > 0
+        """Construct the action mask based on airmass / horizon / completion."""
+        
+        from datetime import datetime, timezone
+        ts_dt = datetime.fromtimestamp(self._ts, tz=timezone.utc)
+        # logger.info(
+        #     f'_ts={self._ts:.1f} ({ts_dt.isoformat()}), '
+        #     f'sunset={self._sunset_ts:.1f}, sunrise={self._sunrise_ts:.1f}, '
+        #     f'night_end={self._night_end_ts:.1f}'
+        # )
 
-        airmass_limit = getattr(self, '_airmass_limit', None)
-        if airmass_limit is not None:
-            airmass = np.zeros_like(fields_el)
-            airmass[mask_fields_below_horizon] = 1 / np.cos(90 * units.deg - fields_el[mask_fields_below_horizon])
-            airmass[~mask_fields_below_horizon] = 10  # Sentinel high airmass for below horizon
-            mask_visibility = airmass < airmass_limit
-        else:
-            mask_visibility = mask_fields_below_horizon # Fallback for offline
-
-        if self.do_filt:
-            sel_valid_ff = self._s_filter_visits_cur < self.lookups.target_fidfilt_counts
-            sel_valid_ff &= mask_visibility[:, np.newaxis] 
-            sel_valid_fields = sel_valid_ff.any(axis=1)
-        else:
-            if isinstance(self.lookups.target_fid_counts, dict):
-                mask_completed_fields = np.array([self._s_visits_cur[fid] < self.lookups.target_fid_counts[fid] for fid in self._fids], dtype=bool)
+        sun_radec = ephemerides.get_source_ra_dec('sun', time=self._ts)
+        _, sun_el = ephemerides.equatorial_to_topographic(sun_radec[0], sun_radec[1], time=self._ts)
+        
+        if sun_el / units.deg > self.sun_el_limit:
+            logger.warning(f"Sun ({sun_el / units.deg}) is above the horizon ({self.sun_el_limit}), no actions will be available.")
+            
+            if self.do_filt:
+                self._action_mask = np.zeros(
+                    shape=(self.nbins * NUM_FILTERS,), dtype=bool
+                )
             else:
-                mask_completed_fields = self._s_visits_cur < self.lookups.target_fid_counts
-            sel_valid_fields = mask_completed_fields & mask_visibility
+                self._action_mask = np.zeros(shape=self.nbins, dtype=bool)
+            self._valid_fields_per_bin = defaultdict(list)
+            return self._action_mask
 
-        if self.hpGrid.is_azel:
-            valid_field_bins = self.hpGrid.ang2idx(lon=fields_az[sel_valid_fields], lat=fields_el[sel_valid_fields])
+        fields_az, fields_el = ephemerides.equatorial_to_topographic(
+            ra=self._ra_arr, dec=self._dec_arr, time=self._ts
+        )
+        mask_above_horizon = fields_el > 0
+        airmass = np.zeros_like(fields_el)
+        airmass[mask_above_horizon] = 1 / np.cos(
+            90 * units.deg - fields_el[mask_above_horizon]
+        )
+        airmass[~mask_above_horizon] = 10  # sentinel
+        mask_visibility = airmass < self.airmass_limit
+ 
+        sel_valid = self._survey_progress_tracker.get_incomplete_mask()
+        if self.do_filt:
+            sel_valid = sel_valid & mask_visibility[:, np.newaxis]
+            sel_valid_fields = sel_valid.any(axis=1)
         else:
-            valid_field_bins = self.hpGrid.ang2idx(lon=self._ra_arr[sel_valid_fields], lat=self._dec_arr[sel_valid_fields])
-        valid_bin_mask = np.array(valid_field_bins) != None
+            sel_valid = sel_valid & mask_visibility
+            sel_valid_fields = sel_valid
+ 
+        if self.hpGrid.is_azel:
+            valid_field_bins = self.hpGrid.ang2idx(
+                lon=fields_az[sel_valid_fields], lat=fields_el[sel_valid_fields]
+            )
+        else:
+            valid_field_bins = self.hpGrid.ang2idx(
+                lon=self._ra_arr[sel_valid_fields], lat=self._dec_arr[sel_valid_fields]
+            )
+        valid_bin_mask = np.array(valid_field_bins) != None 
         clean_bins = np.array(valid_field_bins)[valid_bin_mask].astype(int)
-
-        # 5. Mask Construction
+ 
         if self.do_filt:
             action_mask = np.zeros(shape=(self.nbins, NUM_FILTERS), dtype=bool)
-            clean_ff = sel_valid_ff[sel_valid_fields][valid_bin_mask]
+            clean_ff = sel_valid[sel_valid_fields][valid_bin_mask]
             np.logical_or.at(action_mask, clean_bins, clean_ff)
             action_mask = action_mask.flatten()
         else:
             action_mask = np.zeros(shape=self.nbins, dtype=bool)
             action_mask[clean_bins] = True
-
-        # 6. Track Valid Fields Mapping
+ 
         valid_fids = self._fids[sel_valid_fields]
-        clean_fids = valid_fids[valid_bin_mask] 
+        clean_fids = valid_fids[valid_bin_mask]
         self._valid_fields_per_bin = defaultdict(list)
         for b, fid in zip(clean_bins, clean_fids):
             self._valid_fields_per_bin[b].append(fid)
-
+ 
         self._action_mask = action_mask
         return action_mask
 
-    def _get_exposure_time(self, field_id=None):
-        if int(field_id) < 0:
-            return 0.0
-        elif (field_id is None) or getattr(self, 'field_lookup', None) is None:
-            return 90.0
-        else:
-            exptime = self.field_lookup['exptime'].values[int(field_id)]
-            return exptime
-    
+    # -----------------------------------------------------------------------
+    # Construction-time hook and feature validation
+    # -----------------------------------------------------------------------
+ 
+    def _validate_feature_config(self) -> None:
+        """Fail fast when a requested feature has no source on this env.
+ 
+        Concrete subclasses MUST call this as the last line of
+        __init__. Three kinds of check, dispatched off
+        `_FEATURE_REQUIREMENTS`:
+ 
+          * ('hook', name) — type(self) overrides the named method
+          * ('attr', name) — getattr(self, name) is not None
+          * ('flag', name) — getattr(self, name) is truthy
+        """
+        cls = type(self)
+        issues: list[str] = []
+ 
+        for feat in self.global_feature_names:
+            for kind, target in _FEATURE_REQUIREMENTS.get(feat, []):
+                if kind == "hook":
+                    if not self._is_hook_overridden(target):
+                        issues.append(
+                            f"  - feature '{feat}' requires {cls.__name__} "
+                            f"to override hook '{target}', but it is the "
+                            f"default no-op."
+                        )
+                elif kind == "attr":
+                    if getattr(self, target, None) is None:
+                        issues.append(
+                            f"  - feature '{feat}' requires self.{target} "
+                            f"to be set, but it is None."
+                        )
+                elif kind == "flag":
+                    if not getattr(self, target, False):
+                        issues.append(
+                            f"  - feature '{feat}' requires self.{target}=True "
+                            f"(typically: filter in action space), but it is False."
+                        )
+                else:  # pragma: no cover
+                    raise AssertionError(f"unknown requirement kind: {kind}")
+ 
+        if issues:
+            raise ValueError(
+                f"Feature configuration mismatch in {cls.__name__}:\n"
+                + "\n".join(issues)
+                + f"\nConfigured global_features: {self.global_feature_names}"
+            )
+ 
+    def _is_hook_overridden(self, hook_name: str) -> bool:
+        base_fn = BaseBlancoEnv.__dict__.get(hook_name)
+        if base_fn is None:
+            return True
+        actual_fn = getattr(type(self), hook_name, None)
+        return actual_fn is not base_fn
+        base_fn = BaseBlancoEnv.__dict__.get(hook_name)
+        if base_fn is None:
+            return True
+        actual_fn = getattr(type(self), hook_name, None)
+        return actual_fn is not base_fn
