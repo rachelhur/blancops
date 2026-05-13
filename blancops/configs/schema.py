@@ -128,6 +128,7 @@ class ExperimentConfig(BaseModel):
     experiment_name: str
     parent_dir: str = "experiments/"
     outdir: Optional[str] = None
+    orig_cfg_path: Optional[str] = None
     data: TrainDataConfig
     model: AnyModelConfig = Field(discriminator="algorithm")
     reward: RewardConfig
@@ -149,7 +150,7 @@ class ExperimentConfig(BaseModel):
                 data['outdir'] = str(Path(parent) / exp_name)
                     
         return data # Return the modified dictionary
-        
+
     # @model_validator(mode='before')
     # @classmethod
     # def set_outdir(self) -> 'ExperimentConfig':
@@ -165,7 +166,9 @@ def load_and_validate(yaml_path: str | Path) -> ExperimentConfig:
     """Loads the YAML config and validates it against the ExperimentConfig schema."""
     with open(yaml_path, "r") as f:
         raw_data = yaml.safe_load(f)
-    return ExperimentConfig(**raw_data) # Added dictionary unpacking
+    cfg = ExperimentConfig(**raw_data) # Added dictionary unpacking
+    cfg.orig_cfg_path = str(yaml_path)
+    return cfg
 
 def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_names: dict, lr_scheduler_kwargs: dict, val_nights: List[str], outdir: str | Path) -> ExperimentConfig:
     """Resolves config by filling in fields calculated after data processing. Saves the resolved config to the output directory."""
@@ -200,10 +203,5 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
         resolved_dict = resolved_cfg.model_dump(mode='json') 
         yaml.dump(resolved_dict, f, default_flow_style=False, sort_keys=False)
     
-    # SAVE ORIGINAL CONFIG
-    with open(Path(resolved_cfg.outdir) / "configs" /"original_config.yaml", "w") as f:
-        # Use mode='json' to force Pydantic to convert complex types (like Enums) to strings
-        cfg = cfg.model_dump(mode='json') 
-        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
         
     return resolved_cfg
