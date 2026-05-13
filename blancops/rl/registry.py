@@ -32,7 +32,10 @@ NETWORK_REGISTRY = {
 ACTIVATION_REGISTRY = {
     'relu': nn.ReLU,
     'mish': nn.Mish,
-    'swish': nn.SiLU
+    'swish': nn.SiLU, 
+    'leaky_relu': nn.LeakyReLU, 
+    'tanh': nn.Tanh, 
+    'sigmoid': nn.Sigmoid
 }
 
 def get_activation(name: str):

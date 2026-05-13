@@ -30,6 +30,9 @@ def get_args():
     parser.add_argument('-c', '--cfg', type=str, default=None, required=True, help="Path to config file. If passed, all other arguments are ignored")
     parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
     parser.add_argument('--resume_from_checkpoint', action='store_true', help='Whether to resume training from a checkpoint.')
+    parser.add_argument('--overwrite', action='store_true', help='Whether to ignore existing history but keep files.')
+    parser.add_argument('--hard_overwrite', action='store_true', help='Whether to completely overwrite existing results.')
+    parser.add_argument('--top_k', type=int, default=1, help='Number of top runs to keep. Default is 1.')
 
     args = parser.parse_args()
     return args
@@ -116,25 +119,26 @@ def main():
     lr_scheduler_kwargs = get_cosine_annealing_scheduler_kwargs(cfg, trainloader.dataset)
     # ---------------------- #
     
-    # --- BUILD ALGORITHM --- #
+    # --- BUILD TRAINER --- #
     cfg = resolve_and_save(cfg=cfg, dataset_dims=train_dataset.dataset_dims, dataset_feature_names=train_dataset.dataset_feature_names, 
                            lr_scheduler_kwargs=lr_scheduler_kwargs, val_nights=train_dataset.val_nights, outdir=outdir / "configs")
     algorithm = build_algorithm(cfg, device=device)
 
     latest_ckpt_path = outdir / "checkpoints" / "latest_checkpoint.pt"
 
-    if latest_ckpt_path.exists():
-        # We are resuming a crashed run!
-        start_epoch = trainer.resume_from_checkpoint(latest_ckpt_path)
-    else:
-        # We are starting fresh!
-        start_epoch = 0
-        
     trainer = Trainer(
         algorithm=algorithm,
         train_outdir=outdir,
-        start_epoch=start_epoch
+        top_k=args.top_k,
+        overwrite=args.overwrite,
+        hard_overwrite=args.hard_overwrite
     )
+    
+    if latest_ckpt_path.exists() and args.resume_from_checkpoint:
+        start_epoch = trainer.resume_from_checkpoint(latest_ckpt_path)
+    else:
+        start_epoch = 0
+        
     # ---------------------- #
 
     logger.info("Starting training...")
@@ -143,6 +147,7 @@ def main():
     start_time = time.time()
     
     trainer.fit(
+        start_epoch=start_epoch,
         num_epochs=cfg.train.max_epochs,
         trainloader=trainloader,
         valloader=valloader,

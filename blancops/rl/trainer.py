@@ -11,15 +11,11 @@ import pickle
 import random
 from pathlib import Path
 
-from blancops.math.interpolate import interpolate_on_sphere
-from blancops.ephemerides import ephemerides
-from blancops.data.constants import *
+from blancops.configs.constants import *
 import logging
 
 from blancops.rl.algorithms.base import AlgorithmBase
-from blancops.rl.checkpointing import Checkpointer
-from blancops.utils.schedule_io import save_survey_schedule
-
+from blancops.rl.checkpointer import Checkpointer
 
 # Get the logger associated with this module's name (e.g., 'my_module')
 logger = logging.getLogger(__name__)
@@ -35,8 +31,9 @@ class Trainer:
             self,
             algorithm: AlgorithmBase,
             train_outdir: Path,
-            top_k: int = 1
-            # env: gym.Env = None,
+            top_k: int = 1,
+            overwrite: bool = False,
+            hard_overwrite: bool = False,
             ):
         """
         Args
@@ -51,13 +48,22 @@ class Trainer:
         if not os.path.exists(train_outdir):
             os.makedirs(train_outdir)
         self.train_outdir = Path(train_outdir)
-        self.checkpointer = Checkpointer(train_outdir / "checkpoints", top_k=top_k, mode='min') 
+        self.overwrite = overwrite
+        self.hard_overwrite = hard_overwrite
+        self.checkpointer = Checkpointer(
+            self.train_outdir / "checkpoints", 
+            top_k=top_k, 
+            mode='min',
+            overwrite=overwrite,          # soft reset
+            hard_overwrite=hard_overwrite     # change to True if desired
+        ) 
            
     def _validate_valloader(self, valloader):
         if len(valloader) == 0:
             raise ValueError("Validation dataloader is empty! Check dataset split logic.")
     
     def _setup_run(self, trainloader, batch_size, num_epochs, patience):
+        raise NotImplementedError
         val_metrics = defaultdict(list)
         train_metrics = defaultdict(list)
         
@@ -89,13 +95,17 @@ class Trainer:
         logger.info(f"Number of transitions in dataset: {len(trainloader.dataset)}")
         
     def fit(self, num_epochs, batch_size, trainloader, valloader, patience=10, train_log_freq=10, hpGrid=None, norm_stats=None, start_epoch=None):
+        
+        if (self.overwrite or self.hard_overwrite) and start_epoch > 0:
+            raise ValueError("Cannot overwrite checkpoints and resume from a previous epoch.")
+
         self._validate_valloader(valloader)
 
         val_metrics = defaultdict(list)
         train_metrics = defaultdict(list)
         train_metrics_filepath = self.train_outdir / 'metrics' / 'train_metrics.pkl'
         val_metrics_filepath = self.train_outdir / 'metrics' / 'val_metrics.pkl'
-
+        
         # --- NEW: Reload previous metric histories if resuming ---
         if start_epoch > 0:
             if train_metrics_filepath.exists():
@@ -132,10 +142,10 @@ class Trainer:
         # --- NEW: Initialize the epoch counter at the resumed epoch ---
         i_epoch = start_epoch
 
-        logger.info(f"Total number of training steps: {total_steps}")
-        logger.info(f"Steps per epoch: {steps_per_epoch}")
-        logger.info(f"Resuming from step: {start_step} (Epoch {start_epoch})")
-        logger.info(f"Number of transitions in dataset: {len(trainloader.dataset)}")
+        logger.debug(f"Total number of training steps: {total_steps}")
+        logger.debug(f"Steps per epoch: {steps_per_epoch}")
+        logger.debug(f"Resuming from step: {start_step} (Epoch {start_epoch})")
+        logger.debug(f"Number of transitions in dataset: {len(trainloader.dataset)}")
 
         with logging_redirect_tqdm():
             # --- NEW: Add the `initial` argument to tqdm so it doesn't start at 0% ---
@@ -157,7 +167,7 @@ class Trainer:
                 pbar.update(1)
                 pbar.set_description(f"Epoch {i_epoch}/{int(num_epochs)} (step {i_step}/{total_steps})")
 
-                # Train step
+                # Train step -- currently logs at each epoch
                 log_metrics = i_step % steps_per_epoch == 0
                 train_metrics_dict = self.algorithm.train_step(batch, epoch_num=i_epoch, hpGrid=hpGrid, compute_metrics=log_metrics) 
                 if log_metrics:
@@ -221,7 +231,7 @@ class Trainer:
                             self.checkpointer.save_training_state(
                                 algorithm=self.algorithm, 
                                 epoch=i_epoch, 
-                                metric_value=tracking_metric, 
+                                metric_value=tracking_metric,
                                 is_best=True,
                                 norm_stats=norm_stats
                             )
@@ -246,25 +256,6 @@ class Trainer:
         with open(val_metrics_filepath, 'wb') as handle:
             pickle.dump(val_metrics, handle)
     
-    def _get_improvement_status(self):
-        pass
-    
-    def save(self, filepath):
-        """Saves algorithm parameters to a file.
-
-        Args:
-            filepath (str): Destination path for serialized model weights.
-        """
-        self.algorithm.save(filepath)
-    
-    def load(self, filepath):
-        """Loads algorithm parameters from a file.
-
-        Args:
-            filepath (str): Path to previously saved model weights.
-        """
-        self.algorithm.load(filepath)
-
     def resume_from_checkpoint(self, checkpoint_path: Path):
         """Loads weights, optimizer states, and restores all random number generators."""
         if not checkpoint_path.exists():
@@ -272,7 +263,7 @@ class Trainer:
             return 0 # Return epoch 0
             
         logger.info(f"Resuming from checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         
         # 1. Load your model and optimizer weights
         # (You might need to adjust this depending on how algorithm.load() works)
@@ -282,12 +273,48 @@ class Trainer:
         # 2. Restore all RNG states
         if 'rng_states' in checkpoint:
             rng = checkpoint['rng_states']
-            torch.set_rng_state(rng['torch'])
-            if rng['torch_cuda'] is not None and torch.cuda.is_available():
-                torch.cuda.set_rng_state(rng['torch_cuda'])
-            np.random.set_state(rng['numpy'])
-            random.setstate(rng['python'])
-            logger.info("Successfully restored PyTorch, NumPy, and Python RNG states.")
-            
+            try:
+                # Restore PyTorch CPU RNG state. Torch expects a ByteTensor on CPU.
+                torch_state = rng.get('torch')
+                if torch_state is not None:
+                    if not (isinstance(torch_state, torch.Tensor) and torch_state.dtype == torch.uint8):
+                        # convert numpy array / list -> ByteTensor
+                        torch_state = torch.tensor(torch_state, dtype=torch.uint8)
+                    torch_state = torch_state.cpu()
+                    torch.set_rng_state(torch_state)
+
+                # Restore CUDA RNG state if present and available
+                torch_cuda_state = rng.get('torch_cuda', None)
+                if torch_cuda_state is not None and torch.cuda.is_available():
+                    if not (isinstance(torch_cuda_state, torch.Tensor) and torch_cuda_state.dtype == torch.uint8):
+                        torch_cuda_state = torch.tensor(torch_cuda_state, dtype=torch.uint8)
+                    # set on CUDA
+                    torch_cuda_state = torch_cuda_state.cpu()
+                    try:
+                        torch.cuda.set_rng_state(torch_cuda_state)
+                    except Exception:
+                        # Newer torch may require different handling; skip if failing
+                        logger.debug('Could not set CUDA RNG state from checkpoint; continuing.')
+
+                # Restore numpy RNG state if available
+                numpy_state = rng.get('numpy', None)
+                if numpy_state is not None:
+                    try:
+                        np.random.set_state(numpy_state)
+                    except Exception:
+                        logger.debug('Failed to restore NumPy RNG state from checkpoint; skipping.')
+
+                # Restore python random state if available
+                python_state = rng.get('python', None)
+                if python_state is not None:
+                    try:
+                        random.setstate(python_state)
+                    except Exception:
+                        logger.debug('Failed to restore python RNG state from checkpoint; skipping.')
+
+                logger.info('Successfully restored available RNG states from checkpoint (best-effort).')
+            except Exception as e:
+                logger.warning(f'Failed to fully restore RNG states from checkpoint: {e}. Continuing without full RNG restoration.')
+
         # Return the epoch so your fit() loop knows where to pick up!
         return checkpoint.get('epoch', 0)

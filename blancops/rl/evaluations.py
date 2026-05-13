@@ -9,10 +9,12 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 import pandas as pd
 
-from blancops.data.constants import *
-from blancops.data.lookup import LookupTables
+from blancops.configs.schema import ActionConstraints, load_and_validate
+from blancops.configs.constants import *
+from blancops.data.features.normalizations import build_normalizer
+from blancops.data.lookup_tables import LookupTables
 from blancops.data.dataset import OfflineDataset
-from blancops.data.features.normalizations import load_normalization_stats
+from blancops.environment.historic_env import HistoricBlancoEnv
 from blancops.math.geometry import angular_separation
 from blancops.ephemerides import ephemerides
 
@@ -29,7 +31,11 @@ from matplotlib.patches import Patch
 import matplotlib.colors as colors
 import seaborn as sns
 
-FILTER_COLORS = {
+from blancops.rl.agent_factory import AgentFactory
+from blancops.rl.checkpointer import get_checkpoint
+from blancops.rl.offline_runner import OfflineRunner
+
+_FILTER_COLORS = {
     'g': '#00b25d', # Green
     'r': '#f97306', # Orange
     'i': '#e50000', # Red
@@ -37,30 +43,18 @@ FILTER_COLORS = {
     'Y': '#3b0000'  # Near-IR (Darkest)
 }
 
-FILTER_PATCHES = [Patch(color=v, label=k) for k, v in FILTER_COLORS.items()]
+_FILTER_PATCHES = [Patch(color=v, label=k) for k, v in _FILTER_COLORS.items()]
 
-def get_validation_dataset(cfg):
-    outdir = Path(cfg.experiment_outdir)
-    df = preprocess_train_df(TRAIN_DATA_PATH)
-    df_val = df[df['night'].isin(cfg.data.val_nights)]
-    z_score_stats, rel_norm_stats = load_normalization_stats(outdir)
-    val_dataset = OfflineDataset(
-        df=df_val,
-        cfg=cfg,
-        z_score_stats=z_score_stats,
-        rel_norm_stats=rel_norm_stats
-    )
-    return val_dataset
+_PLOTTING_COLORS = {
+    'agent_color':'green',
+    'expert_color':'purple',
+    'agent_cmap':'Greens',
+    'expert_cmap':'Purples',
+    'res_cmap':'PRGn',
+    'res_color':'grey'
+    
+}
 
-def build_evaluators(trainer, policy, val_dataset, action_space, device, agent_color='green', expert_color='purple', agent_cmap='Greens', expert_cmap='Purples', res_cmap='PRGn',
-                     res_color='grey'):
-    ss_data = DataContainer(val_dataset, action_space, eval_method='ss')
-    ms_data = DataContainer(val_dataset, action_space, eval_method='ms')
-    s_plotter = EvaluationPlotter(agent_color, expert_color, agent_cmap, expert_cmap, res_cmap, res_color, eval_method='ss')
-    m_plotter = EvaluationPlotter(agent_color, expert_color, agent_cmap, expert_cmap, res_cmap, res_color, eval_method='ms')
-    s_evaluator = SingleStepEvaluator(policy, ss_data, s_plotter, device)
-    m_evaluator = MultiStepEvaluator(trainer, policy, ms_data, m_plotter, device)
-    return s_evaluator, m_evaluator
 
 def calc_airmass(el):
     return 1 / np.cos(np.pi/2 - el)
@@ -91,18 +85,108 @@ def calc_sun_and_moon_pos(timestamps):
         _, sun_azel[i], _, moon_azel[i] = _calc_sun_and_moon_pos(t)
     return sun_azel[:, 0], sun_azel[:, 1], moon_azel[:, 0], moon_azel[:, 1]
 
+def build_evaluators(cfg_or_cfg_path, device, eval_outdir='holdout_eval', agent_color='green', expert_color='purple', agent_cmap='Greens', expert_cmap='Purples', res_cmap='PRGn',
+                     res_color='grey'):
+    """Builds evaluators for the validation set from the given config."""
+    
+    # Load config and set outdirs
+    if isinstance(cfg_or_cfg_path, str):
+        cfg = load_and_validate(cfg_or_cfg_path)
+    outdir = Path(cfg.outdir)
+    ss_outdir = outdir / eval_outdir / "ss"
+    ms_outdir = outdir / eval_outdir / "ms"
+    
+    # Load lookups
+    lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, is_historic=True)
+
+    # Construct dataframe of validation nights
+    df = preprocess_train_df(TRAIN_DATA_PATH)
+    df_val = df[df['night'].isin(cfg.data.val_nights)]
+    
+    # Load checkpoint and associated norm stats
+    checkpoint = get_checkpoint(outdir, device=device)
+    zscore_stats = checkpoint['norm_stats'].get('z_score', {})
+    rel_norm_stats = checkpoint['norm_stats'].get('rel_norm', {})
+    
+    # Build Normalizers
+    global_normalizer = build_normalizer(state_feature_names=cfg.data.global_features, cfg=cfg)
+    bin_normalizer = build_normalizer(state_feature_names=cfg.data.bin_features, cfg=cfg)
+    
+    # Construct validation dataset
+    val_dataset = OfflineDataset(
+        df=df_val,
+        cfg=cfg,
+        lookups=lookups,
+        global_normalizer=global_normalizer,
+        bin_normalizer=bin_normalizer,
+        z_score_stats=zscore_stats,
+        rel_norm_stats=rel_norm_stats,
+        mode='val'
+    )
+    
+    # Construct agent
+    factory = AgentFactory(base_model_dir=outdir)
+    action_space = cfg.data.action_space
+    agent, cfg, norm_stats = factory.build_agent(
+        model_path_or_alias=outdir,
+        lookups=val_dataset.lookups,
+        field_choice_method='interp',
+        device=device
+    )
+    
+    # Construct runner
+    runner = OfflineRunner(
+        agent=agent,
+        policy=agent.policy,
+        cfg=cfg,
+        lookups=val_dataset.lookups,
+        num_episodes=1,
+        outdir=ms_outdir,
+        save_SISPI=False,
+        schedule_chunk_size=0,
+    )
+    
+    # Construct environment for multistep evaluator
+    global_pd_nightgroup = val_dataset._df.groupby('night')
+    global_pd_nightgroup = global_pd_nightgroup.apply(lambda x: x.iloc[1:]).reset_index(drop=True).groupby('night')
+    t_survey_arr = np.asarray([val_dataset._df['t_survey'].unique()[0]]).flatten()
+    if cfg.data.bin_state_dim > 0:
+        night_start_indices = (val_dataset._df.iloc[val_dataset.current_state_idxs].reset_index(drop=True)[val_dataset._df.iloc[val_dataset.current_state_idxs].reset_index(drop=True)['object'] == 'zenith']).index.values
+        night_start_indices += 1
+        night_start_bin_states = val_dataset._prenorm_bin_states[night_start_indices].detach().numpy()
+    else:
+        night_start_bin_states = None
+    env = HistoricBlancoEnv(
+        cfg=cfg,
+        constraints_cfg=ActionConstraints(),
+        lookups=lookups,
+        global_normalizer=global_normalizer,
+        bin_normalizer=bin_normalizer,
+        global_pd_nightgroup=global_pd_nightgroup, 
+        zenith_bin_states=night_start_bin_states, 
+        z_score_stats=zscore_stats, 
+        rel_norm_stats=rel_norm_stats,
+        t_survey_arr=t_survey_arr
+    )
+
+    # Construct evaluators and plotters
+    ss_data = DataContainer(val_dataset, action_space, eval_method='ss')
+    ms_data = DataContainer(val_dataset, action_space, eval_method='ms')
+    s_plotter = EvaluationPlotter(ss_outdir, agent_color, expert_color, agent_cmap, expert_cmap, res_cmap, res_color)
+    m_plotter = EvaluationPlotter(ms_outdir, agent_color, expert_color, agent_cmap, expert_cmap, res_cmap, res_color)
+    s_evaluator = SingleStepEvaluator(policy=agent.policy, data_container=ss_data, plotter=s_plotter, device=device)
+    m_evaluator = MultiStepEvaluator(runner=runner, env=env, policy=agent.policy, data_container=ms_data, plotter=m_plotter, device=device)
+    return s_evaluator, m_evaluator
+
 class EvaluationPlotter:
-    def __init__(self, agent_color='green', expert_color='purple', agent_cmap='Greens', expert_cmap='Purples', res_cmap='PRGn', res_color='slateblue', save_dir=None, eval_method=None):
+    def __init__(self, outdir, agent_color='green', expert_color='purple', agent_cmap='Greens', expert_cmap='Purples', res_cmap='PRGn', res_color='slateblue'):
         self.agent_color = agent_color
         self.expert_color = expert_color
         self.agent_cmap = agent_cmap
         self.expert_cmap = expert_cmap
         self.res_cmap = res_cmap
         self.res_color = res_color
-        if save_dir is None:
-            self.save_dir = Path('./eval_outdir').resolve()
-        else:
-            self.save_dir = (Path(save_dir) / eval_method).resolve()
+        self.outdir = Path(outdir)
 
     @staticmethod
     def _get_wrapped_ra(ra):
@@ -167,7 +251,7 @@ class EvaluationPlotter:
 
     def plot_mollweide_res(self, timestamps, expert_bin_idxs, agent_bin_idxs, field_pos, nside):
         plot_schedule_whole(
-            outfile=self.save_dir / "mollweide_residuals",
+            outfile=self.outdir / "mollweide_residuals",
             times=timestamps,
             field_pos=None,
             bin_idxs=expert_bin_idxs,
@@ -192,13 +276,13 @@ class EvaluationPlotter:
     def plot_scatter_comparison(self, feature_y, expert_x, expert_y, agent_x, agent_y, feature_x=None):
         plt.scatter(expert_x, expert_y, label='expert', color=self.expert_color)
         plt.scatter(agent_x, agent_y, label='agent', color=self.agent_color)
-        if feature_x is not None:
+        if feature_x != None:
             plt.xlabel(feature_x, fontsize=16)
         plt.ylabel(feature_y, fontsize=16)
         plt.legend(fontsize=16)
         
     def plot_hist_comparison(self, feature_name, expert_arr, agent_arr, density=False, bins=20, alpha=.2, use_weights=False):
-        if isinstance(bins, int) and (feature_name is not 'filter'):
+        if isinstance(bins, int) and (feature_name != 'filter'):
             min_val = min(np.min(expert_arr), np.min(agent_arr))
             max_val = max(np.max(expert_arr), np.max(agent_arr))
             shared_bins = np.linspace(min_val, max_val, bins + 1)
@@ -264,7 +348,7 @@ class EvaluationPlotter:
         plt.figure(figsize=(5, 4))
         for i, filt in enumerate(FILTER2IDX.keys()):
             f_mask = filt == expert_df['filter']
-            f_color = FILTER_COLORS[filt]
+            f_color = _FILTER_COLORS[filt]
             sorted_errors = np.sort(errors_df['bin_angular_separation'][f_mask])
             y_values = np.arange(1, len(sorted_errors) + 1) / len(sorted_errors)
             
@@ -317,7 +401,7 @@ class EvaluationPlotter:
             handles = None
         else:
             agent_label = None
-            handles = FILTER_PATCHES
+            handles = _FILTER_PATCHES
         ax = sns.kdeplot(x=expert_x, y=expert_y, 
                     thresh=0, levels=15, cmap=self.expert_cmap, alpha=1, label='expert', fill=False, norm=colors.CenteredNorm())
         plt.scatter(agent_x, agent_y, marker='*', c=color_mapping, label=agent_label, alpha=agent_alpha, s=s)
@@ -363,6 +447,7 @@ class DataContainer():
         self.errors_df = pd.DataFrame()
             
     def populate_errors_df(self):
+        """Populates errors_df (single step difference between expert and agent) with timestamp and bin angular separation"""
         angseps_arr = np.zeros(len(self.agent_df))
         for i, (pos1, pos2) in enumerate(zip(self.expert_df[['bin_ra', 'bin_dec']].to_numpy() * units.deg, self.agent_df[['bin_ra', 'bin_dec']].to_numpy())):
             angseps_arr[i] = angular_separation(pos1, pos2)
@@ -629,7 +714,7 @@ class Evaluator:
         for i, name in enumerate(self.data.dataset.bin_feature_names):
             print(f"Feature: {name:30} | Gradient: {bin_feature_grads[i].item()/bin_feature_grads.max().item():.6f}")
 
-    def plot_weights(self):
+    def plot_layer1_weights(self):
         fig, ax = plt.subplots(figsize=(20, 5))
         for i, feat in enumerate(self.data.dataset.global_feature_names + self.data.dataset.bin_feature_names):
             ax.errorbar(
@@ -685,6 +770,7 @@ class SingleStepEvaluator(Evaluator):
         agent_bin_idxs, agent_filter_idxs = self._batch_single_step_validation()
         # POPULATE DATAFRAMES
         timestamps = self.data.expert_df['timestamp']
+        print('Populating agent dataframe...')
         self.data.populate_agent_df(agent_bin_idxs, agent_filter_idxs, timestamps)
         self.data.populate_errors_df()
         # CONVERT RAD TO DEG FOR EACH DF
@@ -780,20 +866,22 @@ class SingleStepEvaluator(Evaluator):
         expert_filters = self.data.expert_df['filter'].values
         agent_filters = self.data.agent_df['filter'].values
         self.plotter.plot_filter_histograms(feature_name, feature_arr, expert_filters, agent_filters, bins=bins)
-        
 class MultiStepEvaluator(Evaluator):
-    def __init__(self, trainer, policy: torch.nn, data_container: DataContainer, plotter: EvaluationPlotter, device='cuda'):
+    def __init__(self, runner, env, policy: torch.nn, data_container: DataContainer, plotter: EvaluationPlotter, device='cuda'):
         super().__init__(policy, data_container, plotter, device)
-        self.trainer = trainer
-
-    def run(self, env, cfg, field_choice_method, eval_outdir, lookups):
-        self.eval_outdir = Path(eval_outdir)
-        if os.path.exists(self.eval_outdir / "eval_metrics.pkl"):
-            with open(self.eval_outdir / "eval_metrics.pkl", 'rb') as f:
+        self.runner = runner
+        self.env = env
+        
+    def run(self, outdir=None):
+        if outdir is None:
+            outdir = self.runner.outdir
+        self.outdir = Path(outdir)
+        if os.path.exists(self.outdir / "eval_metrics.pkl"):
+            with open(self.outdir / "eval_metrics.pkl", 'rb') as f:
                 self.eval_metrics = pickle.load(f)
         else:
-            self.eval_metrics = self.trainer.evaluate(env=env, cfg=cfg, num_episodes=1, field_choice_method=field_choice_method, eval_outdir=eval_outdir, lookups=lookups)
-        timestamps, bin_idxs, filter_idxs, field_ids, glob_df, bin_feat_dict = self._process_eval_metrics(self.eval_metrics, eval_outdir)
+            self.eval_metrics = self.runner.run(env=self.env)
+        timestamps, bin_idxs, filter_idxs, field_ids, glob_df, bin_feat_dict = self._process_eval_metrics(self.eval_metrics, outdir)
         self.data.populate_agent_df(bin_idxs=bin_idxs, filter_idxs=filter_idxs, timestamps=timestamps, field_ids=field_ids, glob_df=glob_df, bin_feat_dict=bin_feat_dict)
         self.data.convert_df_to_deg(self.data.agent_df)
 
@@ -845,7 +933,7 @@ class MultiStepEvaluator(Evaluator):
             glob_df[valid_mask], bins_feats
             
     def plot_kde_and_scatter(self, feature_x, feature_y, agent_alpha=.2, use_filter_coloring=True, s=5):
-        mapped_colors = self.data.agent_df['filter'].map(FILTER_COLORS)
+        mapped_colors = self.data.agent_df['filter'].map(_FILTER_COLORS)
         expert_x = self.data.expert_df[feature_x]
         expert_y = self.data.expert_df[feature_y]
         agent_x = self.data.agent_df[feature_x]

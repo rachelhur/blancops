@@ -1,4 +1,4 @@
-from blancops.utils.schedule_io import save_survey_schedule
+from blancops.io.schedule_io import save_survey_schedule
 
 import torch
 import numpy as np
@@ -8,14 +8,14 @@ import pickle
 from pathlib import Path
 
 from blancops.ephemerides import ephemerides
-from blancops.data.constants import *
+from blancops.configs.constants import *
 import logging
 
 logger = logging.getLogger(__name__)
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-class ScheduleGenerator:
-    def __init__(self, agent, policy,cfg, lookups, num_episodes=1, 
+class OfflineRunner:
+    def __init__(self, agent, policy, cfg, lookups, num_episodes=1, 
                  outdir=None, save_SISPI=False, SISPI_fn="survey_schedule", schedule_chunk_size=None,
                  ):
         self.agent = agent
@@ -31,6 +31,7 @@ class ScheduleGenerator:
             self.schedule_chunk_size = 1e5
         else:
             self.schedule_chunk_size = schedule_chunk_size
+        self.schedules = {}
         
         if not os.path.exists(self.outdir):
             os.makedirs(self.outdir)
@@ -43,7 +44,6 @@ class ScheduleGenerator:
         current_night_dict['field_id'].append(field_id)
         current_night_dict['bin'].append(bin_idx)
         current_night_dict['filter_idx'].append(filter_idx)
-        return current_night_dict
 
     def _log_zenith_state(self, obs, info):
         new_night_dict = {
@@ -57,24 +57,22 @@ class ScheduleGenerator:
         }
         return new_night_dict
     
-    def generate_schedule(self, env):
+    def run(self, env):
         self.policy.eval()
-        diagnostics = {}
         episode_rewards = []
 
         hpGrid = ephemerides.HealpixGrid(nside=self.cfg.data.nside, is_azel=('azel' in self.cfg.data.action_space))
 
-        FIELDS_CHOSEN = []
-
         with logging_redirect_tqdm():
             for ep_num in tqdm(range(self.num_episodes)):
                 obs, info = env.reset()
-                episode_reward_running = 0
+                running_reward = 0
                 terminated = False
                 truncated = False
                 num_nights = env.unwrapped.max_nights
 
                 episode_data = {}
+                diagnostics = {}
                 reward = 0
                 night_idx = 0
                 current_night_key = f'night-{night_idx}'
@@ -96,18 +94,24 @@ class ScheduleGenerator:
                             bin_idx = WAIT_SIGNAL # do not update filter and field id since they should stay the same in wait state
                         else:
                             bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, hpGrid, epsilon=None)
-                            FIELDS_CHOSEN.append(field_id)
                             
                         # Step through environment
-                        actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
-                        obs, reward, terminated, truncated, info = env.step(actions)
+                        obs, reward, terminated, truncated, info = env.step({
+                            'bin': np.int32(bin_idx), 
+                            'field_id': np.int32(field_id), 
+                            'filter_idx': np.int32(filter_idx)
+                        })
 
                         # Log next obs if have not been waiting or if this is a non-zenith observation
                         is_first_wait = (bin_idx == WAIT_SIGNAL) and (last_bin_idx != WAIT_SIGNAL)
                         is_real_obs = bin_idx >= 0
                         if is_first_wait or is_real_obs:
-                            episode_data[current_night_key] = self._update_current_night_dict(episode_data[current_night_key], obs, info, field_id, bin_idx, filter_idx, reward)
-                        episode_reward_running += reward
+                            self._update_current_night_dict(
+                                current_night_dict=episode_data[current_night_key], 
+                                obs=obs, info=info, field_id=field_id, bin_idx=bin_idx, filter_idx=filter_idx, reward=reward
+                            )
+                            
+                        running_reward += reward
                         if terminated or truncated or i >= self.schedule_chunk_size:
                             break
                         
@@ -125,7 +129,7 @@ class ScheduleGenerator:
                         pbar.update(1)
                         pbar.set_description(f"Rolling out policy for night {night_idx} step {i}")
                 logger.info(f'terminated at step {i}')
-                diagnostics = self._construct_diagnostics(diagnostics, episode_data, episode_rewards, episode_reward_running, ep_num)
+                diagnostics = self._construct_diagnostics(diagnostics, episode_data, episode_rewards, running_reward, ep_num)
                 
                 pbar.close()
             diagnostics.update({

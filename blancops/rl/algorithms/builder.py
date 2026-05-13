@@ -20,7 +20,7 @@ from blancops.rl.algorithms.bc import BehaviorCloning
 from blancops.rl.algorithms.ddqn import DDQN
 
 def get_activation(name):
-    activations = {'relu': nn.ReLU, 'mish': nn.Mish, 'swish': nn.SiLU}
+    activations = {'relu': nn.ReLU, 'mish': nn.Mish, 'swish': nn.SiLU, 'leaky_relu': nn.LeakyReLU, 'tanh': nn.Tanh, 'sigmoid': nn.Sigmoid}
     if name not in activations:
         raise ValueError(f"Activation {name} not supported.")
     return activations[name]

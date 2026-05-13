@@ -2,16 +2,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from blancops.data.features.normalizations import np
 from blancops.ephemerides.ephemerides import HealpixGrid
-from blancops.rl.neural_nets.neural_nets import MLP, MultiHeadMLP, BinEmbeddingDQN, ContextualScoreMLP
 from blancops.math import geometry
 from blancops.rl.algorithms.base import AlgorithmBase
 import logging
 logger = logging.getLogger(__name__)
-from blancops.data.constants import NUM_FILTERS, np
 
-from pathlib import Path
 class DDQN(AlgorithmBase):
     def __init__(
         self, 

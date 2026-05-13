@@ -3,7 +3,7 @@ import random
 import numpy as np
 import torch
 
-from blancops.data.constants import NO_FILTER_SIGNAL, WAIT_SIGNAL
+from blancops.configs.constants import NO_FILTER_SIGNAL, WAIT_SIGNAL
 from blancops.ephemerides import ephemerides
 from blancops.math.interpolate import interpolate_on_sphere
 
@@ -32,20 +32,19 @@ class Agent:
         return bin_idx, filter_idx
     
     def _determine_valid_fields(self, bin_idx, filter_idx, info):
+        """Valid given airmass / horizon / completion conditions"""
         # Unpack info and get valid fields in bin
         valid_fields_per_bin = info.get('valid_fields_per_bin', {})
         valid_fields_in_bin = np.array(valid_fields_per_bin.get(int(bin_idx), []))
         assert len(valid_fields_in_bin) != 0, f"No valid fields are in bin {bin_idx}. Check environment's output mask."
         
-        s_visited = info.get('s_visited', None)
-        s_filter_visits = info.get('s_filter_visits', None)
-        max_s_filter_visits = info.get('max_s_filter_visits', None)
+        survey_tracker = info.get('survey_progress_tracker')
+        survey_counts = survey_tracker.raw_counts
+        target_survey_counts = survey_tracker.target_counts
+        incomplete_mask = survey_tracker.get_incomplete_mask()
 
         # Filter out completed fields in (bin, filter)
-        if (s_filter_visits is not None) and (max_s_filter_visits is not None) and (filter_idx >= 0):
-            field_ids_in_bin = [fid for fid in valid_fields_in_bin if s_filter_visits[fid, filter_idx] < max_s_filter_visits[fid, filter_idx]]
-        else:
-            field_ids_in_bin = [fid for fid in valid_fields_in_bin if s_visited[fid] < self.lookups.target_fid_counts[fid]]
+        field_ids_in_bin = [fid for fid in valid_fields_in_bin if survey_counts[fid, filter_idx] < target_survey_counts[fid, filter_idx]]
         
         assert len(field_ids_in_bin) != 0, "No valid fields are in bin...check environment's output mask."
         logger.debug(f'Chosen bin contains {len(field_ids_in_bin)} incomplete fields out of {len(valid_fields_in_bin)} fields total')
@@ -56,11 +55,12 @@ class Agent:
         Choose field in bin based on interpolated Q-values
         """
         # Unpack obs
-        x_glob = obs['global_state']
-        x_bin = obs['bin_state']
+        glob_tensor = torch.as_tensor(obs['global_state'], device=self.device, dtype=torch.float32).unsqueeze(0)  # Add batch dimension
+        bin_tensor = torch.as_tensor(obs['bin_state'], device=self.device, dtype=torch.float32).unsqueeze(0)     # Add batch dimension
+        action_tensor_mask = torch.as_tensor(info.get('action_mask', None), device=self.device, dtype=torch.bool) if info.get('action_mask', None) is not None else None
         
         # Choose action in action space
-        bin_idx, filter_idx = self._choose_bin_and_filter(x_glob, x_bin, info.get('action_mask', None), epsilon)
+        bin_idx, filter_idx = self._choose_bin_and_filter(glob_tensor, bin_tensor, action_tensor_mask, epsilon)
 
         # Get valid fields in bin
         valid_field_ids = self._determine_valid_fields(bin_idx, filter_idx, info)
@@ -68,11 +68,11 @@ class Agent:
         if self.field_choice_method == 'interp':
             with torch.no_grad():
                 # Ensure tensors have the batch dimension expected by ScoreMLP
-                glob_tensor = torch.as_tensor(x_glob, device=self.device, dtype=torch.float32).unsqueeze(0)
-                bin_tensor = torch.as_tensor(x_bin, device=self.device, dtype=torch.float32).unsqueeze(0)
+                # glob_tensor = torch.as_tensor(glob_tensor, device=self.device, dtype=torch.float32).unsqueeze(0)
+                # bin_tensor = torch.as_tensor(bin_tensor, device=self.device, dtype=torch.float32).unsqueeze(0)
                 
                 # Get raw joint scores from MLP: shape (1, n_bins * n_filters)
-                raw_scores = self.algorithm.policy.core_net(glob_tensor, bin_tensor)
+                raw_scores = self.policy.core_net(glob_tensor, bin_tensor)
                 
                 n_bins = bin_tensor.shape[1]
                 n_filters = raw_scores.shape[-1] // n_bins
@@ -84,8 +84,7 @@ class Agent:
             lat_data = hpGrid.lat
 
             # CHECK
-            # target_coords = np.array([fid2radec[fid] for fid in field_ids_in_bin])
-            target_coords = np.array([self.lookups.fid2radec[fid] for fid in valid_field_ids])
+            target_coords = self.lookups.fields.loc[valid_field_ids, ['ra', 'dec']].to_numpy()
             
             if hpGrid.is_azel:
                 # Project RA/Dec to local Az/El frame using the current timestamp

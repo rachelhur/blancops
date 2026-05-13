@@ -138,7 +138,6 @@ class PureJointPolicy(PolicyBase):
         mask_value = torch.finfo(action_logits.dtype).min
         action_logits = action_logits.masked_fill(~action_masks, mask_value)
         
-        # Pure Joint Loss
         # Pure Joint Loss - Dynamically route based on the loss function's signature
         if exp_slew_dists is not None and isinstance(self.loss_function, SlewDistanceFocalLoss):
             loss = self.loss_function(action_logits, expert_flat, exp_slew_dists)
@@ -150,6 +149,24 @@ class PureJointPolicy(PolicyBase):
         if compute_metrics:
             metrics_dict = self._compute_standard_metrics(action_logits, expert_flat, action_masks, hpGrid)
             
+        with torch.no_grad():
+            # Marginal loss diagnostic
+            batch_size, n_bins, _ = batch['bin_states'].shape
+            n_filters = len(FILTER2IDX)
+            probs = F.softmax(action_logits.view(batch_size, n_bins, n_filters), dim=-1)  # joint over filters per bin
+            # Marginal over bins:
+            bin_probs = probs.sum(dim=-1)  # (batch, n_bins)
+            # Marginal over filters:
+            filter_probs = probs.sum(dim=-2)  # (batch, n_filters)
+
+            expert_bin = expert_flat // n_filters
+            expert_filter = expert_flat % n_filters
+
+            bin_loss = F.nll_loss(torch.log(bin_probs + 1e-9), expert_bin)
+            filter_loss = F.nll_loss(torch.log(filter_probs + 1e-9), expert_filter)
+            metrics_dict['bin_loss'] = bin_loss.item()
+            metrics_dict['filter_loss'] = filter_loss.item()
+        
         return loss, metrics_dict
     
     def select_action(self, x_glob, x_bin, action_mask=None):
@@ -406,7 +423,7 @@ class AutoregressiveQNetWrapper(QNetPolicyBase):
 
         return flat_joint_q_values
     
-from blancops.data.constants import FILTER_ALPHA_WEIGHTS
+from blancops.configs.constants import FILTER2IDX, FILTER_ALPHA_WEIGHTS
 class FocalLoss(nn.Module):
     def __init__(self, gamma=2.0, reduction='mean', alpha=None):
         """

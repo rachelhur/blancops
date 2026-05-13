@@ -9,7 +9,7 @@ from blancops.configs.constants import WORKSPACE
 from blancops.configs.enums import Algorithm
 from blancops.configs.schema import ExperimentConfig, load_and_validate
 from blancops.rl.policies.policies import FlatQNetWrapper
-from blancops.rl.registry import _build_bc_policy, build_algorithm, build_network
+from blancops.rl.registry import _build_bc_policy, build_network
 from blancops.rl.agent import Agent
 
 import logging
@@ -34,6 +34,14 @@ class AgentFactory:
         
         model_dir = self.resolve_model_dir(model_path_or_alias)
         
+        # If model_path_or_alias is an absolute path or a path that exists, prefer that
+        if isinstance(model_path_or_alias, (str,)) and Path(model_path_or_alias).is_absolute() and Path(model_path_or_alias).exists():
+            model_dir = Path(model_path_or_alias)
+        elif isinstance(model_path_or_alias, Path) and model_path_or_alias.exists():
+            model_dir = model_path_or_alias
+        else:
+            model_dir = self.resolve_model_dir(model_path_or_alias)
+
         config_path = model_dir / "resolved_config.yaml"
         if not config_path.exists():
             config_path = model_dir / "configs" / "resolved_config.yaml"
@@ -43,7 +51,6 @@ class AgentFactory:
                 f"Could not find resolved_config.yaml in {model_dir} or {model_dir}/configs/"
             )
             
-        config_path = model_dir / "resolved_config.yaml"
         cfg = load_and_validate(config_path)
         
         # 1. Resolve which weights file to actually use
@@ -100,14 +107,22 @@ class AgentFactory:
         elif cfg.model.algorithm == Algorithm.DDQN:
             policy = FlatQNetWrapper(core_net)
         
-        checkpoint = torch.load(weights_path, map_location=device)
-        
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            policy.load_state_dict(checkpoint['model_state_dict'])
+        try:
+            checkpoint = torch.load(weights_path, map_location=device)
+        except Exception as e:
+            logger.warning(f"torch.load failed with default settings when loading policy: {e}. Retrying with weights_only=False.")
+            checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
+
+        if isinstance(checkpoint, dict) and ('model_state_dict' in checkpoint or 'policy_state_dict' in checkpoint or 'state_dict' in checkpoint):
+            # Support multiple checkpoint key names
+            state_dict = checkpoint.get('model_state_dict') or checkpoint.get('policy_state_dict') or checkpoint.get('state_dict')
+            policy.load_state_dict(state_dict)
             norm_stats = checkpoint.get('norm_stats', {})
         else:
+            # If checkpoint is raw state dict
             policy.load_state_dict(checkpoint)
             norm_stats = {}
+        
             
         policy.eval()
         return policy.to(device), norm_stats

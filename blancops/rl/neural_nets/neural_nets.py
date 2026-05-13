@@ -101,7 +101,8 @@ class MultiHeadMLP(nn.Module):
         # 3. Output scores
         scores = self.net(fused) 
         return scores.view(batch_size, -1)
-    
+
+
 class StateEncoder(nn.Module):
     def __init__(self, glob_dim, bin_dim, nbins, glob_hidden, bin_hidden, bin_out, output_dim, activation=None):
         super().__init__()
