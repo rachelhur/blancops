@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from datetime import timezone
 
-from blancops.data.constants import *
+from blancops.configs.constants import *
 from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.data.features.glob_features import calc_twilight
 from blancops.plotting.plotting import plot_schedule_from_file

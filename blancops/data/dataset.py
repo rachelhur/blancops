@@ -15,7 +15,7 @@ from blancops.math import geometry
 
 from blancops.data.preprocessing import drop_rows_in_DECam_data
 from blancops.data.constants import *
-from blancops.configs.constants import CYCLICAL_FEATURE_NAMES
+from blancops.configs.constants import _CYCLICAL_FEATURE_NAMES
 
 from blancops.data.features.glob_features import GlobalFeatureEngineer, calc_inst_teff_rate
 from blancops.data.features.bin_features import BinFeatureEngineer
@@ -86,7 +86,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.global_feature_names, self.bin_feature_names = setup_feature_names(
             base_global_feature_names=cfg.data.global_features.copy(),
             base_bin_feature_names=cfg.data.bin_features.copy(),
-            cyclical_feature_names=CYCLICAL_FEATURE_NAMES,
+            cyclical_feature_names=_CYCLICAL_FEATURE_NAMES,
             do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', False),
         )
         self.do_local_mean_z_score = any('rel_' in name for name in self.bin_feature_names)
@@ -94,10 +94,10 @@ class OfflineDataset(torch.utils.data.Dataset):
     def _engineer_features(self, df, cfg, norm_kwargs):
         """Executes the pandas/numpy feature engineering pipelines."""
         glob_feature_eng = GlobalFeatureEngineer(
-            fid2name=self.lookups.fid2name, 
+            lookups=self.lookups, 
             hpGrid=self.hpGrid, 
             base_features=cfg.data.global_features,
-            cyclical_features=CYCLICAL_FEATURE_NAMES, 
+            cyclical_features=_CYCLICAL_FEATURE_NAMES, 
             do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', True)
         )
         self._df = glob_feature_eng.transform(df)
@@ -106,9 +106,9 @@ class OfflineDataset(torch.utils.data.Dataset):
             bin_feature_eng = BinFeatureEngineer(
                 hpGrid=self.hpGrid, 
                 base_features=cfg.data.bin_features, 
-                cyclical_features=CYCLICAL_FEATURE_NAMES, 
+                cyclical_features=_CYCLICAL_FEATURE_NAMES, 
                 action_space=cfg.data.action_space,
-                lookups=self.lookups,  # <-- REFACTORED: Single source of truth
+                lookups=self.lookups,
                 do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', True),
                 do_local_mean_z_score=self.do_local_mean_z_score
             )
@@ -143,13 +143,13 @@ class OfflineDataset(torch.utils.data.Dataset):
         """Executes the StateNormalizer class logic."""
         # 1. Initialize normalizers if not provided
         if global_normalizer is None:
-            global_normalizer = StateNormalizer(state_feature_names=cfg.data.global_features, **norm_kwargs)
+            global_normalizer = StateNormalizer(state_feature_names=self.global_feature_names, **norm_kwargs)
         if self.include_bin_features and bin_normalizer is None:
-            bin_normalizer = StateNormalizer(state_feature_names=cfg.data.bin_features, **norm_kwargs)
+            bin_normalizer = StateNormalizer(state_feature_names=self.bin_feature_names, **norm_kwargs)
 
         # 2. Normalize Global Features
         if mode == 'train':
-            self.states, self.global_zscore_stats, self.global_rel_stats = global_normalizer.fit_transform(
+            self.states, self.global_zscore_stats, self.global_rel_stats, self.global_nan_mask = global_normalizer.fit_transform(
                 state=self.states, train_state_idxs=self.train_state_idxs
             )
         else:
@@ -162,9 +162,9 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         # 3. Normalize Bin Features
         if self.include_bin_features and self._prenorm_bin_states is not None:
-            bin_tensor = torch.tensor(self._prenorm_bin_states).detach().clone()
+            bin_tensor = torch.tensor(self._prenorm_bin_states.detach().clone())
             if mode == 'train':
-                self.bin_states, self.bin_zscore_stats, self.bin_rel_stats = bin_normalizer.fit_transform(
+                self.bin_states, self.bin_zscore_stats, self.bin_rel_stats, self.bin_nan_mask = bin_normalizer.fit_transform(
                     state=bin_tensor, train_state_idxs=self.train_state_idxs
                 )
             else:
@@ -179,7 +179,7 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         # 4. Save stats if training
         if mode == 'train' and (self.global_zscore_stats or self.global_rel_stats):
-            self._save_norm_stats(Path(cfg.experiments_directory) / cfg.experiment_name)
+            self._save_norm_stats(Path(cfg.outdir))
 
     def _format_tensors_for_network(self, network_type):
         """Handles final reshaping (e.g., flattening bins for basic MLPs)."""
@@ -365,11 +365,18 @@ class OfflineDataset(torch.utils.data.Dataset):
             "z_score": {'global_features': self.global_zscore_stats, 'bin_features': self.bin_zscore_stats},
             "rel_norm": {'global_features': self.global_rel_stats, 'bin_features': self.bin_rel_stats}
         }
-        save_path = Path(save_dir) / "normalization_stats.json"
+        save_path = Path(save_dir) / "checkpoints" / "normalization_stats.json"
         with open(save_path, 'w') as f:
             json.dump(all_stats, f, indent=4)
         logger.info(f"Normalization stats successfully saved to {save_path}")
 
+    def get_norm_stats(self) -> dict:
+        """Returns the normalization stats dictionary."""
+        return {
+            "z_score": {'global_features': self.global_zscore_stats, 'bin_features': self.bin_zscore_stats},
+            "rel_norm": {'global_features': self.global_rel_stats, 'bin_features': self.bin_rel_stats}
+        }
+        
     def __len__(self):
         return self.num_transitions
 

@@ -121,21 +121,46 @@ def plot_global_feature_distributions(dataset, fig_outdir):
     fig.savefig(fig_outdir / 'train_global_feature_distributions.png')
     
 def plot_bin_feature_distributions(dataset, fig_outdir):
+
     ncols = 5
     nrows = len(dataset.bin_feature_names) // ncols + 1
     fig = plt.figure(figsize=(ncols * 4, nrows * 3))
 
-    most_common_bin = dataset._df['bin'].mode()[0]
-    most_common_bin_states = dataset.bin_states[:, most_common_bin, :].detach().numpy()
-    bin_states = most_common_bin_states.T
+    bs_np = dataset.bin_states.cpu().numpy()
+
     for i, feat_name in enumerate(dataset.bin_feature_names):
         ax = fig.add_subplot(nrows, ncols, i+1)
-        ax.hist(bin_states[i])
+        feat = bs_np[..., i]                                 # (T, B)
+        feat = np.where(feat == -1.0, np.nan, feat)          # mask sentinels
+        
+        means = np.nanmean(feat, axis=1)                     # (T,)
+        stds  = np.nanstd(feat,  axis=1)                     # (T,)
+        
+        # Optional: hide timestamps where every bin is sentinel (means is NaN)
+        keep = np.isfinite(means)
+        x = np.arange(len(means))
+        
+        ax.plot(x[keep], means[keep])
+        ax.fill_between(x[keep], (means - stds)[keep], (means + stds)[keep], alpha=0.3)
+        ax.set_title(feat_name)
+        ax.set_xlabel('timestep')
         ax.set_title(f"{feat_name}")
-    if dataset.hpGrid.is_azel: action_str = "(az, el)"
-    else: action_str = "(ra, dec)"
-    fig.suptitle(f" Train features for most common HEALpix bin (bin {most_common_bin}, {action_str} = {dataset.hpGrid.lon[most_common_bin]:.1f}, {dataset.hpGrid.lat[most_common_bin]:.1f})", fontsize=16)
+    fig.suptitle(f" Bin features", fontsize=16)
     fig.tight_layout()
     fig.savefig(fig_outdir / 'train_bin_feature_distributions.png')
+    
+
+    # most_common_bin = dataset._df['bin'].mode()[0]
+    # most_common_bin_states = dataset.bin_states[:, most_common_bin, :].detach().numpy()
+    # bin_states = most_common_bin_states.T
+    # for i, feat_name in enumerate(dataset.bin_feature_names):
+    #     ax = fig.add_subplot(nrows, ncols, i+1)
+    #     ax.hist(bin_states[i])
+    #     ax.set_title(f"{feat_name}")
+    # if dataset.hpGrid.is_azel: action_str = "(az, el)"
+    # else: action_str = "(ra, dec)"
+    # fig.suptitle(f" Train features for most common HEALpix bin (bin {most_common_bin}, {action_str} = {dataset.hpGrid.lon[most_common_bin]:.1f}, {dataset.hpGrid.lat[most_common_bin]:.1f})", fontsize=16)
+    # fig.tight_layout()
+    # fig.savefig(fig_outdir / 'train_bin_feature_distributions.png')
     
     

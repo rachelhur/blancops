@@ -1,534 +1,775 @@
+
+"""Bin feature computation for both online (live) and offline (batch) pipelines.
+ 
+The module-level helpers below define the canonical per-timestep computation.
+Both `BlancoEnv._calculate_bin_features` (live, 1 timestep) and
+`BinFeatureEngineer.transform` (offline, batch) drive these primitives — the
+offline pipeline writing per-step outputs into pre-allocated arrays for
+cache-friendliness.
+ 
+Sentinel convention: inactive bins are marked with NaN internally during all
+intermediate computation (rel, cyclical, validate). `replace_nan_with_sentinel`
+converts NaN -> RADEC/AZEL_BIN_FEAT_SENTINEL (-1.0) at the very end, so
+downstream consumers see the on-disk convention.
+
+To add a new feature:
+    1. Implement in one of the appropriate canonical helpers:
+        - `compute_bin_ephemeris_features`
+        - `compute_bin_progress_features`
+        - `apply_relative_bin_features`
+        - 'get_relative_feature'
+    or add a new helper
+    2. Add feature key to `BinFeatureEngineer._pre_allocate_arrays()`
+    3. Update _ALLOWED_NORMS_PER_FEATURE constant in configs/constants.py 
+    4. Add feature key to _BIN_FEATURE_NAMES in configs/constants.py
+    5. Add feature key and default normalization to _DEFAULT_NORM_MAPPING in configs/constants.py
+    
+    If adding a new helper, must update base_env.py `_calculate_bin_features`
+    method and `BinFeatureEngineer.transform` method.
+"""
+import warnings
+ 
 import numpy as np
 from einops import rearrange
 from tqdm import tqdm
+from blancops.data.features.glob_features import get_night_boundaries
 from blancops.ephemerides import ephemerides
-from blancops.data.constants import *
-
+from blancops.configs.constants import *
+ 
 import logging
 logger = logging.getLogger(__name__)
+ 
+ 
+# History-feature base names that this pipeline knows about. Any
+# requested feature whose name contains one of these substrings will
+# trigger the history pass.
+_SURVEY_PROGRESS_BASE_KEYS = [
+        'survey_num_unvisited_fields',
+        'survey_num_incomplete_fields',
+        'survey_min_tiling',
+        'survey_mean_tiling'
+    ]
+ 
+# ============================================================================
+# Canonical per-timestep helpers — single source of truth, shared between
+# BinFeatureEngineer (offline batch) and BlancoEnv (live single-step).
+# ============================================================================
+ 
+ 
+def compute_bin_ephemeris_features(timestamp, pointing_radec, hpGrid, night_duration_in_sec):
+    """Per-timestep ephemeris features for all bins on the hpGrid.
+ 
+    Returns a dict with keys: ``ra``, ``dec``, ``az``, ``el``, ``ha``,
+    ``airmass``, ``moon_distance``, ``pointing_distance``, ``delta_az``,
+    ``delta_el`` ``time_till_set`` — each a length-``nbins`` array.
+ 
+    ``pointing_radec`` is ``(ra, dec)`` in radians. ``delta_az``/``delta_el``
+    are always in true topographic coords regardless of ``hpGrid.is_azel``;
+    this fixes a subtle bug in the previous offline pipeline that passed
+    ``(ra, dec)`` to ``get_delta_az_el`` when the grid was RaDec, producing
+    delta_ra / delta_dec mislabeled as delta_az / delta_el.
+    """
+    features = {}
+    lon, lat = hpGrid.lon, hpGrid.lat
+ 
+    if hpGrid.is_azel:
+        ra, dec = ephemerides.topographic_to_equatorial(
+            az=lon, el=lat, time=timestamp
+        )
+        features['az'], features['el'] = lon, lat
+        features['ra'], features['dec'] = ra, dec
+        pointing_az, pointing_el = ephemerides.equatorial_to_topographic(
+            ra=pointing_radec[0], dec=pointing_radec[1], time=timestamp
+        )
+        pointing_in_grid = (pointing_az, pointing_el)
+    else:
+        az, el = ephemerides.equatorial_to_topographic(
+            ra=lon, dec=lat, time=timestamp
+        )
+        features['ra'], features['dec'] = lon, lat
+        features['az'], features['el'] = az, el
+        pointing_az, pointing_el = ephemerides.equatorial_to_topographic(
+            ra=pointing_radec[0], dec=pointing_radec[1], time=timestamp
+        )
+        pointing_in_grid = pointing_radec
+ 
+    features['ha'] = hpGrid.get_hour_angle(time=timestamp)
+    features['airmass'] = hpGrid.get_airmass(timestamp)
+    features['moon_distance'] = hpGrid.get_source_angular_separations(
+        'moon', time=timestamp
+    )
+    features['pointing_distance'] = hpGrid.get_angular_separations(
+        lon=pointing_in_grid[0], lat=pointing_in_grid[1]
+    )
+    features['delta_az'], features['delta_el'] = get_delta_az_el(
+        features['az'], features['el'], pointing_az, pointing_el
+    )
+    features['t_until_set'] = hpGrid.get_time_until_set(time=timestamp) / night_duration_in_sec
+    arr = night_duration_in_sec #features['t_until_set']
+    print(f"t_until_set: min={np.nanmin(arr)}, max={np.nanmax(arr)}, "
+        f"nan={np.isnan(arr).sum()}, inf={np.isinf(arr).sum()}, "
+        f"shape={arr.shape}")
 
+    return features
+ 
+ 
+def compute_bin_progress_features(
+    current_counts,
+    target_counts,
+    bins_per_field,
+    v_mask,
+    nbins,
+    do_filt,
+    idx2filter=None,
+):
+    """Per-timestep survey-progress features per bin.
+ 
+    Inactive bins (no in-plan fields contributing) are marked with NaN.
+    The caller is responsible for converting NaN -> external sentinel via
+    ``replace_nan_with_sentinel`` at the end of the pipeline.
+ 
+    Args:
+        current_counts: ``(nfields,)`` for non-filter or ``(nfields, nfilters)``
+            for filter mode — current survey-wide visit counts.
+        target_counts: same shape as ``current_counts`` — survey targets.
+        bins_per_field: ``(nfields,)`` int — bin index of each field at this
+            time. May contain ``ZENITH_BIN_NUM`` for invalid mappings.
+        v_mask: ``(nfields,)`` bool — fields to include (above-horizon AND
+            in a valid bin).
+        nbins: total number of bins on the hpGrid.
+        do_filt: True iff filter is part of the action space; controls whether
+            per-filter outputs are produced.
+        idx2filter: filter idx -> name mapping. Defaults to ``IDX2FILTER``.
+ 
+    Returns:
+        dict with ``survey_num_unvisited_fields``,
+        ``survey_num_incomplete_fields``, ``survey_min_tiling`` (always)
+        and per-filter variants if ``do_filt``.
+ 
+    Note on normalization: the "adjusted max" used in ratios is
+    ``max(current_at_this_step, target)``, matching the live env. This differs
+    from the legacy offline computation which precomputed
+    ``max(night_total, target)`` once per night; the new behavior keeps the
+    normalization "what you see is what you get" from the agent's perspective.
+    """
+    if idx2filter is None:
+        idx2filter = IDX2FILTER
+ 
+    if do_filt and current_counts.ndim != 2:
+        raise ValueError(
+            f"do_filt=True requires 2D current_counts; got shape "
+            f"{current_counts.shape}"
+        )
+    if current_counts.shape != target_counts.shape:
+        raise ValueError(
+            f"current_counts shape {current_counts.shape} != target_counts "
+            f"shape {target_counts.shape}"
+        )
+ 
+    features = {}
+    bins_mem = bins_per_field[v_mask].astype(np.int32)
+ 
+    # Aggregate per-field counts (sum over filters for the 1D family of features)
+    if current_counts.ndim == 2:
+        cur_field_vis = current_counts.sum(axis=1)
+        tgt_field_vis = target_counts.sum(axis=1)
+    else:
+        cur_field_vis = current_counts
+        tgt_field_vis = target_counts
+ 
+    v_cur_field = cur_field_vis[v_mask]
+    v_tgt_field = tgt_field_vis[v_mask]
+    in_plan = v_tgt_field > 0
+    max_adj = np.maximum(v_cur_field, v_tgt_field)
+ 
+    # Active bins: bins that contain at least one in-plan field
+    bin_in_plan_counts = np.bincount(
+        bins_mem, weights=in_plan, minlength=nbins
+    )
+    act_s = bin_in_plan_counts > 0
+ 
+    def _assign_fraction(field_mask, key):
+        """Fraction of in-plan fields in each bin satisfying ``field_mask``."""
+        res = np.full(nbins, np.nan, dtype=np.float32)
+        num = np.bincount(bins_mem, weights=field_mask, minlength=nbins)
+        np.divide(num, bin_in_plan_counts, out=res, where=act_s)
+        features[key] = res
+ 
+    _assign_fraction(
+        (v_cur_field == 0) & in_plan, "survey_num_unvisited_fields"
+    )
+    _assign_fraction(
+        (v_cur_field < max_adj) & in_plan, "survey_num_incomplete_fields"
+    )
+ 
+    # Per-bin min tiling. Out-of-plan fields contribute +inf so they're ignored
+    # by np.minimum.at; bins with no in-plan fields stay +inf and are converted
+    # to NaN at the end.
+    tiling = np.divide(
+        v_cur_field.astype(np.float32),
+        max_adj.astype(np.float32),
+        out=np.full(v_cur_field.shape, np.inf, dtype=np.float32),
+        where=in_plan,
+    )
+    s_mins = np.full(nbins, np.inf, dtype=np.float32)
+    np.minimum.at(s_mins, bins_mem, tiling)
+    s_mins[~act_s | np.isinf(s_mins)] = np.nan
+    features["survey_min_tiling"] = np.minimum(s_mins, 1.0)
+ 
+    if not do_filt:
+        return features
+ 
+    # Per-filter family of features
+    nfilters = current_counts.shape[1]
+    v_cur_ff = current_counts[v_mask]
+    v_tgt_ff = target_counts[v_mask]
+    in_ff_plan = v_tgt_ff > 0
+    max_ff_adj = np.maximum(v_cur_ff, v_tgt_ff)
+ 
+    ff_tiling = np.divide(
+        v_cur_ff.astype(np.float32),
+        max_ff_adj.astype(np.float32),
+        out=np.full(v_cur_ff.shape, np.inf, dtype=np.float32),
+        where=in_ff_plan,
+    )
+ 
+    for f, filt_name in idx2filter.items():
+        bc_f = np.bincount(
+            bins_mem, weights=in_ff_plan[:, f], minlength=nbins
+        )
+        act_f = bc_f > 0
+ 
+        unv = np.full(nbins, np.nan, dtype=np.float32)
+        np.divide(
+            np.bincount(
+                bins_mem,
+                weights=(v_cur_ff[:, f] == 0) & in_ff_plan[:, f],
+                minlength=nbins,
+            ),
+            bc_f, out=unv, where=act_f,
+        )
+        features[f"survey_num_unvisited_fields_{filt_name}"] = unv
+ 
+        inc = np.full(nbins, np.nan, dtype=np.float32)
+        np.divide(
+            np.bincount(
+                bins_mem,
+                weights=(v_cur_ff[:, f] < max_ff_adj[:, f]) & in_ff_plan[:, f],
+                minlength=nbins,
+            ),
+            bc_f, out=inc, where=act_f,
+        )
+        features[f"survey_num_incomplete_fields_{filt_name}"] = inc
+ 
+        s_f_mins = np.full(nbins, np.inf, dtype=np.float32)
+        np.minimum.at(s_f_mins, bins_mem, ff_tiling[:, f])
+        s_f_mins[~act_f | np.isinf(s_f_mins)] = np.nan
+        features[f"survey_min_tiling_{filt_name}"] = np.minimum(s_f_mins, 1.0)
+ 
+    return features
+ 
+ 
+def apply_relative_bin_features(features, el_mask, has_historical, do_filt):
+    """Add ``rel_*`` features in place. Works on ``(nbins,)`` or batched
+    ``(..., nbins)`` arrays — the relative subtraction operates on the
+    trailing axis via ``np.nanmean``.
+ 
+    NaN values (inactive bins) propagate correctly: they're excluded from
+    the local mean and stay NaN in the rel output.
+    """
+    if 'ha' in features:
+        features['rel_ha'] = get_relative_feature(features['ha'], el_mask)
+    if 'moon_distance' in features:
+        features['rel_moon_distance'] = get_relative_feature(features['moon_distance'], el_mask)
+ 
+    if not has_historical:
+        return
+ 
+    # base_keys = [
+    #     'survey_num_unvisited_fields',
+    #     'survey_num_incomplete_fields',
+    #     'survey_min_tiling',
+    #     'survey_mean_tiling'
+    # ]
+    if do_filt:
+        keys = [f"{bk}_{filt}" for bk in _SURVEY_PROGRESS_BASE_KEYS for filt in FILTER2IDX.keys()]
+    else:
+        keys = _SURVEY_PROGRESS_BASE_KEYS
+    for k in keys:
+        if k in features:
+            features[f"rel_{k}"] = get_relative_feature(features[k], el_mask)
+ 
+ 
+def apply_cyclical_bin_features(features, base_names, cyclical_names):
+    """Add ``<feat>_cos`` and ``<feat>_sin`` for cyclical features, in place.
+ 
+    Walks ``base_names`` (the pre-expansion feature list from the config),
+    matches against ``cyclical_names``, and writes cos/sin if the feature
+    exists in ``features``. Works for any array shape — cos/sin are
+    elementwise.
+    """
+    for cyc in cyclical_names:
+        for name in base_names:
+            is_exact = (name == cyc)
+            is_suffix = name.endswith(f"_{cyc}")
+            is_excluded = name.startswith("rel_") or name.startswith("delta_")
+            if (is_exact or is_suffix) and not is_excluded and name in features:
+                features[f"{name}_cos"] = np.cos(features[name])
+                features[f"{name}_sin"] = np.sin(features[name])
+ 
+ 
+def validate_history_bin_features(features, do_filt, idx2filter=None):
+    """Sanity-check history features. NaN-aware (NaN = inactive bin).
+ 
+    Raises ``RuntimeError`` on:
+      * Bounds: fractions outside [0, 1]
+      * Subset rule: unvisited > incomplete
+      * Tiling floor: unvisited > 0 in a bin where min_tiling > 0
+ 
+    Works on ``(nbins,)`` or batched ``(n_timestamps, nbins)`` arrays.
+    """
+    if idx2filter is None:
+        idx2filter = IDX2FILTER
+ 
+    check_groups = [{
+        'unv': 'survey_num_unvisited_fields',
+        'inc': 'survey_num_incomplete_fields',
+        'til': 'survey_min_tiling',
+        'name': 'survey (base)',
+    }]
+    if do_filt:
+        for filt_name in idx2filter.values():
+            check_groups.append({
+                'unv': f'survey_num_unvisited_fields_{filt_name}',
+                'inc': f'survey_num_incomplete_fields_{filt_name}',
+                'til': f'survey_min_tiling_{filt_name}',
+                'name': f'survey ({filt_name})',
+            })
+ 
+    for grp in check_groups:
+        unv_k, inc_k, til_k = grp['unv'], grp['inc'], grp['til']
+        if not all(k in features for k in (unv_k, inc_k, til_k)):
+            continue
+        unv, inc, til = features[unv_k], features[inc_k], features[til_k]
+ 
+        v_unv = ~np.isnan(unv)
+        v_inc = ~np.isnan(inc)
+        v_til = ~np.isnan(til)
+ 
+        # 1. Bounds [0, 1]
+        bad_unv = v_unv & ((unv < 0.0) | (unv > 1.0))
+        if np.any(bad_unv):
+            bad = np.where(bad_unv)
+            raise RuntimeError(
+                f"FATAL BOUNDS: {unv_k} out of [0,1] at idx {bad[0][0]}. "
+                f"Val: {unv[bad][0]}"
+            )
+        bad_inc = v_inc & ((inc < 0.0) | (inc > 1.0))
+        if np.any(bad_inc):
+            bad = np.where(bad_inc)
+            raise RuntimeError(
+                f"FATAL BOUNDS: {inc_k} out of [0,1] at idx {bad[0][0]}. "
+                f"Val: {inc[bad][0]}"
+            )
+ 
+        # 2. Subset rule: unvisited <= incomplete
+        both = v_unv & v_inc
+        subset_violation = both & (unv > (inc + 1e-5))
+        if np.any(subset_violation):
+            bad = np.where(subset_violation)
+            raise RuntimeError(
+                f"FATAL LOGIC LEAK: {grp['name']} unvisited > incomplete at "
+                f"idx {bad[0][0]}. Unv: {unv[bad][0]}, Inc: {inc[bad][0]}"
+            )
+ 
+        # 3. Tiling floor: unvisited > 0 implies min_tiling == 0
+        both_til = v_unv & v_til
+        has_unv = unv > 1e-5
+        tiling_violation = both_til & has_unv & (til > 1e-5)
+        if np.any(tiling_violation):
+            bad = np.where(tiling_violation)
+            raise RuntimeError(
+                f"FATAL LOGIC LEAK: {grp['name']} has unvisited fields but "
+                f"min_tiling > 0 at idx {bad[0][0]}. "
+                f"Unv: {unv[bad][0]}, Til: {til[bad][0]}"
+            )
+ 
+ 
+def replace_nan_with_sentinel(features, sentinel_val, keys=None):
+    """Convert NaN -> ``sentinel_val`` in place for the given keys
+    (or every key if ``keys`` is None). Only writes when a NaN exists,
+    leaving non-history features untouched.
+    """
+    if keys is None:
+        keys = list(features.keys())
+    for k in keys:
+        if k not in features:
+            continue
+        arr = features[k]
+        nan_mask = np.isnan(arr)
+        if nan_mask.any():
+            arr[nan_mask] = sentinel_val
+            
+def replace_invalid_with_sentinel(features, sentinel_val, keys=None):
+    """Convert NaN and ±inf -> ``sentinel_val`` in place for the given keys
+    (or every key if ``keys`` is None). Only writes when an invalid value
+    exists, leaving clean arrays untouched.
+
+    Both NaN (inactive history bins) and inf (circumpolar / below-horizon
+    bins from `get_time_until_set`) get the same sentinel — they're both
+    "this bin is unavailable" markers semantically.
+    """
+    if keys is None:
+        keys = list(features.keys())
+    for k in keys:
+        if k not in features:
+            continue
+        arr = features[k]
+        bad = ~np.isfinite(arr)
+        if bad.any():
+            arr[bad] = sentinel_val
+ 
+ 
+# ============================================================================
+# Small math helpers — used by callers across the codebase, kept module-level.
+# ============================================================================
+ 
+ 
+def get_relative_feature(feat_arr, el_mask):
+    """Subtract the per-timestep mean (over above-horizon bins) from
+    ``feat_arr``. NaN-aware: NaN values are excluded from the mean and
+    stay NaN in the output.
+    """
+    valid_cols = np.where(el_mask, feat_arr, np.nan)
+    with warnings.catch_warnings():
+        # nanmean over an all-NaN slice warns and returns NaN — that's fine.
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        local_mean = np.nanmean(valid_cols, axis=-1, keepdims=True)
+    return feat_arr - local_mean
+ 
+ 
+def get_delta_az_el(bin_azs, bin_els, target_az, target_el):
+    """Angular differences. ``az`` is wrapped to ``[-π, π)``; ``el`` is
+    naive subtraction (elevation isn't periodic in the relevant range).
+    """
+    azs = (bin_azs - target_az + np.pi) % (2 * np.pi) - np.pi
+    els = bin_els - target_el
+    return azs, els
+ 
+ 
+# ============================================================================
+# BinFeatureEngineer — offline batch pipeline, driven by the helpers above.
+# ============================================================================
+ 
+ 
 class BinFeatureEngineer:
+    """Offline batch feature engineering.
+ 
+    Drives the shared per-timestep helpers in a tight row loop, writing
+    outputs into pre-allocated ``(n_timestamps, n_bins)`` arrays for
+    cache-friendliness. Cyclical, relative, validation, and sentinel
+    conversion run once over the full batch at the end.
+    """
+ 
+    # How often (in seconds) to refresh field->bin mapping in AzEl mode.
+    # The sky rotates ~0.25 deg / min, so 5 minutes (~1.25 deg) is well
+    # under typical healpix bin sizes for the surveys we run.
+    _AZEL_CACHE_REFRESH_S = 300
+ 
     def __init__(
-        self, 
-        hpGrid, 
-        base_features, 
-        cyclical_features, 
+        self,
+        hpGrid,
+        base_features,
+        cyclical_features,
         action_space,
-        lookups,  # <-- REFACTORED: Single source of truth
-        do_cyclical_norm=True, 
-        do_local_mean_z_score=True
+        lookups,
+        do_cyclical_norm=True,
+        do_local_mean_z_score=True,
     ):
         self.hpGrid = hpGrid
-        self.base_features = base_features
+        self.base_features = list(base_features)
         self.cyclical_features = cyclical_features
         self.action_space = action_space
         self.lookups = lookups
         self.do_cyclical_norm = do_cyclical_norm
         self.do_local_mean_z_score = do_local_mean_z_score
-
+        self.do_filt = 'filter' in action_space
+        self.is_azel = hpGrid.is_azel
+        self.has_historical = any(
+            hk in f
+            for f in self.base_features
+            for hk in _SURVEY_PROGRESS_BASE_KEYS
+        )
+        self.sentinel_val = (
+            AZEL_BIN_FEAT_SENTINEL if self.is_azel else RADEC_BIN_FEAT_SENTINEL
+        )
+ 
+ 
     def transform(self, pt_df, requested_features) -> np.ndarray:
-        """Executes the bin feature pipeline and returns a 3D tensor."""
+        """Run the full pipeline and return a ``(nrows, nbins, nfeats)`` tensor.
+ 
+        ``requested_features`` controls the final stack order; any feature
+        name there must be produced by the pipeline (or appear after rel/
+        cyclical expansion).
+        """
         timestamps = pt_df['timestamp'].values
-        assert all(np.diff(timestamps) > 0), "Timestamps must be strictly increasing."
-        
-        n_timestamps = len(timestamps)
-        n_bins = len(self.hpGrid.idx_lookup)
-        
-        features = self._pre_allocate_memory(n_timestamps, n_bins)
-        
-        self._calculate_ephemeris_features(features, timestamps, pt_df)
-        
-        if self._needs_history_features():
-            history_feats = self._calculate_history(pt_df, requested_features)
-            features.update(history_feats)
-            
-        if self.do_cyclical_norm:
-            self._apply_cyclical_norms(features)
-            
+        assert all(np.diff(timestamps) > 0), \
+            "Timestamps must be strictly increasing."
+ 
+        ntimestamps = len(timestamps)
+        nbins = len(self.hpGrid.idx_lookup)
+ 
+        features = self._pre_allocate_arrays(ntimestamps, nbins)
+ 
+        # Per-timestep core: drives the shared helpers, writes into pre-allocated arrays.
+        self._fill_features_per_timestep(features, pt_df)
+ 
+        # Once-over post-processing on the batched arrays. el_mask is
+        # broadcast-shaped (n_t, n_b); rel/validate work on the trailing axis.
+        el_mask = features['el'] > 0
+ 
         if self.do_local_mean_z_score:
-            self._apply_relative_norms(features)
-            
+            apply_relative_bin_features(
+                features, el_mask, self.has_historical, self.do_filt
+            )
+ 
+        if self.do_cyclical_norm:
+            apply_cyclical_bin_features(
+                features, self.base_features, self.cyclical_features
+            )
+ 
+        if self.has_historical:
+            validate_history_bin_features(features, self.do_filt)
+ 
+        # Final step: convert internal NaN sentinels to the external value.
+        replace_invalid_with_sentinel(features, self.sentinel_val)
+ 
         return self._stack_and_rearrange(features, requested_features)
-
-
-    def _pre_allocate_memory(self, n_timestamps, n_bins) -> dict:
-        """Determines which features are requested and allocates np.empty arrays."""
-        features = {}
-        bf = self.base_features
-        shape = (n_timestamps, n_bins)
-
-        # Boolean Flags
-        do_pointing_distance = "pointing_distance" in bf
-        do_rel_ha = "rel_ha" in bf
-        do_ha = "ha" in bf or do_rel_ha
-        do_airmass = "airmass" in bf
-        do_ra, do_dec = "ra" in bf, "dec" in bf
-        do_az, do_el = "az" in bf, "el" in bf
-        do_rel_moon_distance = "rel_moon_distance" in bf
-        do_moon_dist = "moon_distance" in bf or do_rel_moon_distance
-        do_delta_az, do_delta_el = "delta_az" in bf, "delta_el" in bf
-        do_coords = do_ra or do_dec or do_az or do_el or self.do_local_mean_z_score or do_delta_az or do_delta_el or do_ha
-
-        # Memory Allocation
-        if do_ha: features['ha'] = np.empty(shape, dtype=np.float32)
-        if do_rel_ha: features['rel_ha'] = np.empty(shape, dtype=np.float32)
-        if do_airmass: features['airmass'] = np.empty(shape, dtype=np.float32)
-        if do_moon_dist: features['moon_distance'] = np.empty(shape, dtype=np.float32)
-        if do_rel_moon_distance: features['rel_moon_distance'] = np.empty(shape, dtype=np.float32)
-
-        if do_ra or do_dec or (do_coords and not self.hpGrid.is_azel):
-            features['ra'] = np.empty(shape, dtype=np.float32)
-            features['dec'] = np.empty(shape, dtype=np.float32)
-
-        if do_coords:
-            features['az'] = np.empty(shape, dtype=np.float32)
-            features['el'] = np.empty(shape, dtype=np.float32)
-
-        if do_delta_az: features['delta_az'] = np.empty(shape, dtype=np.float32)
-        if do_delta_el: features['delta_el'] = np.empty(shape, dtype=np.float32)
-
-        if do_pointing_distance or do_delta_az or do_delta_el:
-            features['pointing_distance'] = np.empty(shape, dtype=np.float32)
-
+ 
+ 
+    def _pre_allocate_arrays(self, ntimestamps, nbins):
+        """Allocate the ``(n_t, n_b)`` arrays we'll fill in the row loop.
+ 
+        We pre-allocate every key the shared ephemeris helper produces,
+        plus history keys when needed. The shared helpers always produce
+        the full ephemeris set per timestep; pre-allocating all of them
+        is ~10 small float32 arrays — cheap compared to the history work.
+        """
+        shape = (ntimestamps, nbins)
+        ephemeris_keys = [
+            'ra', 'dec', 'az', 'el', 'ha', 'airmass',
+            'moon_distance', 'pointing_distance', 'delta_az', 'delta_el',
+            'rel_ha', 'rel_moon_distance', 't_until_set'
+        ]
+        features = {k: np.empty(shape, dtype=np.float32) for k in ephemeris_keys}
+ 
+        if self.has_historical:
+            for bk in _SURVEY_PROGRESS_BASE_KEYS:
+                features[bk] = np.empty(shape, dtype=np.float32)
+                if self.do_filt:
+                    for filt in FILTER2IDX.keys():
+                        features[f"{bk}_{filt}"] = np.empty(
+                            shape, dtype=np.float32
+                        )
         return features
-
-    def _calculate_ephemeris_features(self, features, timestamps, pt_df):
-        """The core timestamp loop for coordinates and ephemeris."""
-        lon, lat = self.hpGrid.lon, self.hpGrid.lat
-
-        # Set up target coordinates for distance calculations
-        if 'pointing_distance' in features or 'delta_az' in features:
-            if self.hpGrid.is_azel:
-                target_lons, target_lats = pt_df['az'].values, pt_df['el'].values
-            else:
-                target_lons, target_lats = pt_df['ra'].values, pt_df['dec'].values
-
-        # Broadcast static coordinates instantly across all timestamps
-        do_coords = any(k in features for k in ['az', 'el', 'ra', 'dec'])
-        if do_coords or self.do_local_mean_z_score:
-            if self.hpGrid.is_azel:
-                if 'az' in features: features['az'][:] = lon
-                if 'el' in features or self.do_local_mean_z_score: features['el'][:] = lat
-            else:
-                if 'ra' in features or self.do_local_mean_z_score: features['ra'][:] = lon
-                if 'dec' in features or self.do_local_mean_z_score: features['dec'][:] = lat
-
-        # Timestamp dependent ephemeris
-        for i, time in tqdm(enumerate(timestamps), total=len(timestamps), desc='Calculating bin ephemeris'):
-            if 'ha' in features: 
-                features['ha'][i] = self.hpGrid.get_hour_angle(time=time)
-            if 'airmass' in features: 
-                features['airmass'][i] = self.hpGrid.get_airmass(time)
-            if 'moon_distance' in features: 
-                features['moon_distance'][i] = self.hpGrid.get_source_angular_separations('moon', time=time)
-            if 'pointing_distance' in features: 
-                features['pointing_distance'][i] = self.hpGrid.get_angular_separations(lon=target_lons[i], lat=target_lats[i])
-            if 'delta_az' in features or 'delta_el' in features:
-                features['delta_az'][i], features['delta_el'][i] = get_delta_az_el(lon, lat, target_lons[i], target_lats[i])
-                
-            # Coordinate Transformations
-            if do_coords or self.do_local_mean_z_score:
-                if self.hpGrid.is_azel:
-                    if 'ra' in features or 'dec' in features: 
-                        features['ra'][i], features['dec'][i] = ephemerides.topographic_to_equatorial(az=lon, el=lat, time=time)
-                else:
-                    if 'az' in features or 'el' in features or self.do_local_mean_z_score:
-                        features['az'][i], features['el'][i] = ephemerides.equatorial_to_topographic(ra=lon, dec=lat, time=time)
-
-    def _needs_history_features(self) -> bool:
-        history_keywords = ["num_unvisited_fields", "num_incomplete_fields", "min_tiling"]
-        return any(
-            hk in base_feat 
-            for base_feat in self.base_features 
-            for hk in history_keywords
-        )
-
-    def _calculate_history(self, pt_df, requested_features) -> dict:
-        """Acts as a bridge to the pure history function."""
-        logger.info("Calculating history-based features...")
-        return calculate_history_dependent_bin_features(
-            pt_df=pt_df, 
-            hpGrid=self.hpGrid, 
-            lookups=self.lookups,  # <-- REFACTORED
-            action_space=self.action_space,
-            requested_features=requested_features
-        )
-
-    def _apply_cyclical_norms(self, features):
-        """Applies cos/sin expansions to cyclical features."""
-        calc_feature_names = list(features.keys())
-        for cyclical_feat in self.cyclical_features:
-            for feat_name in calc_feature_names:
-                is_exact = (feat_name == cyclical_feat)
-                is_suffix = feat_name.endswith(f"_{cyclical_feat}")
-                is_rel = feat_name.startswith("rel_")
-                
-                if (is_exact or is_suffix) and not is_rel:
-                    features[f"{feat_name}_cos"] = np.cos(features[feat_name])
-                    features[f"{feat_name}_sin"] = np.sin(features[feat_name])
-
-    def _apply_relative_norms(self, features):
-        """Subtracts the local valid mean from targeted features."""
-        el_mask = features.get('el', np.ones_like(next(iter(features.values())))) > 0
+ 
+ 
+    def _fill_features_per_timestep(self, features, pt_df):
+        """Drive the shared helpers for each row, writing into ``features``.
+ 
+        Iterates rows via ``pt_df.groupby('night', sort=False)``. This is
+        what the original implementation did and we keep it for two reasons:
+ 
+          1. The groupby key is the same pandas Timestamp the upstream
+             code used to build ``night2{fid,fidfilt}_visit_hist``, so the
+             dict lookup is type-safe. (Going through ``pt_df['night'].values``
+             gives ``numpy.datetime64`` instead, which won't match.)
+          2. Night boundaries are implicit in the iteration, so we don't
+             need separate "did the night change?" bookkeeping.
+ 
+        With timestamps strictly increasing (asserted in ``transform``) and
+        ``sort=False``, groups iterate in row order, so the global counter
+        ``i`` matches each row's slot in the pre-allocated arrays.
+ 
+        Counter is incremented AFTER the helper runs at row i, so row i's
+        features describe the state going into the action at row i+1 — the
+        same semantics the original offline pipeline had.
+        """
+        n_b = len(self.hpGrid.idx_lookup)
+        print('FEATURE KEYS', features.keys())
         
-        if 'moon_distance' in features and 'rel_moon_distance' in self.base_features:
-            features['rel_moon_distance'] = self._get_relative_feature(features['moon_distance'], el_mask)
-            
-        if 'ha' in features and 'rel_ha' in self.base_features:
-            features['rel_ha'] = self._get_relative_feature(features['ha'], el_mask)
-            
-        if self._needs_history_features():
-            for filt in FILTER2IDX.keys():
-                for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
-                    raw_key = f"{s_feat_name}_{filt}"
-                    if raw_key in features:
-                        valid_cols = np.where(el_mask, features[raw_key], np.nan)
-                        features[f"rel_{raw_key}"] = self._get_relative_feature(valid_cols, el_mask)
-
+ 
+        # Cheap path: ephemeris only.
+        if not self.has_historical:
+            self._fill_ephemeris_only(features, pt_df)
+            return
+ 
+        # History path setup.
+        ra_arr = self.lookups.fields['ra'].to_numpy()
+        dec_arr = self.lookups.fields['dec'].to_numpy()
+ 
+        # Map filter strings to indices once for the whole frame; we then
+        # index per-group inside the loop.
+        filt_idx_full = (
+            pt_df['filter'].map(FILTER2IDX)
+            .fillna(ZENITH_FILTER_IDX).astype(np.int32)
+            .to_numpy()
+        )
+        pt_df_with_filt = pt_df.assign(_filt_idx=filt_idx_full)
+ 
+        # RaDec: field->bin mapping is static for the whole run.
+        if self.is_azel:
+            bins_static, vmask_static = None, None
+        else:
+            bins_raw = self.hpGrid.ang2idx(lon=ra_arr, lat=dec_arr)
+            bins_static = np.array(
+                [b if b is not None else ZENITH_BIN_NUM for b in bins_raw],
+                dtype=np.int32,
+            )
+            vmask_static = bins_static != ZENITH_BIN_NUM
+ 
+        # AzEl cache, persisted across groups so a night boundary doesn't
+        # invalidate a still-fresh field->bin assignment.
+        cache_time = -1e9
+        cache_bins, cache_vmask = None, None
+ 
+        pbar = tqdm(total=len(pt_df), desc='Computing bin features')
+        i = 0  # Global row index — matches the row's slot in pre-allocated arrays.
+ 
+        for night, group in pt_df_with_filt.groupby('night', sort=False):
+            # Per-night running counter, seeded from the visit history.
+            if self.do_filt:
+                cur_s_f_vis = (
+                    self.lookups.night2fidfilt_visit_hist[night]
+                    .copy().astype(np.int32)
+                )
+                cur_s_vis = None
+            else:
+                cur_s_vis = (
+                    self.lookups.night2fid_visit_hist[night]
+                    .copy().astype(np.int32)
+                )
+                cur_s_f_vis = None
+ 
+            # Extract group columns as ndarrays for the inner loop.
+            step_timestamps = group['timestamp'].to_numpy()
+            step_pointing_ras = group['ra'].to_numpy()
+            step_pointing_decs = group['dec'].to_numpy()
+            step_fids = group['field_id'].to_numpy(dtype=np.int32)
+            step_filts = group['_filt_idx'].to_numpy(dtype=np.int32)
+            sunset_ts, sunrise_ts = get_night_boundaries(group['timestamp'], sun_el_limit=-10) # setting to -10 for feature generation, not necessarily for action limits
+            step_night_duration_sec = sunrise_ts - sunset_ts
+ 
+            for j in range(len(group)):
+                t = step_timestamps[j]
+ 
+                # --- Ephemeris (always) ---
+                eph = compute_bin_ephemeris_features(
+                    timestamp=t,
+                    pointing_radec=(step_pointing_ras[j], step_pointing_decs[j]),
+                    hpGrid=self.hpGrid,
+                    night_duration_in_sec=step_night_duration_sec
+                )
+                
+                for k, v in eph.items():
+                    if k in features:
+                        features[k][i] = v
+ 
+                # --- Field->bin mapping (static for RaDec, cached for AzEl) ---
+                if self.is_azel:
+                    if abs(t - cache_time) > self._AZEL_CACHE_REFRESH_S:
+                        az, el = ephemerides.equatorial_to_topographic(
+                            ra=ra_arr, dec=dec_arr, time=t
+                        )
+                        bins = np.array(
+                            [b if b is not None else ZENITH_BIN_NUM
+                             for b in self.hpGrid.ang2idx(lon=az, lat=el)],
+                            dtype=np.int32,
+                        )
+                        cache_vmask = (el > 0) & (bins != ZENITH_BIN_NUM)
+                        cache_bins = bins
+                        cache_time = t
+                    bpf, vm = cache_bins, cache_vmask
+                else:
+                    bpf, vm = bins_static, vmask_static
+ 
+                # --- History features via shared helper ---
+                if self.do_filt:
+                    hist = compute_bin_progress_features(
+                        current_counts=cur_s_f_vis,
+                        target_counts=self.lookups.target_fidfilt_counts,
+                        bins_per_field=bpf, v_mask=vm,
+                        nbins=n_b, do_filt=True,
+                    )
+                else:
+                    hist = compute_bin_progress_features(
+                        current_counts=cur_s_vis,
+                        target_counts=self.lookups.target_fid_counts,
+                        bins_per_field=bpf, v_mask=vm,
+                        nbins=n_b, do_filt=False,
+                    )
+                for k, v in hist.items():
+                    if k in features:
+                        features[k][i] = v
+ 
+                # --- Increment running counter for the next row's view ---
+                obs_fid, obs_filt = step_fids[j], step_filts[j]
+                if obs_fid != ZENITH_FIELD_ID:
+                    if self.do_filt:
+                        if obs_filt != ZENITH_FILTER_IDX:
+                            cur_s_f_vis[obs_fid, obs_filt] += 1
+                    else:
+                        cur_s_vis[obs_fid] += 1
+ 
+                i += 1
+                pbar.update(1)
+ 
+        pbar.close()
+        # Sanity: every pre-allocated row should have been written.
+        assert i == len(pt_df), (
+            f"Row loop wrote {i} rows but pt_df has {len(pt_df)}. "
+            f"Did groupby reorder relative to pt_df?"
+        )
+ 
+    def _fill_ephemeris_only(self, features, pt_df):
+        """Fast path for configs that don't request any history features."""
+        timestamps = pt_df['timestamp'].to_numpy()
+        pointing_ras = pt_df['ra'].to_numpy()
+        pointing_decs = pt_df['dec'].to_numpy()
+        sunset_ts, sunrise_ts = get_night_boundaries(timestamps, sun_el_limit=-10) # setting to -10 for feature generation, not necessarily for action limits
+        night_duration_sec = sunrise_ts - sunset_ts
+ 
+        for i, t in tqdm(
+            enumerate(timestamps), total=len(timestamps),
+            desc='Computing bin ephemeris',
+        ):
+            eph = compute_bin_ephemeris_features(
+                timestamp=t,
+                pointing_radec=(pointing_ras[i], pointing_decs[i]),
+                hpGrid=self.hpGrid,
+                night_duration_in_sec=night_duration_sec
+            )
+            for k, v in eph.items():
+                if k in features:
+                    features[k][i] = v
+ 
+    # ------------------------------------------------------------------
+    # Stacking
+    # ------------------------------------------------------------------
+ 
     def _stack_and_rearrange(self, features, requested_features) -> np.ndarray:
-        """Pops requested arrays, validates them, and reshapes via einops."""
+        """Pop requested arrays, validate they exist, reshape via einops."""
         final_arrays = []
         for key in requested_features:
-            if key in features:
-                arr = features.pop(key)
-                assert not np.isnan(arr).any(), f"NaN values found in calculated feature {key}"
-                final_arrays.append(arr)
-            else:
-                raise ValueError(f"Requested feature '{key}' was not calculated by the pipeline.")
-                
-        assert len(final_arrays) == len(requested_features)
-        
-        bin_states = np.array(final_arrays)
-        return rearrange(bin_states, 'nfeats nrows nbins -> nrows nbins nfeats')
-
-    @staticmethod
-    def _get_relative_feature(feat_arr, el_mask):
-        valid_cols = np.where(el_mask, feat_arr, np.nan)
-        return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
-    
-def calc_relative_survey_progress_features(feature_dict, el_mask):
-    for filt in FILTER2IDX.keys():
-        for s_feat_name in ['survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']:
-            raw_key = f"{s_feat_name}_{filt}"
-            if raw_key in feature_dict:
-                valid_cols = np.where(el_mask, feature_dict[raw_key], np.nan)
-                feature_dict[f"rel_{raw_key}"] = get_relative_feature(valid_cols, el_mask)
-    return feature_dict
-
-def get_relative_feature(feat_arr, el_mask):
-    valid_cols = np.where(el_mask, feat_arr, np.nan)
-    return feat_arr - np.nanmean(valid_cols, axis=-1, keepdims=True)
-
-def get_delta_az_el(bin_azs, bin_els, target_az, target_el):
-    azs = (bin_azs - target_az + np.pi) % (2 * np.pi) - np.pi
-    els = bin_els - target_el
-    return azs, els
-
-def calculate_history_dependent_bin_features(pt_df, hpGrid, lookups, action_space, requested_features):
-    # <-- REFACTORED: Now accepts `lookups` directly
-    n_bins = len(hpGrid.idx_lookup)
-    arr_shape = (len(pt_df), n_bins)
-    
-    # REFACTORED: field_ids is just the indices of the numpy array
-    field_ids = np.arange(len(lookups.target_fid_counts))
-    nfields, nfilters = len(field_ids), len(FILTER2IDX)
-    idx2filter = {v: k for k, v in FILTER2IDX.items()}
-    sentinel_val = AZEL_BIN_FEAT_SENTINEL if hpGrid.is_azel else RADEC_BIN_FEAT_SENTINEL
-
-    do_filt = 'filter' in action_space
-    is_azel = hpGrid.is_azel
-    
-    # State Assignment Helper
-    def assign_state(mask_n, mask_s, count_n, count_s, act_n_msk, act_s_msk, key_n, key_s):
-        res_n, res_s = np.zeros(n_bins, dtype=np.float32), np.zeros(n_bins, dtype=np.float32)
-        np.divide(np.bincount(v_bins, weights=mask_n, minlength=n_bins), count_n, out=res_n, where=act_n_msk)
-        np.divide(np.bincount(v_bins, weights=mask_s, minlength=n_bins), count_s, out=res_s, where=act_s_msk)
-        res_n[~act_n_msk] = sentinel_val; res_s[~act_s_msk] = sentinel_val
-        if key_n in historic_features: historic_features[key_n][global_idx] = res_n
-        if key_s in historic_features: historic_features[key_s][global_idx] = res_s
-
-    # ---------------------------------------------------------
-    # 1. STRICT MEMORY ALLOCATION
-    # ---------------------------------------------------------
-    base_keys = ['night_num_unvisited_fields', 'night_num_incomplete_fields', 'night_min_tiling',
-                 'survey_num_unvisited_fields', 'survey_num_incomplete_fields', 'survey_min_tiling']
-    
-    # Get required features
-    matched_keys = [
-        req_key for req_key in requested_features 
-        if any(base_key in req_key for base_key in base_keys)
-    ]
-
-    logger.debug(f"Requested history-based features: {matched_keys}")
-    
-    historic_features = {}
-    for key in matched_keys:
-        historic_features[key] = np.full(arr_shape, sentinel_val, dtype=np.float32)
-    
-    # ---------------------------------------------------------
-    # 2. SURVEY-WIDE SETUP
-    # ---------------------------------------------------------
-    
-    # REFACTORED: Direct numpy slicing instead of slow list comprehensions
-    ra_arr = lookups.fid2radec[:, 0]
-    dec_arr = lookups.fid2radec[:, 1]
-    
-    # REFACTORED: Direct numpy array assignment
-    if do_filt:
-        max_s_f_vis_all = lookups.target_fidfilt_counts.astype(np.int32)
-    else:
-        max_s_vis_all = lookups.target_fid_counts.astype(np.int32)
-
-    pt_df['filt_idx'] = pt_df['filter'].map(FILTER2IDX).fillna(ZENITH_FILTER_IDX).astype(np.int32)
-    if pt_df['filt_idx'].isna().any():
-        bad_filters = pt_df.loc[pt_df['filt_idx'].isna(), 'filter'].unique()
-        logger.warning(f"Found {pt_df['filt_idx'].isna().sum()} NaNs in 'filt_idx'.")
-        logger.warning(f"Unmapped filter strings causing NaNs: {bad_filters}")
-        logger.warning(f"Current FILTER2IDX keys: {list(FILTER2IDX.keys())}")
-    
-    # STATIC RADEC CACHE (Computed once if static coords)
-    if not is_azel:
-        bins_raw = hpGrid.ang2idx(lon=ra_arr, lat=dec_arr)
-        bins_static = np.array([b if b is not None else ZENITH_BIN_NUM for b in bins_raw], dtype=np.int32)
-        v_mask_static = bins_static != ZENITH_BIN_NUM
-        v_bins_static = bins_static[v_mask_static]
-
-        if do_filt:
-            bc_s_f_static = np.zeros((n_bins, nfilters), dtype=np.float64)
-            for f in range(nfilters):
-                bc_s_f_static[:, f] = np.bincount(v_bins_static, weights=(max_s_f_vis_all[v_mask_static, f] > 0), minlength=n_bins)
-            act_s_f_static = bc_s_f_static > 0
-        else:
-            bc_s_static = np.bincount(v_bins_static, weights=(max_s_vis_all[v_mask_static] > 0), minlength=n_bins)
-            act_s_static = bc_s_static > 0
-
-    # ---------------------------------------------------------
-    # 3. NIGHT LOOP
-    # ---------------------------------------------------------
-    cache_time = -1e9
-    v_bins, v_mask = None, None
-    bc_s, bc_n, act_s, act_n = None, None, None, None
-    bc_s_f, bc_n_f, act_s_f, act_n_f = None, None, None, None
-    global_idx = 0
-
-    for night, group in tqdm(pt_df.groupby('night'), desc=f'Calculating {"AzEl" if is_azel else "RaDec"} History'):
-        # A. Initialize Night Counters
-        
-        # REFACTORED: Accessing history from the lookups object
-        if do_filt:
-            cur_s_f_vis = lookups.night2fidfilt_visit_hist[night].copy()
-            cur_n_f_vis = np.zeros((nfields, nfilters), dtype=np.int32)
-        else:
-            cur_s_vis = lookups.night2fid_visit_hist[night].copy().astype(np.int32)
-            cur_n_vis = np.zeros(nfields, dtype=np.int32)
-            
-        step_fids = group['field_id'].to_numpy(dtype=np.int32)
-        step_filts = group['filt_idx'].to_numpy(dtype=np.int32)
-        step_times = group['timestamp'].to_numpy(dtype=np.int32)
-
-        # B. Safely Calculate Target Max Arrays (Filtering out -1)
-        valid_night = group['object'] != 'zenith'
-        n_fids_raw = group['field_id'][valid_night].to_numpy(dtype=np.int32)
-        valid_fids = n_fids_raw != ZENITH_FIELD_ID
-        map_n_fids = field_ids[n_fids_raw[valid_fids]]
-        valid_map = map_n_fids != ZENITH_FIELD_ID
-        final_fids = map_n_fids[valid_map]
-        
-        if do_filt:
-            n_filts_raw = group['filt_idx'][valid_night].to_numpy(dtype=np.int32)
-            aligned_filts = n_filts_raw[valid_fids][valid_map]
-            valid_filt = aligned_filts != ZENITH_FILTER_IDX
-            
-            max_n_f_vis = np.zeros((nfields, nfilters), dtype=np.int32)
-            np.add.at(max_n_f_vis, (final_fids[valid_filt], aligned_filts[valid_filt]), 1)
-            max_s_f_vis = np.maximum(max_n_f_vis, max_s_f_vis_all)
-        else:
-            max_n_vis = np.bincount(final_fids, minlength=nfields)
-            max_s_vis = np.maximum(max_n_vis, max_s_vis_all)
-
-        # C. If RaDec, inject static variables for the night
-        if not is_azel:
-            v_bins, v_mask = v_bins_static, v_mask_static
-            
-            if do_filt:
-                bc_s_f, act_s_f = bc_s_f_static, act_s_f_static
-                bc_n_f = np.zeros((n_bins, nfilters), dtype=np.float64)
-                for f in range(nfilters):
-                    bc_n_f[:, f] = np.bincount(v_bins, weights=(max_n_f_vis[v_mask, f] > 0), minlength=n_bins)
-                act_n_f = bc_n_f > 0
-            else:
-                bc_s, act_s = bc_s_static, act_s_static
-                bc_n = np.bincount(v_bins, weights=(max_n_vis[v_mask] > 0), minlength=n_bins)
-                act_n = bc_n > 0
-                
-        # ---------------------------------------------------------
-        # 4. TIMESTEP LOOP
-        # ---------------------------------------------------------
-        for timestamp, obs_fid, obs_filt in zip(step_times, step_fids, step_filts):
-            
-            # I. Update Tracking Counters
-            if obs_fid != ZENITH_FIELD_ID:
-                if do_filt:
-                    cur_s_f_vis[obs_fid, obs_filt] += 1
-                    cur_n_f_vis[obs_fid, obs_filt] += 1
-                else:
-                    cur_s_vis[obs_fid] += 1
-                    cur_n_vis[obs_fid] += 1
+            if key not in features:
+                print(features.keys())
+                raise ValueError(
+                    f"Requested feature '{key}' was not calculated by the pipeline."
+                )
+            final_arrays.append(features.pop(key))
  
-            # II. If AzEl, do 5-minute dynamic cache updates
-            if is_azel and abs(timestamp - cache_time) > 300:
-                az, el = ephemerides.equatorial_to_topographic(ra_arr, dec_arr, time=timestamp)
-                bins = np.array([b if b is not None else ZENITH_BIN_NUM for b in hpGrid.ang2idx(lon=az, lat=el)], dtype=np.int32)
-                v_mask = (el > 0) & (bins != ZENITH_BIN_NUM)
-                v_bins = bins[v_mask]
-                
-                if do_filt:
-                    bc_s_f, bc_n_f = np.zeros((n_bins, nfilters)), np.zeros((n_bins, nfilters))
-                    for f in range(nfilters):
-                        bc_s_f[:, f] = np.bincount(v_bins, weights=(max_s_f_vis[v_mask, f] > 0), minlength=n_bins)
-                        bc_n_f[:, f] = np.bincount(v_bins, weights=(max_n_f_vis[v_mask, f] > 0), minlength=n_bins)
-                    act_s_f, act_n_f = bc_s_f > 0, bc_n_f > 0
-                else:    
-                    bc_s = np.bincount(v_bins, weights=(max_s_vis[v_mask] > 0), minlength=n_bins)
-                    bc_n = np.bincount(v_bins, weights=(max_n_vis[v_mask] > 0), minlength=n_bins)
-                    act_s, act_n = bc_s > 0, bc_n > 0
-                    
-                cache_time = timestamp
-            
-            # Execute 2D States (If Filter Space Active)
-            if do_filt:
-                v_s_f_vis, v_n_f_vis = cur_s_f_vis[v_mask], cur_n_f_vis[v_mask]
-                v_max_s_f, v_max_n_f = max_s_f_vis[v_mask], max_n_f_vis[v_mask]
-                in_s_f_plan, in_n_f_plan = v_max_s_f > 0, v_max_n_f > 0
-                
-                # Initialize with np.inf to prevent masking highly over-visited fields
-                s_f_mins = np.full((n_bins, nfilters), np.inf, dtype=np.float32)
-                n_f_mins = np.full((n_bins, nfilters), np.inf, dtype=np.float32)
-                s_f_til = np.full_like(v_s_f_vis, np.inf, dtype=np.float32)
-                n_f_til = np.full_like(v_n_f_vis, np.inf, dtype=np.float32)
-                
-                np.divide(v_s_f_vis, v_max_s_f, out=s_f_til, where=in_s_f_plan)
-                np.divide(v_n_f_vis, v_max_n_f, out=n_f_til, where=in_n_f_plan)
-
-                for f, filt_name in idx2filter.items():
-                    assign_state((v_n_f_vis[:, f] == 0) & in_n_f_plan[:, f], (v_s_f_vis[:, f] == 0) & in_s_f_plan[:, f], 
-                                 bc_n_f[:, f], bc_s_f[:, f], act_n_f[:, f], act_s_f[:, f], f'night_num_unvisited_fields_{filt_name}', f'survey_num_unvisited_fields_{filt_name}')
-                    assign_state((v_n_f_vis[:, f] < v_max_n_f[:, f]) & in_n_f_plan[:, f], (v_s_f_vis[:, f] < v_max_s_f[:, f]) & in_s_f_plan[:, f],
-                                 bc_n_f[:, f], bc_s_f[:, f], act_n_f[:, f], act_s_f[:, f], f'night_num_incomplete_fields_{filt_name}', f'survey_num_incomplete_fields_{filt_name}')
-                    
-                    np.minimum.at(s_f_mins[:, f], v_bins, s_f_til[:, f])
-                    np.minimum.at(n_f_mins[:, f], v_bins, n_f_til[:, f])
-                    
-                    # Apply sentinels exclusively to untouched bins (np.inf)
-                    s_f_mins[~act_s_f[:, f] | np.isinf(s_f_mins[:, f]), f] = sentinel_val
-                    n_f_mins[~act_n_f[:, f] | np.isinf(n_f_mins[:, f]), f] = sentinel_val
-                    
-                    # Cap over-visited fields safely at 1.0 without destroying sentinels
-                    s_f_mins[:, f] = np.minimum(s_f_mins[:, f], 1.0)
-                    n_f_mins[:, f] = np.minimum(n_f_mins[:, f], 1.0)
-                    
-                    if (sk := f'survey_min_tiling_{filt_name}') in historic_features: historic_features[sk][global_idx] = s_f_mins[:, f]
-                    if (nk := f'night_min_tiling_{filt_name}') in historic_features: historic_features[nk][global_idx] = n_f_mins[:, f]
-            else:
-                # IV. Execute 1D States (No per-filter tracking, just overall visit counts)
-
-                # Get valid visit/max_visit arrays for visited bins
-                v_s_vis, v_n_vis = cur_s_vis[v_mask], cur_n_vis[v_mask]
-                v_max_s, v_max_n = max_s_vis[v_mask], max_n_vis[v_mask]
-                in_s_plan, in_n_plan = v_max_s > 0, v_max_n > 0
-
-                # NUM UNVISITED/INCOMPLETE (normalized by number of fields in bin) 
-                assign_state((v_n_vis == 0) & in_n_plan, (v_s_vis == 0) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_unvisited_fields', 'survey_num_unvisited_fields')
-                assign_state((v_n_vis < v_max_n) & in_n_plan, (v_s_vis < v_max_s) & in_s_plan, bc_n, bc_s, act_n, act_s, 'night_num_incomplete_fields', 'survey_num_incomplete_fields')
-
-                # MIN TILING
-                s_til, n_til = np.full_like(v_s_vis, np.inf, dtype=np.float32), np.full_like(v_n_vis, np.inf, dtype=np.float32)
-                np.divide(v_s_vis.astype(np.float32), v_max_s.astype(np.float32), out=s_til, where=in_s_plan)
-                np.divide(v_n_vis.astype(np.float32), v_max_n.astype(np.float32), out=n_til, where=in_n_plan)
-                
-                s_mins, n_mins = np.full(n_bins, np.inf, dtype=np.float32), np.full(n_bins, np.inf, dtype=np.float32)
-                np.minimum.at(s_mins, v_bins, s_til)
-                np.minimum.at(n_mins, v_bins, n_til)
-                
-                # Apply sentinels exclusively to untouched bins (np.inf)
-                s_mins[~act_s | np.isinf(s_mins)] = sentinel_val
-                n_mins[~act_n | np.isinf(n_mins)] = sentinel_val
-                
-                # Cap over-visited fields safely at 1.0 without destroying sentinels
-                s_mins = np.minimum(s_mins, 1.0)
-                n_mins = np.minimum(n_mins, 1.0)
-                
-                if 'survey_min_tiling' in historic_features: historic_features['survey_min_tiling'][global_idx] = s_mins
-                if 'night_min_tiling' in historic_features: historic_features['night_min_tiling'][global_idx] = n_mins
-
-            global_idx += 1
-            
-    _validate_history_dependent_features(do_filt=do_filt, idx2filter=idx2filter, calculated_features=historic_features)
-    logger.debug(f"Historic features generated: {list(historic_features.keys())}")
-    
-    return historic_features
-
-def _validate_history_dependent_features(do_filt, idx2filter, calculated_features):
-    # Build a list of feature groupings to validate (both survey and night levels)
-    check_groups = []
-    for scope in ['survey', 'night']:
-        check_groups.append({
-            'unv': f"{scope}_num_unvisited_fields",
-            'inc': f"{scope}_num_incomplete_fields",
-            'til': f"{scope}_min_tiling",
-            'name': f"{scope} (base)"
-        })
-        if do_filt:
-            for filt_name in idx2filter.values():
-                check_groups.append({
-                    'unv': f"{scope}_num_unvisited_fields_{filt_name}",
-                    'inc': f"{scope}_num_incomplete_fields_{filt_name}",
-                    'til': f"{scope}_min_tiling_{filt_name}",
-                    'name': f"{scope} ({filt_name})"
-                })
-
-    for grp in check_groups:
-        unv_key, inc_key, til_key = grp['unv'], grp['inc'], grp['til']
-        
-        # Only check if these features were actually requested and generated
-        if all(k in calculated_features for k in [unv_key, inc_key, til_key]):
-            unv = calculated_features[unv_key]
-            inc = calculated_features[inc_key]
-            til = calculated_features[til_key]
-            
-            # Identify valid entries (ignoring the -1.0 or -0.1 sentinels for inactive bins)
-            v_unv, v_inc, v_til = (unv >= 0.0), (inc >= 0.0), (til >= 0.0)
-            
-            # 1. Bounds Check
-            if np.any(unv[v_unv] > 1.0):
-                bad_idx = np.where(v_unv & (unv > 1.0))
-                ts, bn = bad_idx[0][0], bad_idx[1][0]
-                raise RuntimeError(f"FATAL BOUNDS: {unv_key} > 1.0 at global_idx {ts}, bin {bn}. Val: {unv[ts, bn]}")
-            
-            if np.any(inc[v_inc] > 1.0):
-                bad_idx = np.where(v_inc & (inc > 1.0))
-                ts, bn = bad_idx[0][0], bad_idx[1][0]
-                raise RuntimeError(f"FATAL BOUNDS: {inc_key} > 1.0 at global_idx {ts}, bin {bn}. Val: {inc[ts, bn]}")
-
-            # 2. Subset Rule: Unvisited MUST be <= Incomplete
-            both_valid = v_unv & v_inc
-            subset_violation = both_valid & (unv > (inc + 1e-5))
-            if np.any(subset_violation):
-                bad_idx = np.where(subset_violation)
-                ts, bn = bad_idx[0][0], bad_idx[1][0]
-                raise RuntimeError(
-                    f"FATAL LOGIC LEAK: {grp['name']} unvisited > incomplete at global_idx {ts}, bin {bn}.\n"
-                    f"Unvisited: {unv[ts, bn]} | Incomplete: {inc[ts, bn]}"
-                )
-
-            # 3. Tiling Floor: If unvisited > 0, min_tiling MUST be 0.0
-            both_valid_til = v_unv & v_til
-            has_unvisited = unv > 1e-5
-            tiling_violation = both_valid_til & has_unvisited & (til > 1e-5)
-            if np.any(tiling_violation):
-                bad_idx = np.where(tiling_violation)
-                ts, bn = bad_idx[0][0], bad_idx[1][0]
-                raise RuntimeError(
-                    f"FATAL LOGIC LEAK: {grp['name']} has unvisited fields, but min_tiling > 0 at global_idx {ts}, bin {bn}.\n"
-                    f"Unvisited: {unv[ts, bn]} | Min Tiling: {til[ts, bn]}"
-                )
+        assert len(final_arrays) == len(requested_features)
+        bin_states = np.array(final_arrays)
+        return rearrange(
+            bin_states, 'nfeats nrows nbins -> nrows nbins nfeats'
+        )

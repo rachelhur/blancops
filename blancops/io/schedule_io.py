@@ -3,13 +3,13 @@ from collections import OrderedDict
 import numpy as np
 from pathlib import Path
 
-from blancops.data.constants import IDX2FILTER, WAIT_SIGNAL, ZENITH_BIN_NUM
+from blancops.configs.constants import IDX2FILTER, WAIT_SIGNAL, ZENITH_BIN_NUM
 from blancops.math import units
 from collections import defaultdict
 import numpy as np
 from pathlib import Path
 
-from blancops.data.constants import *
+from blancops.configs.constants import *
 import logging
 logger = logging.getLogger(__name__)
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -20,7 +20,7 @@ import pandas as pd
 
 
 import json
-EMPTY_SISPI_DICT = OrderedDict([
+_EMPTY_SISPI_DICT = OrderedDict([
     ("object",  None),
     ("seqnum",  None), # 1-indexed
     ("seqtot",  1),
@@ -66,7 +66,7 @@ def write_SISPI_from_schedule(schedule_df, out_fn, save_dir, field_lookup, filte
     sispi_list = []
 
     for i in range(seqtot):
-        obs = EMPTY_SISPI_DICT.copy()
+        obs = _EMPTY_SISPI_DICT.copy()
 
         current_obs = {}
 

@@ -3,19 +3,20 @@ import numpy as np
 import torch
 import matplotlib
 
-from blancops.data.lookup import LookupTables
+from blancops.data.lookup_tables import LookupTables
 matplotlib.use('Agg')
 import time
 
 from blancops.rl.trainer import Trainer
 # from blancops.rl.algorithms.builder import build_algorithm
-from blancops.utils.sys_utils import setup_logger, get_device, seed_everything
+from blancops.utils.sys_utils import get_device, seed_everything
+from blancops.io.logger_utils import setup_logger
 from blancops.data.preprocessing import preprocess_train_df 
 from blancops.data.dataset import OfflineDataset
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 from blancops.rl.registry import build_algorithm, build_network
 from blancops.configs.schema import ExperimentConfig, load_and_validate, resolve_and_save
-from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, BIN_FEATURES, WORKSPACE
+from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, _BIN_FEATURES, WORKSPACE
 
 import argparse
 import logging

@@ -1,4 +1,30 @@
-from datetime import timezone, timedelta
+"""Global (per-timestep, single-row) feature computation.
+
+The module-level helpers at the top define the canonical per-timestep
+computation. Both ``BaseBlancoEnv._calculate_global_features`` (live,
+1 timestep) and ``GlobalFeatureEngineer.transform`` (offline, batch) drive
+them — the offline pipeline iterating rows and writing into DataFrame
+columns; the live env returning a single dict.
+
+Two helpers split the computation by data dependency:
+
+- ``compute_global_time_only_features``: depends only on ``timestamp``.
+  Sun/Moon positions, Moon phase, LST. Used by both pipelines.
+- ``compute_global_pointing_features``: depends on ``(timestamp, ra, dec)``.
+  Topocentric az/el/ha, plane-parallel airmass, per-filter sky brightness.
+  Used by the live env only — the offline pipeline reads az/el/ha from the
+  raw FITS measurements (which differ from ephemeris values due to
+  atmospheric refraction and pointing error) and uses its own vectorized
+  sky-brightness pass for batch efficiency.
+
+A third helper, ``apply_cyclical_global_features``, expands cyclical
+features to ``_cos``/``_sin`` pairs. It works on either a dict (live) or a
+pandas DataFrame (offline) via duck-typed `in` / ``[k]`` / ``[k] = v``.
+"""
+from datetime import time, timezone, timedelta
+import datetime
+from typing import Union
+from collections import defaultdict
 
 import pandas as pd
 import numpy as np
@@ -6,12 +32,14 @@ import torch
 import ephem
 from astropy.time import Time
 from tqdm import tqdm
+from datetime import date, datetime, timedelta, timezone
 
+from blancops.ephemerides.time_utils import standardize_time, unix_to_datetime
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.data.constants import (
-    ZENITH_BIN_NUM, ZENITH_FIELD_ID, ZENITH_WAVELENGTH, 
+    BLANCO_LON, ZENITH_BIN_NUM, ZENITH_FIELD_ID, ZENITH_WAVELENGTH,
     FILTER2WAVE, FILTERWAVENORM, FILTER2IDX, ZENITH_FILTER,
     ZENITH_AZ, ZENITH_EL, ZENITH_AIRMASS, ZENITH_ZD, ZENITH_HA, ZENITH_OBJECT
 )
@@ -19,11 +47,117 @@ from blancops.data.constants import (
 import logging
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+# Canonical per-timestep helpers — single source of truth, shared between
+# BaseBlancoEnv (live, single-step) and GlobalFeatureEngineer (offline batch).
+# ============================================================================
+
+
+def compute_global_time_only_features(*, timestamp) -> dict:
+    """Time-only global ephemeris features (no pointing dependence).
+
+    Returns a dict with: ``lst``, ``sun_ra``, ``sun_dec``, ``sun_az``,
+    ``sun_el``, ``moon_ra``, ``moon_dec``, ``moon_az``, ``moon_el``,
+    ``moon_phase`` — each a scalar at the given timestamp.
+
+    Used by both pipelines: live calls this once per step; offline calls
+    it inside its row loop to fill the sun/moon/lst columns.
+    """
+    features = {}
+
+    astro_time = Time(timestamp, format='unix', scale='utc')
+    features['lst'] = float(
+        astro_time.sidereal_time('apparent', longitude=BLANCO_LON).radian
+    )
+
+    sun_radec, sun_azel, moon_radec, moon_azel = calc_sun_and_moon_positions(timestamp)
+    features['sun_ra'], features['sun_dec'] = sun_radec
+    features['sun_az'], features['sun_el'] = sun_azel
+    features['moon_ra'], features['moon_dec'] = moon_radec
+    features['moon_az'], features['moon_el'] = moon_azel
+    features['moon_phase'] = calc_moon_phase(timestamp)
+
+    return features
+
+
+def compute_global_pointing_features(*, timestamp, ra, dec) -> dict:
+    """Pointing-dependent global ephemeris features.
+
+    Returns a dict with: ``az``, ``el`` (clipped to ``[0, π/2]``), ``ha``,
+    ``airmass``, and ``sky_brightness_<filter>`` for each filter in
+    ``FILTER2IDX``.
+
+    The elevation clip absorbs the precision issue where ``el`` can be
+    slightly negative just before sunrise/sunset and propagate into the
+    airmass calculation as a divergent value.
+
+    Used by the live env. The offline pipeline takes ``az``/``el``/``ha``
+    from FITS measurements (which differ from ephemeris values due to
+    atmospheric refraction and pointing error) and uses a vectorized
+    sky-brightness pass for batch efficiency, so it does not call this
+    helper.
+    """
+    features = {}
+
+    az, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=timestamp)
+    el = max(min(el, np.pi / 2), 0.0)
+    features['az'] = az
+    features['el'] = el
+    features['ha'] = ephemerides.equatorial_to_hour_angle(
+        ra=ra, dec=dec, time=timestamp
+    )
+    features['airmass'] = 1.0 / np.cos(np.pi / 2 - el)
+
+    for filt in FILTER2IDX.keys():
+        features[f"sky_brightness_{filt}"] = estimate_sky_brightness(
+            time=timestamp, ra=ra, dec=dec, band=filt
+        )
+
+    return features
+
+
+def apply_cyclical_global_features(features, base_names, cyclical_names):
+    """Add ``<feat>_cos`` and ``<feat>_sin`` for cyclical features, in place.
+
+    Walks ``base_names`` (the pre-expansion config list), matches against
+    ``cyclical_names``, and writes cos/sin if the feature exists in
+    ``features``. Works on a dict (live, scalar values) or a pandas
+    DataFrame (offline, columns) — both support
+    ``__contains__`` / ``__getitem__`` / ``__setitem__``.
+
+    Matching rule: a name is cyclical iff it equals a cyclical name exactly
+    or ends with ``_<cyc>`` (e.g. ``sun_ha`` matches cyclical ``ha``).
+    ``rel_*`` names are skipped defensively even though they don't currently
+    appear in the global feature list.
+
+    Note: the previous offline implementation used ``feat_name.endswith(cyc)``
+    *without* the leading underscore, which spuriously matched ``rel_ha``
+    against cyclical ``ha`` (since ``"rel_ha"`` ends with ``"ha"``). This
+    helper uses the correct rule and fixes that.
+    """
+    for name in base_names:
+        is_match = any(
+            name == cyc or name.endswith(f"_{cyc}")
+            for cyc in cyclical_names
+        )
+        is_excluded = name.startswith("rel_") or name.startswith("delta_")
+        if is_match and not is_excluded and name in features:
+            features[f"{name}_cos"] = np.cos(features[name])
+            features[f"{name}_sin"] = np.sin(features[name])
+
+
+# ============================================================================
+# GlobalFeatureEngineer — offline batch pipeline.
+# ============================================================================
+
+
 class GlobalFeatureEngineer:
     """Pipeline for calculating global state features for blancops RL."""
-    
-    def __init__(self, fid2name, hpGrid, base_features, cyclical_features, do_cyclical_norm=True):
-        self.fid2name = fid2name
+
+    def __init__(self, lookups, hpGrid, base_features, cyclical_features,
+                 do_cyclical_norm=True):
+        self.lookups = lookups
         self.hpGrid = hpGrid
         self.base_features = base_features
         self.cyclical_features = cyclical_features
@@ -47,27 +181,48 @@ class GlobalFeatureEngineer:
         return df
 
     def _add_time_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Fill LST + sun/moon + moon_phase columns via the shared helper,
+        then add ``t_night`` (which needs per-night normalization).
+        """
+        timestamps = df['timestamp'].values
+
+        # Drive the shared helper per row; accumulate into per-column lists,
+        # then assign back to df in one shot.
+        feat_lists = defaultdict(list)
+        for t in tqdm(timestamps, total=len(timestamps),
+                      desc='Calculating sun/moon/lst ephemeris'):
+            feats = compute_global_time_only_features(timestamp=t)
+            for k, v in feats.items():
+                feat_lists[k].append(v)
+
+        for k, vs in feat_lists.items():
+            df[k] = vs
+
+        # Preserve the lst_hours debugging column when LST is requested —
+        # it's not in any standard feature set, but several offline tools
+        # consume it. Cheap to compute vectorized.
         if 'lst' in self.base_features:
-            df['lst'], df['lst_hours'] = calc_lst(df['datetime'].values)
-            
-        df = add_timestamp_dependent_features(df, df['timestamp'].values)
+            _, df['lst_hours'] = calc_lst(df['datetime'].values)
+
         df['t_night'] = df.groupby('night')['timestamp'].transform(normalize_times)
         return df
 
     def _map_bins_and_fields(self, df: pd.DataFrame) -> pd.DataFrame:
-        df['field_id'] = df['object'].map({v: k for k, v in self.fid2name.items()})
-        
+        """Maps RA/Dec to field_id and bin number, using lookups and hpGrid if provided."""
+        # df['field_id'] = df['object'].map({v: k for k, v in self.fid2name.items()})
+        df['field_id'] = df['object'].map({v: k for k, v in self.lookups.fields['object'].to_dict().items()})
+
         if self.hpGrid is not None:
             lon = df['az'] if self.hpGrid.is_azel else df['ra']
             lat = df['el'] if self.hpGrid.is_azel else df['dec']
-            
+
             df['bin'] = self.hpGrid.ang2idx(lon=lon, lat=lat)
-            
+
             # Re-assign zenith specifics
             zenith_mask = df['object'] == 'zenith'
             df.loc[zenith_mask, "bin"] = ZENITH_BIN_NUM
             df.loc[zenith_mask, "field_id"] = ZENITH_FIELD_ID
-            
+
         return df
 
     def _add_filter_features(self, df: pd.DataFrame):
@@ -79,64 +234,54 @@ class GlobalFeatureEngineer:
                 filt_str = feat_name.split('_')[-1]
                 df[feat_name] = (df['filter'] == filt_str).astype(np.float32)
         return df
-    
+
     def _add_sky_brightness(self, df):
+        """Vectorized per-filter sky brightness. Kept separate from the
+        shared per-timestep helper because ``estimate_sky_brightness``
+        accepts arrays — calling it five times with N-element arrays is
+        much faster than calling it per row in the time-features loop.
+        """
         if any(('sky_brightness' in base_feat) for base_feat in self.base_features):
             for filt in FILTER2WAVE.keys():
                 if filt != ZENITH_FILTER:
-                    df[f'sky_brightness_{filt}'] = estimate_sky_brightness(time=df['timestamp'].values, ra=df['ra'].values, dec=df['dec'].values, band=filt)
+                    df[f'sky_brightness_{filt}'] = estimate_sky_brightness(
+                        time=df['timestamp'].values,
+                        ra=df['ra'].values,
+                        dec=df['dec'].values,
+                        band=filt,
+                    )
         return df
-                    
+
     def _ensure_32_bit(self, df):
-        for bin_str, np_bit in zip(['float64', 'int64'], [np.float32, np.int32]): 
+        for bin_str, np_bit in zip(['float64', 'int64'], [np.float32, np.int32]):
             cols = df.select_dtypes(include=[bin_str]).columns
             df[cols] = df[cols].astype(np_bit)
         return df
 
     def _apply_cyclical_norms(self, df: pd.DataFrame) -> pd.DataFrame:
-        for feat_name in self.base_features:
-            if any(feat_name.endswith(string) for string in self.cyclical_features):
-            # if any(string in feat_name and 'frac' not in feat_name and 'bin' not in feat_name for string in cyclical_feature_names):
-                logger.info(f'Applying cyclical norm to {feat_name}')
-                df[f'{feat_name}_cos'] = np.cos(df[feat_name].values)
-                df[f'{feat_name}_sin'] = np.sin(df[feat_name].values)
+        """Add cos/sin pairs for cyclical features via the shared helper.
+
+        Uses the corrected matching rule (exact name OR ``_<cyc>`` suffix);
+        the previous in-class version used a bare ``endswith`` that also
+        matched ``rel_*`` features against their unprefixed cyclical roots.
+        """
+        apply_cyclical_global_features(
+            df, self.base_features, self.cyclical_features
+        )
         return df
 
-def add_timestamp_dependent_features(df, timestamps):
-    sun_ras, sun_decs, sun_azs, sun_els = [], [], [], []
-    moon_ras, moon_decs, moon_azs, moon_els = [], [], [], []
-    moon_phases = []
-    
-    for time in tqdm(timestamps, total=len(timestamps), desc='Calculating sun and moon ra/dec and az/el'):
-        # CALCULATE FEATURES
-        sun_radec, sun_azel, moon_radec, moon_azel = calc_sun_and_moon_positions(time=time)
-        moon_phase = calc_moon_phase(time=time)
-        
-        # APPEND TO LIST 
-        sun_ras.append(sun_radec[0]); sun_decs.append(sun_radec[1]); sun_azs.append(sun_azel[0]); sun_els.append(sun_azel[1])
-        moon_ras.append(moon_radec[0]); moon_decs.append(moon_radec[1]); moon_azs.append(moon_azel[0]); moon_els.append(moon_azel[1])
-        moon_phases.append(moon_phase)
 
-    # ADD TO DATAFRAME
-    df['sun_ra'], df['sun_dec'], df['sun_az'], df['sun_el'] = sun_ras, sun_decs, sun_azs, sun_els
-    df['moon_ra'], df['moon_dec'], df['moon_az'], df['moon_el'] = moon_ras, moon_decs, moon_azs, moon_els
-    df['moon_phase'] = moon_phases
-    return df
+# ============================================================================
+# Other helpers (data-loading-time computations, not part of the shared
+# per-timestep API).
+# ============================================================================
 
-def add_cyclical_norm_cols(df, base_global_feature_names, cyclical_feature_names):
-    for feat_name in base_global_feature_names:
-        if any(feat_name.endswith(f"_{cyc_feat}") or (feat_name == cyc_feat) for cyc_feat in cyclical_feature_names):
-        # if any(string in feat_name and 'frac' not in feat_name and 'bin' not in feat_name for string in cyclical_feature_names):
-            logger.info(f'Applying cyclical norm to {feat_name}')
-            df[f'{feat_name}_cos'] = np.cos(df[feat_name].values)
-            df[f'{feat_name}_sin'] = np.sin(df[feat_name].values)
-    return df
 
 def calc_t_survey(survey_night_indices, survey_nights_max):
     t_survey = survey_night_indices / survey_nights_max
     if type(t_survey) == torch.Tensor or type(t_survey) == np.ndarray:
         assert t_survey.min() >= 0 and t_survey.max() <= 1, "t_survey should be between 0 and 1"
-    return t_survey    
+    return t_survey
 
 def calc_urgency(filter_counts_arr, filter_counts_max, survey_night_indices, survey_nights_max):
     survey_progress = filter_counts_arr / filter_counts_max
@@ -144,19 +289,134 @@ def calc_urgency(filter_counts_arr, filter_counts_max, survey_night_indices, sur
     urgency = np.clip((1 - survey_progress) / (1 - t_survey + 1e-9), a_min=0.01, a_max=100.0)
     return urgency
 
-def calc_twilight(timestamp, event_type='set', horizon='-10', buffer_in_seconds=10):
-    obs = ephemerides.blanco_observer(time=timestamp)
-    obs.horizon = horizon
+def get_night_boundaries(
+    anchor: Union[
+    float, int, np.integer, np.floating,
+    datetime, date, pd.Timestamp, str,
+    pd.Series
+    ],
+    sun_el_limit: float = -14.0,
+    observer_lon_rad: float = -70.8065,
+) -> tuple[float, float]:
+    """Compute (sunset_ts, sunrise_ts) UTC unix timestamps for the
+    Blanco observing night identified by `anchor`.
+
+    `anchor` accepts whatever is most natural at the call site:
+      - **Unix timestamp** (numeric, including numpy scalars): a moment
+        in time. The night is determined with a local-noon cutover —
+        moments before local solar noon resolve to the night just
+        ended, after to the upcoming. References inside an observing
+        night always land on that night.
+      - **Datetime / Timestamp / ISO string**: same — interpreted as a
+        moment, reduced via the unix-timestamp path. (For
+        `first_row["night"]` at 23:59:59 UTC, the moment is well
+        inside the local-noon cutover region for its night, so this
+        Just Works.)
+      - **`date`**: treated as the canonical evening-date of the
+        observing night and used directly, no cutover needed.
+      - **`pd.Series`**: uses the first element. Convenient for
+        `df.groupby('night').transform(...)` callbacks where every
+        element of the group belongs to the same night by construction.
+    """
+    noon_ts = _noon_anchor_from_input(anchor, observer_lon_rad)
+    sunset_ts = calc_twilight(noon_ts, "set", sun_el_limit)
+    sunrise_ts = calc_twilight(noon_ts, "rise", sun_el_limit)
+
+    if not (sunset_ts < sunrise_ts):
+        raise RuntimeError(
+            f"Computed sunset ({sunset_ts}) does not precede sunrise "
+            f"({sunrise_ts}) for sun_el_limit={sun_el_limit}. Check that "
+            f"sun_el_limit isn't above the local horizon for this date "
+            f"(no twilight crossing) and that calc_twilight returns "
+            f"`next_*`-style boundaries."
+        )
+    return sunset_ts, sunrise_ts
+
+def _noon_anchor_from_input(
+    anchor: Union[
+        float, int, np.integer, np.floating,
+        datetime, date, pd.Timestamp, str,
+        pd.Series,
+        ],
+    observer_lon_deg: float = -70.8065,
+) -> float:
+    """Resolve a flexible `anchor` to the unix timestamp of local solar
+    noon on the corresponding date."""
+    # Approximate UTC offset from longitude (15° per hour). Solar time,
+    # not civil — accurate to within the equation of time (~16 min) and
+    # free of timezone/DST handling. Sufficient because noon is ~6 h
+    # from any twilight boundary.
+    utc_offset_sec = observer_lon_deg * (3600.0 / 15.0)  # degrees to seconds
+
+    # pd.Series: every element belongs to the same night by groupby
+    # construction at all current call sites; use the first.
+    if isinstance(anchor, pd.Series):
+        if len(anchor) == 0:
+            raise ValueError(
+                "Cannot derive a night anchor from an empty Series."
+            )
+        anchor = anchor.iloc[0]
+
+    # `date` but NOT `datetime` (datetime is a subclass of date in
+    # the stdlib): treat as canonical evening-date label, skip cutover.
+    if isinstance(anchor, date) and not isinstance(anchor, datetime):
+        anchor_date = anchor
+    else:
+        # Everything else reduces to a unix timestamp.
+        if isinstance(anchor, (int, float, np.integer, np.floating)):
+            ts_unix = float(anchor)
+        elif isinstance(anchor, pd.Timestamp):
+            ts = (
+                anchor if anchor.tzinfo is not None
+                else anchor.tz_localize("UTC")
+            )
+            ts_unix = ts.timestamp()
+        elif isinstance(anchor, datetime):
+            ts = (
+                anchor if anchor.tzinfo is not None
+                else anchor.replace(tzinfo=timezone.utc)
+            )
+            ts_unix = ts.timestamp()
+        elif isinstance(anchor, str):
+            ts = pd.Timestamp(anchor)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+            ts_unix = ts.timestamp()
+        else:
+            raise TypeError(
+                f"Unsupported anchor type {type(anchor).__name__}; "
+                f"expected unix timestamp, datetime, date, pd.Timestamp, "
+                f"ISO string, or pd.Series of timestamps."
+            )
+
+        # Local-noon cutover: shift to local time, back 12 h, take date.
+        local_ref = datetime.fromtimestamp(
+            ts_unix + utc_offset_sec, tz=timezone.utc
+        )
+        anchor_date = (local_ref - timedelta(hours=12)).date()
+
+    return (
+        datetime(
+            anchor_date.year, anchor_date.month, anchor_date.day,
+            hour=12, tzinfo=timezone.utc,
+        ).timestamp()
+        - utc_offset_sec
+    )
+
+def calc_twilight(ts, event_type='set', horizon='-14', buffer_in_seconds=10):
+    obs = ephemerides.blanco_observer(time=ts)
+    obs.horizon = str(horizon)
     sun = ephem.Sun()
+    sun.compute(obs)
 
     if event_type == 'rise':
-        ephem_date = obs.next_rising(sun).datetime()
+        ephem_date = obs.next_rising(sun)
     elif event_type == 'set':
-        ephem_date = obs.previous_setting(sun).datetime()
+        ephem_date = obs.next_setting(sun)
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Unsupported event_type: {event_type}")
 
-    dt_utc = ephem_date.replace(tzinfo=timezone.utc)
+    dt_utc = ephem_date.datetime().replace(tzinfo=timezone.utc)
     if event_type == 'rise':
         dt_utc -= timedelta(seconds=buffer_in_seconds)
     else:
@@ -239,9 +499,11 @@ def _backfill_zenith_states(df):
     return df
 
 
-def normalize_times(time_series):
-    sunset_ts = calc_twilight(time_series.median(), event_type='set')
-    sunrise_ts = calc_twilight(time_series.median(), event_type='rise')
+def normalize_times(time_series, sun_el_limit=-10):
+    sunset_ts, sunrise_ts = get_night_boundaries(time_series, sun_el_limit)
+
+    # sunset_ts = calc_twilight(time_series.median(), event_type='set')
+    # sunrise_ts = calc_twilight(time_series.median(), event_type='rise')
     total_time = sunrise_ts - sunset_ts
 
     time_series = (time_series - sunset_ts) / total_time
@@ -261,14 +523,11 @@ def calc_inst_teff_rate(df, next_state_idxs):
     return rewards
 
 
-def time_until_set():
-    pass
-
 def calculate_sun_rise_and_set_azel(df):
     rise_times, set_times = calculate_sun_rise_and_set_times(df)
     rise_azels = np.empty(shape=(len(set_times), 2))
     set_azels = np.empty(shape=(len(set_times), 2))
-    
+
     for i, time in enumerate(rise_times):
         ra, dec = ephemerides.get_source_ra_dec('sun', time=time)
         sun_az, sun_el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=time)
@@ -279,75 +538,3 @@ def calculate_sun_rise_and_set_azel(df):
         set_azels[i] = np.array([sun_az, sun_el])
 
     return rise_azels, set_azels
-
-
-# def calculate_global_features(df: pd.DataFrame, fid2name, hpGrid, 
-#                       base_global_feature_names, cyclical_feature_names, do_cyclical_norm):
-#     # ADD ZENITH ROWS
-#     zenith_df = get_zenith_features(original_df=df)
-#     df = merge_zenith_df(df, zenith_df)
-
-#     # 2b. Back fill for zenith states (assume no change between zenith state and next state)
-#     df = _backfill_zenith_states(df)
-    
-#     # 3. Vectorized LST
-#     if 'lst' in base_global_feature_names:
-#         df['lst'], df['lst_hours'] = calc_lst(df['datetime'].values)
-
-#     # 4. Get time dependent features (sun and moon pos)
-#     timestamps = df['timestamp'].values
-#     df = add_timestamp_dependent_features(df, timestamps)
-    
-#     # Using nautical twilight for time start and end
-#     df['t_night'] = df.groupby('night')['timestamp'].transform(normalize_times)
-#     assert all(df['t_night'].values > 0) and all(df['t_night'].values < 1), "Time fractions should be between 0 and 1"  
-
-#     # 6. Add bin and field id columns to dataframe
-#     df['field_id'] = df['object'].map({v: k for k, v in fid2name.items()})
-    
-#     if hpGrid is not None:
-#         if hpGrid.is_azel:
-#             lon = df['az']
-#             lat = df['el']
-#         else:
-#             lon = df['ra']
-#             lat = df['dec']
-#         df['bin'] = hpGrid.ang2idx(lon=lon, lat=lat)
-#         df.loc[df['object'] == 'zenith', "bin"] = ZENITH_BIN_NUM
-#         df.loc[df['object'] == 'zenith', "field_id"] = ZENITH_FIELD_ID # Need to re-assign zenith field_id bc df['object'].map(...) above will assign zenith the field_id of the field with object name 'zenith', but this field is mis-labelled and not actually the zenith field. #TODO should fix this in fid2name
-
-#     # Add other feature columns for those not present in dataframe
-#     sky_bright_done = False
-    
-#     for feat_name in base_global_feature_names:
-#         if feat_name not in df.columns:
-#             if feat_name == 'filter_wave':
-#                 df['filter_wave'] = df['filter'].map(FILTER2WAVE)
-#                 df['filter_wave'] = df['filter_wave'].fillna(ZENITH_WAVELENGTH) / FILTERWAVENORM # zenith "filter" set to 0, then normalize
-#             elif feat_name == 'filter_idx':
-#                 df['filter_idx'] = df['filter'].map(FILTER2IDX)
-#             elif feat_name.startswith('is_filter_'):
-#                 filt_str = feat_name.split('_')[-1]
-#                 df[feat_name] = (df['filter'] == filt_str).astype(np.float32)
-#             elif 'sky_brightness' in feat_name:
-#                 if not sky_bright_done:
-#                     for filt in FILTER2WAVE.keys():
-#                         if filt != ZENITH_FILTER:
-#                             df[f'sky_brightness_{filt}'] = estimate_sky_brightness(time=timestamps, ra=df['ra'].values, dec=df['dec'].values, band=filt)
-#                     sky_bright_done = True
-#             else:
-#                 raise NotImplementedError(f"Feature {feat_name} not found in dataframe columns. Check spelling. Or, this feature is not yet implemented.")
-
-#     # Normalize periodic features here and add as df cols
-#     if do_cyclical_norm:
-#         df = add_cyclical_norm_cols(df, base_global_feature_names, cyclical_feature_names)
-#         # for feat_name in base_global_feature_names:
-#         #     if any(feat_name.endswith(string) for string in cyclical_feature_names):
-#         #     # if any(string in feat_name and 'frac' not in feat_name and 'bin' not in feat_name for string in cyclical_feature_names):
-#         #         logger.info(f'Applying cyclical norm to {feat_name}')
-#         #         df[f'{feat_name}_cos'] = np.cos(df[feat_name].values)
-#         #         df[f'{feat_name}_sin'] = np.sin(df[feat_name].values)
-
-#     # Ensure all data are 32-bit precision before training
-#     df = ensure_32_bit(df)
-#     return df

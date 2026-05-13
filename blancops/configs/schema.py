@@ -79,7 +79,7 @@ class TrainDataConfig(BaseDataConfig):
     val_nights: Optional[List[str]] = None
     train_val_split: float  = 0.9
     
-class BaseModelConfig(BaseModel):
+class BaseAlgConfig(BaseModel):
     network: Network = Network.CONTEXTUAL_SCORE_MLP
     loss_strategy: LossStrategy = LossStrategy.PURE_JOINT
     hidden_dim: int = 128
@@ -88,10 +88,10 @@ class BaseModelConfig(BaseModel):
     contextual_gating: bool = False
     activation: str = "relu"
     
-class BCModelConfig(BaseModelConfig):
+class BCAlgConfig(BaseAlgConfig):
     algorithm: Literal[Algorithm.BC]
 
-class DDQNModelConfig(BaseModelConfig):
+class DDQNAlgConfig(BaseAlgConfig):
     algorithm: Literal[Algorithm.DDQN]
     tau: float = 0.005 # DDQN specific parameter
     gamma: float = 0.99 # DDQN specific parameter
@@ -121,7 +121,7 @@ class TrainConfig(BaseModel):
             assert self.max_epochs - self.lr_sched_epoch_start - self.lr_sched_epoch_duration >= 0, "The number of epochs must be greater than lr_scheduler_epoch_start + lr_scheduler_dur_epochs"
         return self
     
-AnyModelConfig = Union[BCModelConfig, DDQNModelConfig]
+AnyModelConfig = Union[BCAlgConfig, DDQNAlgConfig]
 
 class ExperimentConfig(BaseModel):
     experiment_name: str

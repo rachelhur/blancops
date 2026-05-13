@@ -1,28 +1,20 @@
-from collections import defaultdict
-from pathlib import Path
-from gymnasium.spaces import Dict, Box, Discrete
-import gymnasium as gym
+from abc import ABC, abstractmethod
+import logging
+from einops import rearrange
 import numpy as np
-import pandas as pd
-
+import gymnasium as gym
+from collections import defaultdict
+from blancops.data.features.bin_features import calc_relative_survey_progress_features, get_delta_az_el, get_relative_feature
+from blancops.data.features.glob_features import calc_moon_phase, calc_sun_and_moon_positions, calc_urgency
+from blancops.data.features.normalizations import normalize_timestamp
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.math import units
 from blancops.ephemerides import ephemerides
-
-from blancops.data.features.glob_features import add_cyclical_norm_cols, calc_moon_phase, calc_sun_and_moon_positions, calc_urgency
-from blancops.data.features.bin_features import get_relative_feature, get_delta_az_el, calc_relative_survey_progress_features
-from blancops.data.features.normalizations import normalize_timestamp
-from blancops.math import geometry
 from blancops.data.constants import *
-
-
 from astropy.time import Time
-from einops import rearrange
 
-from abc import ABC, abstractmethod
-
-import logging
 logger = logging.getLogger(__name__)
+
 
 class BaseTelescopeEnv(gym.Env, ABC):
     def __init__(self):
@@ -63,7 +55,7 @@ class BaseTelescopeEnv(gym.Env, ABC):
         pass
 
     @abstractmethod
-    def _get_info(self):
+    def get_info(self):
         """Computes auxiliary information dictionary."""
         pass
 
@@ -96,72 +88,136 @@ class BaseTelescopeEnv(gym.Env, ABC):
             return 1
         return self._reward_func(last_field, next_field)    
 
+class BaseBlancoEnv(BaseTelescopeEnv):
+    """
+    Unified base class for Blanco Telescope environments.
+    Centralizes physics (airmass, slew), state updates, and feature calculation.
+    """
+    def __init__(self, model_cfg, env_cfg, lookups, global_normalizer, bin_normalizer, z_score_stats, rel_norm_stats):
+        self.cfg = model_cfg
+        self.lookups = lookups
+        
+        # Configuration & Normalization
+        self.global_normalizer = global_normalizer
+        self.bin_normalizer = bin_normalizer
+        self._z_score_stats = z_score_stats
+        self._rel_norm_stats = rel_norm_stats
+        self.include_bin_features = model_cfg.data.bin_state_dim > 0
+        self.action_space = model_cfg.data.action_space
+        # Whether action space includes a filter dimension
+        self.do_filt = 'filter' in model_cfg.data.action_space
+        
+        # Grid & Dimensions
+        self.hpGrid = ephemerides.HealpixGrid(
+            nside=model_cfg.data.nside, 
+            is_azel=('azel' in model_cfg.data.action_space)
+        )
+        self.nbins = len(self.hpGrid.idx_lookup)
+        self.state_dim = model_cfg.data.state_dim
+        self.bin_state_dim = model_cfg.data.bin_state_dim
+        
+        # Minimal feature name setup required by env:
+        self.base_global_feature_names = list(model_cfg.data.global_features)
+        self.base_bin_feature_names = list(model_cfg.data.bin_features)
+        self.global_feature_names = list(self.base_global_feature_names)
+        self.bin_feature_names = list(self.base_bin_feature_names)
 
-class BaseBlancoEnv(BaseTelescopeEnv, ABC):
-    """
-    Intermediate base class containing shared Blanco-specific state and logic.
-    """
-    def __init__(self):
+        # Telescope State
+        self._fids = np.array(list(lookups.fid2name.keys())).astype(np.int32)
+        self.nfields = len(self._fids)
+        self._ra_arr = np.array([lookups.fid2radec[fid][0] for fid in self._fids])
+        self._dec_arr = np.array([lookups.fid2radec[fid][1] for fid in self._fids])
+        
+        # Physics Limits
+        self.sun_el_limit = getattr(env_cfg, 'sun_el_limit', '-12')
+        self.airmass_limit = getattr(env_cfg, 'airmass_limit', 1.4)
+        
+        self._setup_action_and_obs_spaces()
         super().__init__()
 
-    def step(self, actions: dict):
-        """Execute one timestep within the environment.
+    @abstractmethod
+    def _get_night_config(self, night_idx: int):
+        """Retrieve the start/end/meta information for a specific night."""
+        pass
 
-        Args
-        ----
-            action (int): The field ID to observe next.
+    def _start_new_night(self):
+        """Centralized logic for beginning a new observing night."""
+        self._night_idx += 1
+        config = self._get_night_config(self._night_idx)
+        
+        self._ts = config['start_ts']
+        self._sunset_ts = config['sunset_ts']
+        self._sunrise_ts = config['sunrise_ts']
+        self._night_end_ts = config['end_ts']
+        
+        # Reset nightly counters
+        self._n_visits_cur = np.zeros(self.nfields, dtype=np.int32)
+        if hasattr(self, 'do_filt') and self.do_filt:
+            self._n_filter_visits_cur = np.zeros((self.nfields, NUM_FILTERS), dtype=np.int32)
+        
+        # Initialize state
+        self._field_id = ZENITH_FIELD_ID
+        # Set bin and filter indices for zenith/start state
+        self._bin_num = ZENITH_BIN_NUM
+        self._filter_idx = ZENITH_FILTER_IDX
+        self._update_action_masks()
+        self._global_state = self._calculate_global_features(
+            field_id=self._field_id, 
+            filter_idx=self._filter_idx, 
+            timestamp=self._ts, 
+            sunset_ts=self._sunset_ts, 
+            sunrise_ts=self._sunrise_ts,
+            ra_arr=self._ra_arr, 
+            dec_arr=self._dec_arr
+        )
 
-        Returns
-        -------
-            tuple: (next_obs, reward, terminated, truncated, info)
-                - next_obs (np.ndarray): The observation after the action.
-                - reward (float): The reward obtained from the action.
-                - terminated (bool): Whether the episode has ended (e.g., reached observation limit).
-                - truncated (bool): Whether the episode was truncated (always False here).
-                - info (dict): Auxiliary diagnostic information.
+    def _get_airmass(self, elevation_rad):
         """
-        assert self.action_space.contains(actions), f"Invalid action {actions}"
-        
-        last_field_id = np.int32(self._field_id)
+        Calculates airmass using the simple plane-parallel approximation:
+        $$X = \frac{1}{\cos(z)} = \frac{1}{\sin(el)}$$
+        """
+        # Ensure elevation is valid for airmass calculation
+        el = np.clip(elevation_rad, 1e-5, np.pi/2)
+        return 1.0 / np.sin(el)
 
-        # ------------------- Advance state ------------------- #
-        self._update_state(actions)
-        
-        # ------------------- Calculate reward ------------------- #
-
-        reward = 0
-        reward += self._get_rewards(last_field_id, self._field_id)
-
-        # -------------------- Start new night if is last transition -----------------------#
-
-        is_new_night = self._ts >= np.min([self._sunrise_ts, self._night_end_ts])
-        self._is_new_night = is_new_night
-        
-        if is_new_night:
-            self._start_new_night()
-        
-        # -------------------- Terminate condition -----------------------#
-        truncated = False
-        terminated = self._get_termination_status()
-
-        # get obs and info
-        next_state = self.get_obs()
-        info = self._get_info()
-
-        return next_state, reward, terminated, truncated, info
-    
-    def _get_slew_time(self, last_fid, current_fid, overhead=30.):
-        last_fid = int(last_fid)
+    def _get_slew_time(self, last_fid, current_fid, overhead=30.0):
+        """Calculates time to move telescope between fields."""
         if last_fid == ZENITH_FIELD_ID:
             blanco = ephemerides.blanco_observer(time=self._ts)
-            last_pos = np.array(blanco.radec_of('0',  '90'))
+            last_pos = np.array(blanco.radec_of('0', '90'))
         else:
             last_pos = self._ra_arr[last_fid], self._dec_arr[last_fid]
+            
         current_pos = self._ra_arr[current_fid], self._dec_arr[current_fid]
-        distance = geometry.angular_separation(last_pos, current_pos)
-        slew_time = geometry.blanco_slew_time(distance)
-        slew_time += overhead
-        return slew_time
+        distance = ephemerides.geometry.angular_separation(last_pos, current_pos)
+        return ephemerides.geometry.blanco_slew_time(distance) + overhead
+    
+    def reset(self, seed=None, options=None):
+        """Gym-compatible reset that initializes nightly counters and returns (obs, info)."""
+        super().reset(seed=seed)
+        # Ensure number of filters is available
+        try:
+            NUM_FILTERS_CONST = NUM_FILTERS
+        except NameError:
+            from blancops.data.constants import NUM_FILTERS as NUM_FILTERS_CONST
+        if not hasattr(self, 'nfilters'):
+            self.nfilters = NUM_FILTERS_CONST
+
+        # Initialize night counter and visit trackers
+        self._night_idx = -1
+        self._s_visits_cur = np.zeros(self.nfields, dtype=np.int32)
+        if getattr(self, 'do_filt', True):
+            self._s_filter_visits_cur = np.zeros((self.nfields, self.nfilters), dtype=np.int32)
+
+        # Start the first night
+        self._start_new_night()
+
+        # Mark that this is the beginning of a new night
+        self._is_new_night = True
+
+        state = self.get_obs()
+        info = self.get_info()
+        return state, info
 
     def _get_termination_status(self):
         """
@@ -240,31 +296,14 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                                                 #   hpGrid=self.hpGrid, visited=self._s_visits_cur)
         self._update_action_masks()
 
-    def get_obs(self):
+    def get_obs(self) -> dict:
+        """Normalizes and returns the current state"""
         global_state = np.array(self._global_state, dtype=np.float32)
         global_state_normed = self.global_normalizer.transform(
             global_state,
             self._z_score_stats['global_features'],
             self._rel_norm_stats['global_features']
         )
-        # global_state_normed, _, _ = normalize_noncyclic_features(
-        #                     state=np.array(global_state),
-        #                     state_feature_names=self.state_feature_names,
-        #                     sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
-        #                     log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
-        #                     fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
-        #                     local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
-        #                     z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
-        #                     do_sin_norm=self.cfg.data.do_sin_norm,
-        #                     do_log_norm=self.cfg.data.do_log_norm,
-        #                     do_fractional_norm=self.cfg.data.do_fractional_norm,
-        #                     do_local_mean_z_score=self.cfg.data.do_local_mean_z_score,
-        #                     do_z_score_norm=self.cfg.data.do_z_score_norm,
-        #                     z_stats=self._z_score_stats['global_features'],
-        #                     rel_stats=self._rel_norm_stats['global_features'],
-        #                     fix_nans=True,
-        #                     do_debug=False
-        # )
         if self.include_bin_features:
             bin_state_arr = np.array(self._bin_state, dtype=np.float32)
             bin_state_normed = self.bin_normalizer.transform(
@@ -278,44 +317,9 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         self._global_state = global_state_normed
         self._bin_state = bin_state_normed
         
-        # if self.include_bin_features:
-        #     bin_state_normed, _, _ = normalize_noncyclic_features(
-        #         state=np.array(bin_state), # add axis for function
-        #         state_feature_names=self.bin_feature_names,
-        #         sin_norm_feature_names=SIN_NORM_FEATURE_NAMES,
-        #         log_norm_feature_names=LOG_NORM_FEATURE_NAMES,
-        #         fractional_norm_feature_names=FRACTIONAL_FEATURE_NAMES,
-        #         local_mean_z_score_feature_names=LOCAL_MEAN_Z_SCORE_FEATURE_NAMES,
-        #         z_score_feature_names=Z_SCORE_NORM_FEATURE_NAMES,
-        #         do_sin_norm=self.cfg.data.do_sin_norm,
-        #         do_log_norm=self.cfg.data.do_log_norm,
-        #         do_fractional_norm=self.cfg.data.do_fractional_norm,
-        #         do_local_mean_z_score=self.cfg.data.do_local_mean_z_score,
-        #         do_z_score_norm=self.cfg.data.do_z_score_norm,
-        #         z_stats=self._z_score_stats['bin_features'],
-        #         rel_stats=self._rel_norm_stats['bin_features'],
-        #         fix_nans=True,
-        #         do_debug=False
-        #     )
-        # else:
-        #     bin_state_normed = np.array([])
-        # self._global_state = global_state_normed.astype(np.float32)
-        # self._bin_state = bin_state_normed.astype(np.float32)
-        # for feat_name, row in zip(self.global_feature_names, self._global_state):
-        #     print(feat_name, row.max(), row.min())
-        # for feat_name, row in zip(self.bin_feature_names, self._bin_state.T):
-        #     print(feat_name, row.max(), row.min())
-
-        # logger.debug(f"Global state max, min {self._global_state.max()}, {self._global_state.min()}")
-        # logger.debug(f"State above max: {np.where(self._global_state > 2)}")            
-        # logger.debug(f"State below min: {np.where(self._global_state <-2)}")
-        # if self.include_bin_features:
-        #     logger.debug(f"Bins state max, min {self._bin_state.max()}, {self._bin_state.min()}")
-        #     logger.debug(f"State above max: {np.where(self._bin_state > 2)}")            
-        #     logger.debug(f"State below min: {np.where(self._bin_state <-2)}")
         return {"global_state": self._global_state, "bin_state": self._bin_state}
     
-    def _get_info(self):
+    def get_info(self) -> dict:
         """
         Compute auxiliary information for debugging and constrained action spaces.
 
@@ -338,7 +342,7 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
             info_dict['max_s_filter_visits'] = self._max_s_filter_visits_arr.copy()
         return info_dict
 
-    def _calculate_global_features(self, field_id, filter_idx, timestamp, sunset_ts, sunrise_ts, ra_arr, dec_arr):
+    def _calculate_global_features(self, field_id, filter_idx, timestamp, sunset_ts, sunrise_ts, ra_arr, dec_arr) -> list:
         new_features = {}
         astro_time = Time(timestamp, format='unix', scale='utc')
         lst = astro_time.sidereal_time('apparent', longitude=BLANCO_LON)
@@ -370,7 +374,6 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
                 new_features[f'is_filter_{filt}'] = filt_str == filt
       # --- OnlineEnv Logic --- #
             
-        # new_features['ra'], new_features['dec'] = self.fid2radec[field_id]
         new_features['az'], new_features['el'] = ephemerides.equatorial_to_topographic(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
         new_features['ha'] = ephemerides.equatorial_to_hour_angle(ra=new_features['ra'], dec=new_features['dec'], time=timestamp)
         
@@ -700,55 +703,56 @@ class BaseBlancoEnv(BaseTelescopeEnv, ABC):
         return (sunrise_ts - sunset_ts) // 2
 
     def _update_action_masks(self):
-            fields_az, fields_el = ephemerides.equatorial_to_topographic(ra=self._ra_arr, dec=self._dec_arr, time=self._ts)
-            mask_fields_below_horizon = fields_el > 0
+        """Constructs the action mask with shape (nfields, nfilter) based on airmass limit, horizon visibility, and target completion status."""
+        fields_az, fields_el = ephemerides.equatorial_to_topographic(ra=self._ra_arr, dec=self._dec_arr, time=self._ts)
+        mask_fields_below_horizon = fields_el > 0
 
-            airmass_limit = getattr(self, '_airmass_limit', None)
-            if airmass_limit is not None:
-                airmass = np.zeros_like(fields_el)
-                airmass[mask_fields_below_horizon] = 1 / np.cos(90 * units.deg - fields_el[mask_fields_below_horizon])
-                airmass[~mask_fields_below_horizon] = 10  # Sentinel high airmass for below horizon
-                mask_visibility = airmass < airmass_limit
+        airmass_limit = getattr(self, '_airmass_limit', None)
+        if airmass_limit is not None:
+            airmass = np.zeros_like(fields_el)
+            airmass[mask_fields_below_horizon] = 1 / np.cos(90 * units.deg - fields_el[mask_fields_below_horizon])
+            airmass[~mask_fields_below_horizon] = 10  # Sentinel high airmass for below horizon
+            mask_visibility = airmass < airmass_limit
+        else:
+            mask_visibility = mask_fields_below_horizon # Fallback for offline
+
+        if self.do_filt:
+            sel_valid_ff = self._s_filter_visits_cur < self.lookups.target_fidfilt_counts
+            sel_valid_ff &= mask_visibility[:, np.newaxis] 
+            sel_valid_fields = sel_valid_ff.any(axis=1)
+        else:
+            if isinstance(self.lookups.target_fid_counts, dict):
+                mask_completed_fields = np.array([self._s_visits_cur[fid] < self.lookups.target_fid_counts[fid] for fid in self._fids], dtype=bool)
             else:
-                mask_visibility = mask_fields_below_horizon # Fallback for offline
+                mask_completed_fields = self._s_visits_cur < self.lookups.target_fid_counts
+            sel_valid_fields = mask_completed_fields & mask_visibility
 
-            if self.do_filt:
-                sel_valid_ff = self._s_filter_visits_cur < self.lookups.target_fidfilt_counts
-                sel_valid_ff &= mask_visibility[:, np.newaxis] 
-                sel_valid_fields = sel_valid_ff.any(axis=1)
-            else:
-                if isinstance(self.lookups.target_fid_counts, dict):
-                    mask_completed_fields = np.array([self._s_visits_cur[fid] < self.lookups.target_fid_counts[fid] for fid in self._fids], dtype=bool)
-                else:
-                    mask_completed_fields = self._s_visits_cur < self.lookups.target_fid_counts
-                sel_valid_fields = mask_completed_fields & mask_visibility
+        if self.hpGrid.is_azel:
+            valid_field_bins = self.hpGrid.ang2idx(lon=fields_az[sel_valid_fields], lat=fields_el[sel_valid_fields])
+        else:
+            valid_field_bins = self.hpGrid.ang2idx(lon=self._ra_arr[sel_valid_fields], lat=self._dec_arr[sel_valid_fields])
+        valid_bin_mask = np.array(valid_field_bins) != None
+        clean_bins = np.array(valid_field_bins)[valid_bin_mask].astype(int)
 
-            if self.hpGrid.is_azel:
-                valid_field_bins = self.hpGrid.ang2idx(lon=fields_az[sel_valid_fields], lat=fields_el[sel_valid_fields])
-            else:
-                valid_field_bins = self.hpGrid.ang2idx(lon=self._ra_arr[sel_valid_fields], lat=self._dec_arr[sel_valid_fields])
-            valid_bin_mask = np.array(valid_field_bins) != None
-            clean_bins = np.array(valid_field_bins)[valid_bin_mask].astype(int)
+        # 5. Mask Construction
+        if self.do_filt:
+            action_mask = np.zeros(shape=(self.nbins, NUM_FILTERS), dtype=bool)
+            clean_ff = sel_valid_ff[sel_valid_fields][valid_bin_mask]
+            np.logical_or.at(action_mask, clean_bins, clean_ff)
+            action_mask = action_mask.flatten()
+        else:
+            action_mask = np.zeros(shape=self.nbins, dtype=bool)
+            action_mask[clean_bins] = True
 
-            # 5. Mask Construction
-            if self.do_filt:
-                action_mask = np.zeros(shape=(self.nbins, NUM_FILTERS), dtype=bool)
-                clean_ff = sel_valid_ff[sel_valid_fields][valid_bin_mask]
-                np.logical_or.at(action_mask, clean_bins, clean_ff)
-                action_mask = action_mask.flatten()
-            else:
-                action_mask = np.zeros(shape=self.nbins, dtype=bool)
-                action_mask[clean_bins] = True
+        # 6. Track Valid Fields Mapping
+        valid_fids = self._fids[sel_valid_fields]
+        clean_fids = valid_fids[valid_bin_mask] 
+        self._valid_fields_per_bin = defaultdict(list)
+        for b, fid in zip(clean_bins, clean_fids):
+            self._valid_fields_per_bin[b].append(fid)
 
-            # 6. Track Valid Fields Mapping
-            valid_fids = self._fids[sel_valid_fields]
-            clean_fids = valid_fids[valid_bin_mask] 
-            self._valid_fields_per_bin = defaultdict(list)
-            for b, fid in zip(clean_bins, clean_fids):
-                self._valid_fields_per_bin[b].append(fid)
-
-            self._action_mask = action_mask
-            return action_mask
+        self._action_mask = action_mask
+        return action_mask
 
     def _get_exposure_time(self, field_id=None):
         if int(field_id) < 0:
