@@ -546,5 +546,11 @@ class HealpixGrid:
 
         # Already below horizon → infinite
         if self.is_azel:
-            t_until_set[self.lat <= 0] = np.inf
+            below_horizon = self.lat <= 0
+        else:
+            _, el = equatorial_to_topographic(
+                ra=ra, dec=dec, time=time, observer=observer
+            )
+            below_horizon = el <= 0
+        t_until_set[below_horizon] = np.inf
         return t_until_set
