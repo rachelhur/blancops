@@ -43,8 +43,6 @@ class LiveBlancoEnv(BaseBlancoEnv):
         cfg,
         constraints_cfg,
         lookups,
-        global_normalizer,
-        bin_normalizer,
         z_score_stats,
         rel_norm_stats,
         telemetry_init,
@@ -58,8 +56,6 @@ class LiveBlancoEnv(BaseBlancoEnv):
             cfg=cfg,
             constraints_cfg=constraints_cfg,
             lookups=lookups,
-            global_normalizer=global_normalizer,
-            bin_normalizer=bin_normalizer,
             z_score_stats=z_score_stats,
             rel_norm_stats=rel_norm_stats,
         )

@@ -81,6 +81,7 @@ def main():
     df = preprocess_train_df(TRAIN_DATA_PATH)
     train_lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, is_historic=True)
     train_dataset = OfflineDataset(
+        mode='train',
         df=df,
         cfg=cfg,
         lookups=train_lookups

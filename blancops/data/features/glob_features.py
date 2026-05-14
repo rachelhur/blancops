@@ -34,6 +34,7 @@ from astropy.time import Time
 from tqdm import tqdm
 from datetime import date, datetime, timedelta, timezone
 
+from blancops.data.features.normalizations import apply_cyclical_features
 from blancops.ephemerides.time_utils import standardize_time, unix_to_datetime
 from blancops.math import units
 from blancops.ephemerides import ephemerides
@@ -117,34 +118,79 @@ def compute_global_pointing_features(*, timestamp, ra, dec) -> dict:
     return features
 
 
-def apply_cyclical_global_features(features, base_names, cyclical_names):
-    """Add ``<feat>_cos`` and ``<feat>_sin`` for cyclical features, in place.
+# def apply_cyclical_global_features(features, base_names, cyclical_names):
+#     """Add ``<feat>_cos`` and ``<feat>_sin`` for cyclical features, in place.
 
-    Walks ``base_names`` (the pre-expansion config list), matches against
-    ``cyclical_names``, and writes cos/sin if the feature exists in
-    ``features``. Works on a dict (live, scalar values) or a pandas
-    DataFrame (offline, columns) — both support
-    ``__contains__`` / ``__getitem__`` / ``__setitem__``.
+#     Walks ``base_names`` (the pre-expansion config list), matches against
+#     ``cyclical_names``, and writes cos/sin if the feature exists in
+#     ``features``. Works on a dict (live, scalar values) or a pandas
+#     DataFrame (offline, columns) — both support
+#     ``__contains__`` / ``__getitem__`` / ``__setitem__``.
 
-    Matching rule: a name is cyclical iff it equals a cyclical name exactly
-    or ends with ``_<cyc>`` (e.g. ``sun_ha`` matches cyclical ``ha``).
-    ``rel_*`` names are skipped defensively even though they don't currently
-    appear in the global feature list.
+#     Matching rule: a name is cyclical iff it equals a cyclical name exactly
+#     or ends with ``_<cyc>`` (e.g. ``sun_ha`` matches cyclical ``ha``).
+#     ``rel_*`` names are skipped defensively even though they don't currently
+#     appear in the global feature list.
 
-    Note: the previous offline implementation used ``feat_name.endswith(cyc)``
-    *without* the leading underscore, which spuriously matched ``rel_ha``
-    against cyclical ``ha`` (since ``"rel_ha"`` ends with ``"ha"``). This
-    helper uses the correct rule and fixes that.
+#     Note: the previous offline implementation used ``feat_name.endswith(cyc)``
+#     *without* the leading underscore, which spuriously matched ``rel_ha``
+#     against cyclical ``ha`` (since ``"rel_ha"`` ends with ``"ha"``). This
+#     helper uses the correct rule and fixes that.
+#     """
+#     for name in base_names:
+#         is_match = any(
+#             name == cyc or name.endswith(f"_{cyc}")
+#             for cyc in cyclical_names
+#         )
+#         is_excluded = name.startswith("rel_") or name.startswith("delta_")
+#         if is_match and not is_excluded and name in features:
+#             features[f"{name}_cos"] = np.cos(features[name])
+#             features[f"{name}_sin"] = np.sin(features[name])
+
+
+# Only required for validation/inference
+def _collapse_cyclical_expansions(feature_names, cyclical_names):
+    """Collapse ``<name>_cos`` / ``<name>_sin`` pairs back to ``<name>``.
+ 
+    A name is treated as a cyclical expansion iff it ends with ``_cos`` or
+    ``_sin`` AND the stripped base "looks cyclical" — i.e. equals a name in
+    ``cyclical_names`` or ends with ``_<cyc>`` for some such name.
+ 
+    The live env stores its base feature names for use by
+    ``apply_cyclical_*_features``, which matches base names against the
+    cyclical-name list to decide what to expand. When the env is built from
+    a resolved config (the normal validate / eval flow), the config has
+    already been expanded — so without this collapse, ``self.base_*_feature_names``
+    would contain things like ``lst_cos`` instead of ``lst``, the matcher
+    wouldn't fire, the ``_cos`` / ``_sin`` columns wouldn't get written into
+    the per-step feature dict, and the final stack step would surface them
+    as NaN. Idempotent on already-collapsed lists, so training (raw config)
+    is unaffected.
+ 
+    Note: a duplicate of this helper lives in
+    ``blancops.data.dataset._collapse_cyclical_expansions``. Both should
+    eventually consolidate into a shared utility module.
     """
-    for name in base_names:
-        is_match = any(
+    def _is_cyclical(name):
+        return any(
             name == cyc or name.endswith(f"_{cyc}")
             for cyc in cyclical_names
         )
-        is_excluded = name.startswith("rel_") or name.startswith("delta_")
-        if is_match and not is_excluded and name in features:
-            features[f"{name}_cos"] = np.cos(features[name])
-            features[f"{name}_sin"] = np.sin(features[name])
+ 
+    result = []
+    seen = set()
+    for name in feature_names:
+        base = name
+        for suffix in ("_cos", "_sin"):
+            if name.endswith(suffix):
+                candidate = name[:-len(suffix)]
+                if _is_cyclical(candidate):
+                    base = candidate
+                    break
+        if base not in seen:
+            result.append(base)
+            seen.add(base)
+    return result
 
 
 # ============================================================================
@@ -265,7 +311,7 @@ class GlobalFeatureEngineer:
         the previous in-class version used a bare ``endswith`` that also
         matched ``rel_*`` features against their unprefixed cyclical roots.
         """
-        apply_cyclical_global_features(
+        apply_cyclical_features(
             df, self.base_features, self.cyclical_features
         )
         return df

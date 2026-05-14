@@ -28,7 +28,6 @@ from blancops.data.features.bin_features import (
     compute_bin_ephemeris_features,
     compute_bin_progress_features,
     apply_relative_bin_features,
-    apply_cyclical_bin_features,
     validate_history_bin_features,
     replace_invalid_with_sentinel,
     # Small math helpers still imported by other callers.
@@ -39,10 +38,9 @@ from blancops.data.features.glob_features import (
     # Shared per-timestep helpers — single source of truth for global features.
     compute_global_time_only_features,
     compute_global_pointing_features,
-    apply_cyclical_global_features,
     calc_urgency,
 )
-from blancops.data.features.normalizations import normalize_timestamp
+from blancops.data.features.normalizations import StateNormalizer, apply_cyclical_features, build_normalizer_kwargs, normalize_timestamp, setup_feature_names
 from blancops.environment.survey_tracker import SurveyProgressTracker
 from blancops.math import units
 from blancops.ephemerides import ephemerides
@@ -110,8 +108,6 @@ class BaseBlancoEnv(gym.Env, ABC):
         cfg: ExperimentConfig,
         constraints_cfg: ActionConstraints,
         lookups, 
-        global_normalizer, 
-        bin_normalizer, 
         z_score_stats, 
         rel_norm_stats
     ):
@@ -119,21 +115,29 @@ class BaseBlancoEnv(gym.Env, ABC):
         # Configuration, Normalizations, and Lookups
         self.cfg = cfg
         self.lookups = lookups
-        self.global_normalizer = global_normalizer
-        self.bin_normalizer = bin_normalizer
         self._z_score_stats = z_score_stats
         self._rel_norm_stats = rel_norm_stats
-        self.do_cyclical_norm = global_normalizer.do_cyclical_norm or bin_normalizer.do_cyclical_norm
         self.airmass_limit = constraints_cfg.airmass_limit
         self.sun_el_limit = constraints_cfg.sun_el_limit
 
         # Feature Configs
-        self.global_feature_names = list(cfg.data.global_features).copy()
-        self.bin_feature_names = list(cfg.data.bin_features).copy()
-        self.include_bin_features = cfg.data.bin_state_dim > 0
-        self.do_filt = 'filter' in cfg.data.action_space
+        norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
         self.base_global_feature_names = list(cfg.data.global_features)
         self.base_bin_feature_names = list(cfg.data.bin_features)
+        print('BASE GLOBAL FEATURE NAMES', self.base_global_feature_names)
+        self.global_feature_names, self.bin_feature_names = setup_feature_names(
+            self.base_global_feature_names,
+            self.base_bin_feature_names,
+            norm_kwargs['cyclical_feature_names'], 
+            norm_kwargs['do_cyclical_norm']
+        )
+        self.include_bin_features = cfg.data.bin_state_dim > 0
+        self.do_filt = 'filter' in cfg.data.action_space
+        
+        # Normalizers
+        self.global_normalizer = StateNormalizer(state_feature_names=self.global_feature_names, **norm_kwargs)
+        self.bin_normalizer = StateNormalizer(state_feature_names=self.bin_feature_names, **norm_kwargs)
+        self.do_cyclical_norm = self.global_normalizer.do_cyclical_norm or self.bin_normalizer.do_cyclical_norm
         
         self._has_historical_features = any(feat_substr in bf for feat_substr in _SURVEY_PROGRESS_BASE_KEYS  
             for bf in self.bin_feature_names
@@ -569,9 +573,9 @@ class BaseBlancoEnv(gym.Env, ABC):
             for filt, idx in FILTER2IDX.items():
                 p_name = f"survey_progress_{filt}"
                 u_name = f"urgency_{filt}"
-                if p_name in self.global_feature_names:
+                if p_name in self.base_global_feature_names:
                     new_features[p_name] = tracker.get_filter_progress(idx)
-                if u_name in self.global_feature_names:
+                if u_name in self.base_global_feature_names:
                     visits = int(tracker.raw_counts[:, idx].sum())
                     target = int(tracker.target_counts[:, idx].sum())
                     if target == 0:
@@ -599,7 +603,7 @@ class BaseBlancoEnv(gym.Env, ABC):
 
         # 8. Cyclical norms via the shared helper.
         if self.global_normalizer.do_cyclical_norm:
-            apply_cyclical_global_features(
+            apply_cyclical_features(
                 new_features,
                 self.base_global_feature_names,
                 self.global_normalizer.cyclical_feature_names,
@@ -683,9 +687,9 @@ class BaseBlancoEnv(gym.Env, ABC):
             features, el_mask, self._has_historical_features, self.do_filt
         )
         if self.bin_normalizer.do_cyclical_norm:
-            apply_cyclical_bin_features(
+            apply_cyclical_features(
                 features,
-                self.base_bin_feature_names,
+                self.bin_feature_names,
                 self.bin_normalizer.cyclical_feature_names,
             )
 

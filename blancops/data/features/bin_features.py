@@ -33,6 +33,7 @@ import numpy as np
 from einops import rearrange
 from tqdm import tqdm
 from blancops.data.features.glob_features import get_night_boundaries
+from blancops.data.features.normalizations import apply_cyclical_features
 from blancops.ephemerides import ephemerides
 from blancops.configs.constants import *
  
@@ -105,11 +106,6 @@ def compute_bin_ephemeris_features(timestamp, pointing_radec, hpGrid, night_dura
         features['az'], features['el'], pointing_az, pointing_el
     )
     features['t_until_set'] = hpGrid.get_time_until_set(time=timestamp) / night_duration_in_sec
-    arr = night_duration_in_sec #features['t_until_set']
-    print(f"t_until_set: min={np.nanmin(arr)}, max={np.nanmax(arr)}, "
-        f"nan={np.isnan(arr).sum()}, inf={np.isinf(arr).sum()}, "
-        f"shape={arr.shape}")
-
     return features
  
  
@@ -121,6 +117,9 @@ def compute_bin_progress_features(
     nbins,
     do_filt,
     idx2filter=None,
+    timestamp=None,
+    last_visit_timestamps=None,
+    staleness_horizon_sec=30*24*3600
 ):
     """Per-timestep survey-progress features per bin.
  
@@ -300,22 +299,22 @@ def apply_relative_bin_features(features, el_mask, has_historical, do_filt):
             features[f"rel_{k}"] = get_relative_feature(features[k], el_mask)
  
  
-def apply_cyclical_bin_features(features, base_names, cyclical_names):
-    """Add ``<feat>_cos`` and ``<feat>_sin`` for cyclical features, in place.
+# def apply_cyclical_bin_features(features, base_names, cyclical_names):
+#     """Add ``<feat>_cos`` and ``<feat>_sin`` for cyclical features, in place.
  
-    Walks ``base_names`` (the pre-expansion feature list from the config),
-    matches against ``cyclical_names``, and writes cos/sin if the feature
-    exists in ``features``. Works for any array shape — cos/sin are
-    elementwise.
-    """
-    for cyc in cyclical_names:
-        for name in base_names:
-            is_exact = (name == cyc)
-            is_suffix = name.endswith(f"_{cyc}")
-            is_excluded = name.startswith("rel_") or name.startswith("delta_")
-            if (is_exact or is_suffix) and not is_excluded and name in features:
-                features[f"{name}_cos"] = np.cos(features[name])
-                features[f"{name}_sin"] = np.sin(features[name])
+#     Walks ``base_names`` (the pre-expansion feature list from the config),
+#     matches against ``cyclical_names``, and writes cos/sin if the feature
+#     exists in ``features``. Works for any array shape — cos/sin are
+#     elementwise.
+#     """
+#     for cyc in cyclical_names:
+#         for name in base_names:
+#             is_exact = (name == cyc)
+#             is_suffix = name.endswith(f"_{cyc}")
+#             is_excluded = name.startswith("rel_") or name.startswith("delta_")
+#             if (is_exact or is_suffix) and not is_excluded and name in features:
+#                 features[f"{name}_cos"] = np.cos(features[name])
+#                 features[f"{name}_sin"] = np.sin(features[name])
  
  
 def validate_history_bin_features(features, do_filt, idx2filter=None):
@@ -534,7 +533,7 @@ class BinFeatureEngineer:
             )
  
         if self.do_cyclical_norm:
-            apply_cyclical_bin_features(
+            apply_cyclical_features(
                 features, self.base_features, self.cyclical_features
             )
  
@@ -595,9 +594,7 @@ class BinFeatureEngineer:
         features describe the state going into the action at row i+1 — the
         same semantics the original offline pipeline had.
         """
-        n_b = len(self.hpGrid.idx_lookup)
-        print('FEATURE KEYS', features.keys())
-        
+        nbins = len(self.hpGrid.idx_lookup)
  
         # Cheap path: ephemeris only.
         if not self.has_historical:
@@ -699,14 +696,14 @@ class BinFeatureEngineer:
                         current_counts=cur_s_f_vis,
                         target_counts=self.lookups.target_fidfilt_counts,
                         bins_per_field=bpf, v_mask=vm,
-                        nbins=n_b, do_filt=True,
+                        nbins=nbins, do_filt=True,
                     )
                 else:
                     hist = compute_bin_progress_features(
                         current_counts=cur_s_vis,
                         target_counts=self.lookups.target_fid_counts,
                         bins_per_field=bpf, v_mask=vm,
-                        nbins=n_b, do_filt=False,
+                        nbins=nbins, do_filt=False,
                     )
                 for k, v in hist.items():
                     if k in features:
@@ -736,13 +733,12 @@ class BinFeatureEngineer:
         timestamps = pt_df['timestamp'].to_numpy()
         pointing_ras = pt_df['ra'].to_numpy()
         pointing_decs = pt_df['dec'].to_numpy()
-        sunset_ts, sunrise_ts = get_night_boundaries(timestamps, sun_el_limit=-10) # setting to -10 for feature generation, not necessarily for action limits
-        night_duration_sec = sunrise_ts - sunset_ts
- 
         for i, t in tqdm(
             enumerate(timestamps), total=len(timestamps),
             desc='Computing bin ephemeris',
         ):
+            sunset_ts, sunrise_ts = get_night_boundaries(t, sun_el_limit=-10) # setting to -10 for feature generation, not necessarily for action limits
+            night_duration_sec = sunrise_ts - sunset_ts
             eph = compute_bin_ephemeris_features(
                 timestamp=t,
                 pointing_radec=(pointing_ras[i], pointing_decs[i]),
@@ -762,7 +758,6 @@ class BinFeatureEngineer:
         final_arrays = []
         for key in requested_features:
             if key not in features:
-                print(features.keys())
                 raise ValueError(
                     f"Requested feature '{key}' was not calculated by the pipeline."
                 )

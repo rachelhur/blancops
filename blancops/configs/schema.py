@@ -144,9 +144,8 @@ class ExperimentConfig(BaseModel):
             parent = data.get('parent_dir', 'experiments/')
             
             if exp_name:
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                data['outdir'] = str(Path(parent) / exp_name / f"run_{timestamp}")
-                
+                # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                # data['outdir'] = str(Path(parent) / exp_name / f"run_{timestamp}")
                 data['outdir'] = str(Path(parent) / exp_name)
                     
         return data # Return the modified dictionary
@@ -167,7 +166,7 @@ def load_and_validate(yaml_path: str | Path) -> ExperimentConfig:
     with open(yaml_path, "r") as f:
         raw_data = yaml.safe_load(f)
     cfg = ExperimentConfig(**raw_data) # Added dictionary unpacking
-    cfg.orig_cfg_path = str(yaml_path)
+    cfg.orig_cfg_path = str(Path(yaml_path).resolve())
     return cfg
 
 def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_names: dict, lr_scheduler_kwargs: dict, val_nights: List[str], outdir: str | Path) -> ExperimentConfig:
@@ -179,8 +178,8 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
         "num_bins": int(dataset_dims['num_bins']),
         "num_filters": int(dataset_dims['num_filters']),
         "num_actions": int(dataset_dims['num_actions']),
-        "global_features": dataset_feature_names['global_features'],
-        "bin_features": dataset_feature_names['bin_features'],
+        # "global_features": dataset_feature_names['global_features'],
+        # "bin_features": dataset_feature_names['bin_features'],
         "val_nights": val_nights
     }
     updated_data = cfg.data.model_copy(update=data_updates)
@@ -201,7 +200,8 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
     with open(Path(resolved_cfg.outdir) / "configs" /"resolved_config.yaml", "w") as f:
         # Use mode='json' to force Pydantic to convert complex types (like Enums) to strings
         resolved_dict = resolved_cfg.model_dump(mode='json') 
-        yaml.dump(resolved_dict, f, default_flow_style=False, sort_keys=False)
+        print('DUMPING RESOLVED CONFIG IN ', f)
+        yaml.dump(resolved_dict, f, sort_keys=False)
     
         
     return resolved_cfg

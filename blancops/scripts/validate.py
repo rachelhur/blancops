@@ -38,7 +38,7 @@ import re
 
 from pathlib import Path
 
-def make_eval_outdir(args):
+def setup_eval_outdir(args):
     if getattr(args, 'evaluation_name', None) is None:
         date_postfix = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         evaluation_name = f"val_test_{date_postfix}_0"
@@ -231,9 +231,9 @@ def main():
     args.trained_model_dir = args.trained_model_dir.resolve()
     cfg = load_and_validate(args.trained_model_dir / "configs" / "resolved_config.yaml")
     constraints_cfg = ActionConstraints()
+    eval_outdir = setup_eval_outdir(args)
     
     # Setup eval_outdir and looger``
-    eval_outdir = make_eval_outdir(args)
     logger = setup_logger(save_dir=Path(eval_outdir).resolve(), logging_filename='eval.log', logging_level=args.logging_level)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     logging.getLogger("pytorch").setLevel(logging.WARNING)
@@ -254,14 +254,8 @@ def main():
     # Load Weights
     checkpoint = get_checkpoint(args.trained_model_dir, device=device)
     
-    # Build Normalizer
-    global_normalizer = build_normalizer(state_feature_names=cfg.data.global_features, cfg=cfg)
-    bin_normalizer = build_normalizer(state_feature_names=cfg.data.bin_features, cfg=cfg)
-    
     # Load Lookups
     lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, is_historic=True)
-    logger.info("Loading test dataset with same config as training dataset...")
-    
     zscore_stats = checkpoint['norm_stats'].get('z_score', {})
     rel_norm_stats = checkpoint['norm_stats'].get('rel_norm', {})
     logger.info("Successfully extracted norm_stats directly from checkpoint file.")
@@ -275,10 +269,9 @@ def main():
         months=args.months,
         days=args.days,
         filters=args.filters,
-        global_normalizer=global_normalizer, 
-        bin_normalizer=bin_normalizer,
         z_score_stats=zscore_stats,
-        rel_norm_stats=rel_norm_stats
+        rel_norm_stats=rel_norm_stats,
+        mode='test'
     ) 
     
     # from scipy.interpolate import CubicSpline
@@ -313,8 +306,6 @@ def main():
         cfg=cfg,
         constraints_cfg=constraints_cfg,
         lookups=lookups,
-        global_normalizer=global_normalizer,
-        bin_normalizer=bin_normalizer,
         global_pd_nightgroup=global_pd_nightgroup, 
         zenith_bin_states=night_start_bin_states, 
         z_score_stats=zscore_stats, 

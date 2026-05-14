@@ -23,12 +23,54 @@ from blancops.data.features.normalizations import StateNormalizer, build_normali
 
 logger = logging.getLogger(__name__)
 
+
+def _collapse_cyclical_expansions(feature_names, cyclical_names):
+    """Collapse ``<name>_cos`` / ``<name>_sin`` pairs back to ``<name>``.
+
+    A name is treated as a cyclical expansion iff it ends with ``_cos`` or
+    ``_sin`` AND the stripped base "looks cyclical" — i.e. equals a name in
+    ``cyclical_names`` or ends with ``_<cyc>`` for some such name.
+
+    Used to recover canonical base feature lists from configs that may have
+    been saved post-expansion. ``resolve_and_save`` writes
+    ``cfg.data.global_features`` as the expanded list (so the trained model's
+    config records the exact feature order used during training), and
+    ``validate.py`` then loads that as its source-of-truth config. Without
+    this collapse, ``GlobalFeatureEngineer`` would receive base names like
+    ``lst_cos`` (rather than ``lst``) and fail to match them against the
+    cyclical-name list, so the ``_cos`` / ``_sin`` columns would never get
+    created and downstream column-selection would assert.
+
+    Idempotent on already-collapsed lists.
+    """
+    def _is_cyclical(name):
+        return any(
+            name == cyc or name.endswith(f"_{cyc}")
+            for cyc in cyclical_names
+        )
+
+    result = []
+    seen = set()
+    for name in feature_names:
+        base = name
+        for suffix in ("_cos", "_sin"):
+            if name.endswith(suffix):
+                candidate = name[:-len(suffix)]
+                if _is_cyclical(candidate):
+                    base = candidate
+                    break
+        if base not in seen:
+            result.append(base)
+            seen.add(base)
+    return result
+
+
 class OfflineDataset(torch.utils.data.Dataset):
     def __init__(
-        self, df=None, cfg=None, lookups=None,
+        self, mode, df=None, cfg=None, lookups=None,
         global_normalizer=None, bin_normalizer=None,
         years=None, months=None, days=None, filters=None,
-        z_score_stats=None, rel_norm_stats=None, mode='train'
+        z_score_stats=None, rel_norm_stats=None
     ): 
         # Setup configurations, normalization method, and lookups
         norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
@@ -55,7 +97,7 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         # 6. Normalization Pipeline
         self._normalize_states(
-            mode, cfg, norm_kwargs, global_normalizer, bin_normalizer, 
+            mode, cfg, norm_kwargs, 
             z_score_stats, rel_norm_stats
         )
 
@@ -89,6 +131,20 @@ class OfflineDataset(torch.utils.data.Dataset):
             cyclical_feature_names=_CYCLICAL_FEATURE_NAMES,
             do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', False),
         )
+        # `cfg.data.global_features` / `bin_features` arrives in one of two forms:
+        #   - the raw user config: ['lst', 'sun_ra', ...]
+        #   - the resolved (post-expansion) form saved by training:
+        #     ['lst_cos', 'lst_sin', 'sun_ra_cos', 'sun_ra_sin', ...]
+        # The feature engineers need BASE names (they'll add the cyclical
+        # expansions themselves); column selection needs EXPANDED names. We
+        # collapse to base form here so both training (already base, no-op) and
+        # validation (resolved, gets undone) drive the engineers consistently.
+        self.base_global_features = _collapse_cyclical_expansions(
+            cfg.data.global_features, _CYCLICAL_FEATURE_NAMES
+        )
+        self.base_bin_features = _collapse_cyclical_expansions(
+            cfg.data.bin_features, _CYCLICAL_FEATURE_NAMES
+        )
         self.do_local_mean_z_score = any('rel_' in name for name in self.bin_feature_names)
 
     def _engineer_features(self, df, cfg, norm_kwargs):
@@ -96,7 +152,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         glob_feature_eng = GlobalFeatureEngineer(
             lookups=self.lookups, 
             hpGrid=self.hpGrid, 
-            base_features=cfg.data.global_features,
+            base_features=self.base_global_features,
             cyclical_features=_CYCLICAL_FEATURE_NAMES, 
             do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', True)
         )
@@ -105,7 +161,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         if self.include_bin_features:
             bin_feature_eng = BinFeatureEngineer(
                 hpGrid=self.hpGrid, 
-                base_features=cfg.data.bin_features, 
+                base_features=self.base_bin_features, 
                 cyclical_features=_CYCLICAL_FEATURE_NAMES, 
                 action_space=cfg.data.action_space,
                 lookups=self.lookups,
@@ -139,13 +195,10 @@ class OfflineDataset(torch.utils.data.Dataset):
         train_n_idxs = self.next_compact_idxs[self.train_transition_idxs]
         self.train_state_idxs = np.unique(np.concatenate([train_c_idxs, train_n_idxs]))
 
-    def _normalize_states(self, mode, cfg, norm_kwargs, global_normalizer, bin_normalizer, z_stats, rel_stats):
+    def _normalize_states(self, mode, cfg, norm_kwargs, z_stats, rel_stats):
         """Executes the StateNormalizer class logic."""
-        # 1. Initialize normalizers if not provided
-        if global_normalizer is None:
-            global_normalizer = StateNormalizer(state_feature_names=self.global_feature_names, **norm_kwargs)
-        if self.include_bin_features and bin_normalizer is None:
-            bin_normalizer = StateNormalizer(state_feature_names=self.bin_feature_names, **norm_kwargs)
+        global_normalizer = StateNormalizer(state_feature_names=self.global_feature_names, **norm_kwargs)
+        bin_normalizer = StateNormalizer(state_feature_names=self.bin_feature_names, **norm_kwargs)
 
         # 2. Normalize Global Features
         if mode == 'train':
