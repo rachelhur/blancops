@@ -11,7 +11,7 @@ from blancops.math import units
 import logging
 logger = logging.getLogger(__name__)
 
-from blancops.data.constants import FILTER2IDX
+from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 
 def preprocess_train_df(fits_path, add_survey_progress_cols=True) -> pd.DataFrame:

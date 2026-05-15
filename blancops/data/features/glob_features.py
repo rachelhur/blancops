@@ -39,7 +39,7 @@ from blancops.ephemerides.time_utils import standardize_time, unix_to_datetime
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
-from blancops.data.constants import (
+from blancops.configs.constants import (
     BLANCO_LON, ZENITH_BIN_NUM, ZENITH_FIELD_ID, ZENITH_WAVELENGTH,
     FILTER2WAVE, FILTERWAVENORM, FILTER2IDX, ZENITH_FILTER,
     ZENITH_AZ, ZENITH_EL, ZENITH_AIRMASS, ZENITH_ZD, ZENITH_HA, ZENITH_OBJECT

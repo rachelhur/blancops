@@ -15,8 +15,7 @@ from blancops.ephemerides import ephemerides
 from blancops.math import geometry
 
 from blancops.data.preprocessing import drop_rows_in_DECam_data
-from blancops.data.constants import *
-from blancops.configs.constants import _CYCLICAL_FEATURE_NAMES, _NUM_FILTERS
+from blancops.configs.constants import _CYCLICAL_FEATURE_NAMES, _NUM_FILTERS, FILTER2IDX, ZENITH_FILTER
 
 from blancops.data.features.glob_features import GlobalFeatureEngineer, calc_inst_teff_rate
 from blancops.data.features.bin_features import BinFeatureEngineer

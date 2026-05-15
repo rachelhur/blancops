@@ -12,7 +12,7 @@ import pickle
 import numpy as np
 import pandas as pd
 from blancops.configs.enums import LookupKeys
-from blancops.data.constants import FILTER2IDX
+from blancops.configs.constants import FILTER2IDX
 from blancops.math import units
 
 import logging
