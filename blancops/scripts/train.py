@@ -15,7 +15,7 @@ from blancops.data.preprocessing import preprocess_train_df
 from blancops.data.dataset import OfflineDataset
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 from blancops.rl.registry import build_algorithm, build_network
-from blancops.configs.schema import ExperimentConfig, load_and_validate, resolve_and_save
+from blancops.configs.rl_schema import ExperimentConfig, load_and_validate, resolve_and_save
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, _BIN_FEATURES, WORKSPACE
 
 import argparse
@@ -102,12 +102,12 @@ def main():
     #  ---------------------- #
     
     # --- SAVE VAL DATA FOR VALIDATION --- #
-    cache_path = outdir / "val_cache.pt"
-    val_data_list = []
-    for batch in valloader:
-        val_data_list.append(batch)
-        torch.save(val_data_list, cache_path)
-        logger.info(f"Validation cache saved to {cache_path}")
+    # cache_path = outdir / "val_cache.pt"
+    # val_data_list = []
+    # for batch in valloader:
+    #     val_data_list.append(batch)
+        # torch.save(val_data_list, cache_path)
+        # logger.info(f"Validation cache saved to {cache_path}")
     # ---------------------- #
     
     # --- GET COSINE ANNEALING SCHEDULER Kwargs --- #

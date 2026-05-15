@@ -10,8 +10,9 @@ import json
 import pandas as pd
 import logging
 
+from blancops.configs.constants import _NUM_FILTERS
 from blancops.configs.enums import LookupKeys
-from blancops.configs.schema import ActionConstraints, load_and_validate
+from blancops.configs.rl_schema import ActionConstraints, load_and_validate
 from blancops.rl.agent_factory import AgentFactory
 from blancops.rl.checkpointer import get_checkpoint
 from blancops.rl.offline_runner import OfflineRunner
@@ -348,10 +349,10 @@ def main():
     ag_mask = agent_actions != ZENITH_BIN_NUM
 
     if 'filter' in cfg.data.action_space:
-        expert_filters = exp_actions[exp_mask] % NUM_FILTERS
-        agent_filters = agent_actions[ag_mask] % NUM_FILTERS
-        expert_bins = exp_actions[exp_mask] // NUM_FILTERS
-        agent_bins = agent_actions[ag_mask] // NUM_FILTERS
+        expert_filters = exp_actions[exp_mask] % _NUM_FILTERS
+        agent_filters = agent_actions[ag_mask] % _NUM_FILTERS
+        expert_bins = exp_actions[exp_mask] // _NUM_FILTERS
+        agent_bins = agent_actions[ag_mask] // _NUM_FILTERS
         assert len(expert_filters) == len(agent_filters), f"Shape mismatch: expert filters {expert_filters.shape}, agent_filters {agent_filters.shape}"
     else:
         expert_bins = exp_actions[exp_mask]

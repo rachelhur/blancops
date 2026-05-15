@@ -1,73 +1,119 @@
 import copy
 import logging
+
+from blancops.rl.algorithms.iql import IQL
 logger = logging.getLogger(__name__)
 
 import torch
 from torch import nn
 
-from blancops.configs.schema import ExperimentConfig
-from blancops.configs.enums import Algorithm, LossStrategy, Network
-from blancops.rl.neural_nets.neural_nets import ContextualScoreMLP, MLP
+from blancops.configs.rl_schema import ExperimentConfig
+from blancops.configs.enums import _AUTOREGRESSIVE_NETWORKS, Algorithm, ActionArchitecture, Network, ActionSpace, is_autoregressive
+from blancops.rl.neural_nets.neural_nets import (
+    ContextualScoreMLP,
+    MLP,
+    AutoregressiveNet,
+    MultiHeadMLP,
+)
 from blancops.rl.algorithms.bc import BehaviorCloning
-from blancops.rl.algorithms.ddqn import DDQN
-from blancops.rl.policies.policies import FilterFocalLoss, FlatQNetWrapper, FocalLoss, HybridMarginalPolicy, PseudoAutoregressivePolicy, PureJointPolicy, SlewDistanceFocalLoss, AutoregressiveActionPolicy
+from blancops.rl.algorithms.ddqn import DDQN, calculate_distance_matrix
+from blancops.rl.algorithms.cql import CQL
+from blancops.rl.policies.loss_function import FilterFocalLoss, FocalLoss, SlewDistanceFocalLoss
+from blancops.rl.policies.q_policies import (
+    QFlatPolicy,
+    QAutoregressivePolicy,
+)
+from blancops.rl.policies.bc_policies import (
+    BCAutoregressivePolicy,
+    BCPureJointPolicy,
+    BCHybridMarginalPolicy,
+    BCPseudoAutoregressivePolicy,
+)
 
-BC_POLICY_REGISTRY = {
-    LossStrategy.PURE_JOINT: PureJointPolicy,
-    LossStrategy.AUTOREGRESSIVE: AutoregressiveActionPolicy,
-    LossStrategy.PSEUDO_AUTOREGRESSIVE: PseudoAutoregressivePolicy,
-    LossStrategy.HYBRID_MARGINAL: HybridMarginalPolicy,
+
+# --------------------------------------------------------------------------- #
+# Registries
+# --------------------------------------------------------------------------- #
+
+BC_LOSS_STRAT_REGISTRY = {
+    ActionArchitecture.PURE_JOINT: BCPureJointPolicy,
+    ActionArchitecture.AUTOREGRESSIVE: BCAutoregressivePolicy,
+    ActionArchitecture.HYBRID_MARGINAL: BCHybridMarginalPolicy,
+    ActionArchitecture.PSEUDO_AUTOREGRESSIVE: BCPseudoAutoregressivePolicy,
 }
 
+# DQN, DDQN, CQL all share the same algorithm class; flags differentiate them.
 ALGORITHM_REGISTRY = {
     Algorithm.BC: BehaviorCloning,
-    Algorithm.DDQN: DDQN
+    Algorithm.DQN: DDQN,
+    Algorithm.DDQN: DDQN,
+    Algorithm.CQL: CQL,
+    Algorithm.CQL: IQL,
 }
 
 NETWORK_REGISTRY = {
     Network.CONTEXTUAL_SCORE_MLP: ContextualScoreMLP,
-    Network.MLP: MLP
+    Network.MLP: MLP,
+    Network.AUTOREGRESSIVE: AutoregressiveNet,
+    Network.MULTI_HEAD_MLP: MultiHeadMLP,
 }
 
-ACTIVATION_REGISTRY = {
+_ACTIVATION_REGISTRY = {
     'relu': nn.ReLU,
     'mish': nn.Mish,
-    'swish': nn.SiLU, 
-    'leaky_relu': nn.LeakyReLU, 
-    'tanh': nn.Tanh, 
-    'sigmoid': nn.Sigmoid
+    'swish': nn.SiLU,
+    'leaky_relu': nn.LeakyReLU,
+    'tanh': nn.Tanh,
+    'sigmoid': nn.Sigmoid,
 }
 
-def get_activation(name: str):
-    activations = {'relu': nn.ReLU, 'mish': nn.Mish, 'swish': nn.SiLU}
-    if name.lower() not in activations:
-        raise ValueError(f"Activation {name} not supported.")
-    return activations[name.lower()]
+_Q_VALUE_ALGORITHMS = {Algorithm.DQN, Algorithm.DDQN, Algorithm.CQL}
 
-def get_loss_function(name: str, reduction='mean', gamma_focal=2, alpha=None):
+
+
+# --------------------------------------------------------------------------- #
+# Small helpers
+# --------------------------------------------------------------------------- #
+
+def get_activation(name: str):
+    key = name.lower()
+    if key not in _ACTIVATION_REGISTRY:
+        raise ValueError(f"Activation {name} not supported.")
+    return _ACTIVATION_REGISTRY[key]
+
+
+def get_loss_function(name: str, reduction='mean', gamma_focal=2.0, alpha=None):
     loss_map = {
-        'cross_entropy': lambda: nn.CrossEntropyLoss(reduction=reduction),
-        'huber': lambda: nn.HuberLoss(reduction=reduction),
-        'mse': lambda: nn.MSELoss(reduction=reduction),
+        'cross_entropy':     lambda: nn.CrossEntropyLoss(reduction=reduction),
+        'huber':             lambda: nn.HuberLoss(reduction=reduction),
+        'mse':               lambda: nn.MSELoss(reduction=reduction),
+        'focal_loss':        lambda: FocalLoss(gamma=gamma_focal, reduction=reduction, alpha=alpha),
         'focal_loss_filter': lambda: FilterFocalLoss(gamma=gamma_focal, reduction=reduction),
-        'focal_loss_slew': lambda: SlewDistanceFocalLoss(gamma=gamma_focal, reduction=reduction),
-        'focal_loss': lambda: FocalLoss(gamma=gamma_focal, reduction=reduction, alpha=alpha),
+        'focal_loss_slew':   lambda: SlewDistanceFocalLoss(gamma=gamma_focal, reduction=reduction),
     }
     if name not in loss_map:
         raise NotImplementedError(f"Loss function '{name}' is not registered.")
     return loss_map[name]()
 
-def build_network(cfg: ExperimentConfig):
-    activation_name = cfg.model.activation.lower()
-    if activation_name not in ACTIVATION_REGISTRY:
-        raise ValueError(f"Activation {activation_name} not supported.")
-    
-    activation_fn = ACTIVATION_REGISTRY[activation_name]
+
+def _maybe_load_pretrained(net: nn.Module, cfg: ExperimentConfig, device: torch.device):
+    path = getattr(cfg.metadata, 'pretrained_model_path', None)
+    if path:
+        net.load_state_dict(torch.load(path, map_location=device))
+        logger.info(f"Loaded pretrained model from {path}")
+        
+
+
+# --------------------------------------------------------------------------- #
+# Network builder
+# --------------------------------------------------------------------------- #
+
+def build_network(cfg: ExperimentConfig) -> nn.Module:
+    activation_fn = get_activation(cfg.model.activation)
     network_class = NETWORK_REGISTRY.get(cfg.model.network)
-    
     if network_class is None:
         raise NotImplementedError(f"Network {cfg.model.network} not implemented.")
-        
+
     if cfg.model.network == Network.CONTEXTUAL_SCORE_MLP:
         return network_class(
             global_dim=cfg.data.state_dim,
@@ -76,30 +122,136 @@ def build_network(cfg: ExperimentConfig):
             hidden_dim=cfg.model.hidden_dim,
             activation=activation_fn,
             nlayers=cfg.model.nlayers,
-            use_contextual_gating=cfg.model.contextual_gating
+            use_contextual_gating=cfg.model.contextual_gating,
         )
-    return network_class() # Add kwargs for standard MLP if needed
 
-def _build_bc_policy(cfg: ExperimentConfig, core_net: nn.Module):
-    policy_class = BC_POLICY_REGISTRY.get(cfg.model.loss_strategy)
-    if policy_class is None:
-        raise NotImplementedError(f"`{cfg.model.loss_strategy}` strategy not implemented for BC.")
-        
-    # Some policies require different kwargs, handle that routing here
-    if cfg.model.loss_strategy == LossStrategy.PURE_JOINT:
-        return policy_class(core_net, nn.CrossEntropyLoss(), cfg.data.num_filters)
-    elif cfg.model.loss_strategy == LossStrategy.PSEUDO_AUTOREGRESSIVE:
-        return policy_class(core_net, cfg.data.num_filters, filter_penalty=5.0)
-    elif cfg.model.loss_strategy == LossStrategy.HYBRID_MARGINAL:
-        base_loss = get_loss_function(cfg.model.loss_function)
-        return policy_class(core_net, cfg.data.num_filters, base_loss, base_loss, base_loss)
+    if cfg.model.network == Network.BIN_FILTER_AUTOREGRESSIVE:
+        bin_first = cfg.model.bin_first
+        action_dims = (
+            [cfg.data.nbins, cfg.data.num_filters]
+            if bin_first
+            else [cfg.data.num_filters, cfg.data.nbins]
+        )
+        return network_class(
+            glob_dim=cfg.data.state_dim,
+            bin_dim=cfg.data.bin_state_dim,
+            action_dims=action_dims,
+            glob_hidden=cfg.model.glob_hidden,
+            bin_hidden=cfg.model.bin_hidden,
+            bin_out=cfg.model.bin_out,
+            state_latent_dim=cfg.model.state_latent_dim,
+            activation=activation_fn,
+            bin_first=bin_first,
+            nbins=cfg.data.nbins,
+            nfilters=cfg.data.num_filters,
+        )
+
+    if cfg.model.network == Network.MLP:
+        # Add kwargs if/when a flat-MLP path is needed.
+        return network_class()
+
+    raise NotImplementedError(f"Network {cfg.model.network} has no builder branch.")
+
+
+
+# --------------------------------------------------------------------------- #
+# BC policy/strategy construction
+# --------------------------------------------------------------------------- #
+def _build_q_adapter(cfg, net):
+    if is_autoregressive(cfg.model.network):
+        return QAutoregressivePolicy(net, cfg.data.num_filters)
+    return QFlatPolicy(net)
+
     
-    return policy_class(core_net)
+def _build_bc_policy(cfg: ExperimentConfig, core_net: nn.Module):
+    # Filter-only action space short-circuits all strategy logic.
+    if cfg.data.action_space == 'filter':
+        loss_function = get_loss_function(
+            cfg.model.loss_function,
+            reduction=cfg.model.reduction,
+            gamma_focal=cfg.model.gamma_focal,
+            alpha=cfg.model.alpha,
+        )
+        return BCPureJointPolicy(core_net, loss_function, cfg.data.num_filters)
+
+    if is_autoregressive(cfg.model.network):
+        if cfg.model.loss_strategy != ActionArchitecture.AUTOREGRESSIVE:
+            raise ValueError(
+                f"Network {cfg.model.network} requires "
+                f"LossStrategy.AUTOREGRESSIVE, got {cfg.model.loss_strategy}"
+            )
+        return BCAutoregressivePolicy(core_net, cfg.data.num_filters)
+
+    # Simultaneous architecture: pick strategy.
+    strategy_class = BC_LOSS_STRAT_REGISTRY.get(cfg.model.loss_strategy)
+    if strategy_class is None:
+        raise NotImplementedError(
+            f"`{cfg.model.loss_strategy}` strategy not implemented for BC."
+        )
+
+    primary_loss = get_loss_function(
+        cfg.model.loss_function,
+        reduction=cfg.model.reduction,
+        gamma_focal=cfg.model.gamma_focal,
+        alpha=cfg.model.alpha,
+    )
+
+    if cfg.model.loss_strategy == ActionArchitecture.PURE_JOINT:
+        return strategy_class(core_net, primary_loss, cfg.data.num_filters)
+
+    if cfg.model.loss_strategy == ActionArchitecture.PSEUDO_AUTOREGRESSIVE:
+        return strategy_class(
+            core_net=core_net,
+            num_filters=cfg.data.num_filters,
+            filter_penalty=cfg.model.filter_penalty,
+        )
+
+    if cfg.model.loss_strategy == ActionArchitecture.HYBRID_MARGINAL:
+        ce_loss = nn.CrossEntropyLoss(reduction=cfg.model.reduction)
+        # Joint head can use focal loss; bin/filter marginals stay CE for stability.
+        joint_loss = (
+            get_loss_function('focal_loss', gamma_focal=cfg.model.gamma_focal, alpha=None)
+            if cfg.model.loss_function == 'focal_loss'
+            else ce_loss
+        )
+        return strategy_class(
+            core_net=core_net,
+            num_filters=cfg.data.num_filters,
+            bin_loss_function=ce_loss,
+            filter_loss_function=primary_loss,
+            joint_loss_function=joint_loss,
+            alpha_bin=cfg.model.alpha_bin,
+            beta_filter=cfg.model.beta_filter,
+            zeta_joint=cfg.model.zeta_joint,
+        )
+
+    raise NotImplementedError(f"`{cfg.model.loss_strategy}` has no construction branch.")
+
+
+# --------------------------------------------------------------------------- #
+# Q-net adapter selection
+# --------------------------------------------------------------------------- #
+
+def _build_q_adapter(cfg: ExperimentConfig, net: nn.Module):
+    if cfg.model.network in _AUTOREGRESSIVE_NETWORKS:
+        return QAutoregressivePolicy(net, cfg.data.num_filters)
+    return QFlatPolicy(net, cfg.data.num_filters)
+
+
+# --------------------------------------------------------------------------- #
+# Top-level algorithm builder
+# --------------------------------------------------------------------------- #
 
 def build_algorithm(cfg: ExperimentConfig, device: torch.device):
+    algo_class = ALGORITHM_REGISTRY.get(cfg.model.algorithm)
+    if algo_class is None:
+        raise ValueError(f"Algorithm {cfg.model.algorithm} unknown.")
+
     core_net = build_network(cfg).to(device)
+    # _maybe_load_pretrained(core_net, cfg, device)
+
     optimizer = torch.optim.Adam(core_net.parameters(), lr=cfg.train.lr_init)
-    
+
     if cfg.model.algorithm == Algorithm.BC:
         policy = _build_bc_policy(cfg, core_net)
         return BehaviorCloning(
@@ -109,200 +261,65 @@ def build_algorithm(cfg: ExperimentConfig, device: torch.device):
             lr_scheduler_kwargs=cfg.train.lr_scheduler_kwargs,
             lr_scheduler_epoch_start=cfg.train.lr_sched_epoch_start,
             lr_scheduler_num_epochs=cfg.train.lr_sched_epoch_duration,
-            device=device
+            device=device,
         )
 
-    elif cfg.model.algorithm == Algorithm.DDQN:
+    if cfg.model.algorithm in _Q_VALUE_ALGORITHMS:
         target_net = copy.deepcopy(core_net).to(device)
-        policy = FlatQNetWrapper(core_net)
-        target = FlatQNetWrapper(target_net)
-        loss_fxn = get_loss_function(cfg.model.loss_function)
-        
-        return DDQN(
-            policy=policy,
-            target=target,
-            optimizer=optimizer,
-            gamma=cfg.model.gamma,  
-            tau=cfg.model.tau,      
-            loss_fxn=loss_fxn,
-            use_double=True,
-            use_cql=False,          
-            device=device
-        )
-        
-    raise ValueError(f"Algorithm {cfg.model.algorithm} unknown.")
+        policy = _build_q_adapter(cfg, core_net)
+        target = _build_q_adapter(cfg, target_net)
 
-# def build_network(cfg: ExperimentConfig):
-#     """Dynamically builds the network using the registry."""
-#     activation_name = cfg.model.activation.lower()
-#     if activation_name not in ACTIVATION_REGISTRY:
-#         raise ValueError(f"Activation {activation_name} not supported.")
+        loss_function = get_loss_function(cfg.model.loss_function)
+        use_double = cfg.model.algorithm in (Algorithm.DDQN, Algorithm.CQL)
+        if cfg.model.algorithm in (Algorithm.DQN, Algorithm.DDQN):
+            logger.info(f"Loading DDQN algorithm with gamma={cfg.model.gamma}, tau={cfg.model.tau}")
+            return DDQN(
+                policy=policy,
+                target=target,
+                optimizer=optimizer,
+                gamma=cfg.model.gamma,
+                tau=cfg.model.tau,
+                loss_function=loss_function,
+                use_double=use_double,
+                lr_scheduler=cfg.train.lr_scheduler,
+                lr_scheduler_kwargs=cfg.train.lr_scheduler_kwargs,
+                lr_scheduler_epoch_start=cfg.train.lr_sched_epoch_start,
+                lr_scheduler_num_epochs=cfg.train.lr_sched_epoch_duration,
+                device=device,
+            )
+        elif cfg.model.algorithm == Algorithm.CQL:
+            logger.info(f"Loading CQL algorithm with gamma={cfg.model.gamma}, tau={cfg.model.tau}")
+            # CQL-specific scaling.
+            dist_matrix = None
+            dist_scaling_factor = 0.0
+            dist_matrix = calculate_distance_matrix(
+                nside=cfg.data.nside,
+                is_azel='azel' in str(cfg.data.action_space),
+            )
+            q_max = 1.0 / (1.0 - cfg.model.gamma)
+            dist_scaling_factor = q_max / torch.pi
+            return CQL(
+                policy=policy,
+                target=target,
+                optimizer=optimizer,
+                gamma=cfg.model.gamma,
+                tau=cfg.model.tau,
+                loss_function=loss_function,
+                use_double=use_double,
+                cql_alpha=cfg.model.cql_alpha,
+                cql_margin=cfg.model.cql_margin,
+                dist_matrix=dist_matrix,
+                dist_scaling_factor=dist_scaling_factor,
+                lr_scheduler=cfg.train.lr_scheduler,
+                lr_scheduler_kwargs=cfg.train.lr_scheduler_kwargs,
+                lr_scheduler_epoch_start=cfg.train.lr_sched_epoch_start,
+                lr_scheduler_num_epochs=cfg.train.lr_sched_epoch_duration,
+                device=device,
+            )
+
+
     
-#     activation_fn = ACTIVATION_REGISTRY[activation_name]
-#     network_class = NETWORK_REGISTRY.get(cfg.model.network)
-    
-#     if network_class is None:
-#         raise NotImplementedError(f"Network {cfg.model.network} not implemented.")
-        
-#     if cfg.model.network == Network.CONTEXTUAL_SCORE_MLP:
-#         return network_class(
-#             global_dim=cfg.data.state_dim,
-#             bin_feat_dim=cfg.data.bin_state_dim,
-#             score_dim=cfg.data.num_filters,
-#             hidden_dim=cfg.model.hidden_dim,
-#             activation=activation_fn,
-#             nlayers=cfg.model.nlayers,
-#             use_contextual_gating=cfg.model.contextual_gating
-#         )
-#     return network_class() # Add kwargs for standard MLP if needed
+    if cfg.model.algorithm == Algorithm.IQL:
+        raise NotImplementedError
 
-# def _build_bc_policy(cfg: ExperimentConfig, core_net: nn.Module):
-#     """Helper to cleanly build BC policies using the registry."""
-#     policy_class = BC_POLICY_REGISTRY.get(cfg.model.loss_strategy)
-#     if policy_class is None:
-#         raise NotImplementedError(f"`{cfg.model.loss_strategy}` strategy not implemented for BC.")
-        
-#     # Some policies require different kwargs, handle that routing here
-#     if cfg.model.loss_strategy == LossStrategy.PURE_JOINT:
-#         return policy_class(core_net, nn.CrossEntropyLoss(), cfg.data.num_filters)
-#     elif cfg.model.loss_strategy == LossStrategy.PSEUDO_AUTOREGRESSIVE:
-#         return policy_class(core_net, cfg.data.num_filters, filter_penalty=5.0)
-#     elif cfg.model.loss_strategy == LossStrategy.HYBRID_MARGINAL:
-#         base_loss = get_loss_function(cfg.model.loss_function)
-#         return policy_class(core_net, cfg.data.num_filters, base_loss, base_loss, base_loss)
-    
-#     return policy_class(core_net)
-
-# def build_algorithm(cfg: ExperimentConfig, device: torch.device):
-#     """The main factory for your RL algorithms."""
-    
-#     core_net = build_network(cfg).to(device)
-#     optimizer = torch.optim.Adam(core_net.parameters(), lr=cfg.train.lr_init)
-    
-#     if cfg.model.algorithm == Algorithm.BC:
-#         policy = _build_bc_policy(cfg, core_net)
-#         return BehaviorCloning(
-#             policy=policy,
-#             optimizer=optimizer,
-#             lr_scheduler=cfg.train.lr_scheduler,
-#             lr_scheduler_kwargs=cfg.train.lr_scheduler_kwargs,
-#             lr_scheduler_epoch_start=cfg.train.lr_sched_epoch_start,
-#             lr_scheduler_num_epochs=cfg.train.lr_sched_epoch_duration,
-#             device=device
-#         )
-
-#     elif cfg.model.algorithm == Algorithm.DDQN:
-#         target_net = copy.deepcopy(core_net).to(device)
-#         policy = FlatQNetWrapper(core_net)
-#         target = FlatQNetWrapper(target_net)
-#         loss_fxn = get_loss_function(cfg.model.loss_function)
-        
-#         return DDQN(
-#             policy=policy,
-#             target=target,
-#             optimizer=optimizer,
-#             gamma=cfg.model.gamma,  
-#             tau=cfg.model.tau,      
-#             loss_fxn=loss_fxn,
-#             use_double=True,
-#             use_cql=False,          
-#             device=device
-#         )
-        
-#     raise ValueError(f"Algorithm {cfg.model.algorithm} unknown.")
-
-# def get_loss_function(name, reduction='mean', gamma_focal=2, alpha=None):
-#     if name == 'cross_entropy':
-#         loss_function = nn.CrossEntropyLoss(reduction=reduction)
-#     elif name == 'focal_loss_filter':
-#         loss_function = FilterFocalLoss(gamma=gamma_focal, reduction=reduction)
-#     elif name == 'focal_loss_slew':
-#         loss_function = SlewDistanceFocalLoss(gamma=gamma_focal, reduction=reduction)
-#     elif name == 'focal_loss':
-#         loss_function = FocalLoss(gamma=gamma_focal, reduction=reduction, alpha=alpha)
-#     else:
-#         raise NotImplementedError
-#     return loss_function
-
-# def build_network(cfg: ExperimentConfig):
-#     """Builds the core network based on the Pydantic config."""
-#     activation_fn = get_activation(cfg.model.activation)
-    
-#     if cfg.model.network == Network.CONTEXTUAL_SCORE_MLP:
-#         return ContextualScoreMLP(
-#             global_dim=cfg.data.state_dim,
-#             bin_feat_dim=cfg.data.bin_state_dim,
-#             score_dim=cfg.data.num_filters,
-#             hidden_dim=cfg.model.hidden_dim,
-#             activation=activation_fn,
-#             nlayers=cfg.model.nlayers,
-#             use_contextual_gating=cfg.model.contextual_gating
-#         )
-#     # Add other network architectures here (e.g., AUTOREGRESSIVE)
-#     else:
-#         raise NotImplementedError(f"Network {cfg.model.network} not implemented.")
-
-# def build_algorithm(cfg: ExperimentConfig, device: torch.device):
-#     """Builds the RL algorithm, branching safely based on the model schema."""
-    
-#     core_net = build_network(cfg).to(device)
-#     optimizer = torch.optim.Adam(core_net.parameters(), lr=cfg.train.lr_init)
-#     loss_function = get_loss_function(cfg.model.loss_function, reduction='mean', gamma_focal=2, alpha=None)
-    
-#     if cfg.model.algorithm == Algorithm.BC:
-#         # Note: cfg.model is guaranteed to be a BCModelConfig here
-        
-#         if cfg.model.loss_strategy == LossStrategy.PURE_JOINT:
-#             ce_loss_function = nn.CrossEntropyLoss()
-#             policy = PureJointPolicy(core_net, ce_loss_function, cfg.data.num_filters)
-            
-#         elif cfg.model.loss_strategy == LossStrategy.PSEUDO_AUTOREGRESSIVE:
-#             policy = PseudoAutoregressivePolicy(
-#                 core_net=core_net,
-#                 num_filters=cfg.data.num_filters,
-#                 filter_penalty=5.0 # If this should be configurable, add to BCModelConfig
-#             )
-#         elif cfg.model.loss_strategy == LossStrategy.HYBRID_MARGINAL:
-#             policy = HybridMarginalPolicy(
-#                 core_net=core_net,
-#                 num_filters=cfg.data.num_filters,
-#                 bin_loss_function=loss_function,
-#                 filter_loss_function=loss_function,
-#                 joint_loss_function=loss_function
-#             )
-#         else:
-#              raise NotImplementedError(f"`{cfg.model.loss_strategy}` strategy not implemented for BC.")
-
-#         return BehaviorCloning(
-#             policy=policy,
-#             optimizer=optimizer,
-#             lr_scheduler=cfg.train.lr_scheduler,
-#             lr_scheduler_kwargs=cfg.train.lr_scheduler_kwargs,
-#             lr_scheduler_epoch_start=cfg.train.lr_sched_epoch_start,
-#             lr_scheduler_num_epochs=cfg.train.lr_sched_epoch_duration,
-#             device=device
-#         )
-
-#     elif cfg.model.algorithm == Algorithm.DDQN:
-#         # Note: cfg.model is guaranteed to be a DDQNModelConfig here
-        
-#         target_net = copy.deepcopy(core_net).to(device)
-#         policy = FlatQNetWrapper(core_net)
-#         target = FlatQNetWrapper(target_net)
-
-#         loss_fxn = nn.HuberLoss(reduction='mean') if cfg.model.loss_function == 'huber' else nn.MSELoss(reduction='mean')
-        
-#         return DDQN(
-#             policy=policy,
-#             target=target,
-#             optimizer=optimizer,
-#             gamma=cfg.model.gamma,  # Safely accessed because we know it's a DDQN model
-#             tau=cfg.model.tau,      # Safely accessed because we know it's a DDQN model
-#             loss_fxn=loss_fxn,
-#             use_double=True,
-#             use_cql=False,          # If you add CQL later, add CQLModelConfig to your schema union
-#             device=device
-#         )
-        
-#     else:
-#         raise ValueError(f"Algorithm {cfg.model.algorithm} unknown.")
+    raise ValueError(f"Algorithm {cfg.model.algorithm} has no construction branch.")

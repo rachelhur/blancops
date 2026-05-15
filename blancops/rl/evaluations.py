@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 import pandas as pd
 
-from blancops.configs.schema import ActionConstraints, load_and_validate
+from blancops.configs.rl_schema import ActionConstraints, load_and_validate
 from blancops.configs.constants import *
 from blancops.data.features.normalizations import build_normalizer
 from blancops.data.lookup_tables import LookupTables
@@ -91,7 +91,7 @@ def build_evaluators(cfg_or_cfg_path, device, eval_outdir='holdout_eval', agent_
     
     # Load config and set outdirs
     if isinstance(cfg_or_cfg_path, str):
-        cfg = load_and_validate(cfg_or_cfg_path)
+        cfg = load_and_validate(cfg_or_cfg_path, None)
     outdir = Path(cfg.outdir)
     ss_outdir = outdir / eval_outdir / "ss"
     ms_outdir = outdir / eval_outdir / "ms"
@@ -794,8 +794,8 @@ class SingleStepEvaluator(Evaluator):
 
         bin_idxs = torch.cat(best_actions).to('cpu').detach().numpy()
         if 'filter' in self.data.action_space:
-            filter_idxs = bin_idxs % NUM_FILTERS
-            bin_idxs = bin_idxs // NUM_FILTERS
+            filter_idxs = bin_idxs % _NUM_FILTERS
+            bin_idxs = bin_idxs // _NUM_FILTERS
             return bin_idxs, filter_idxs
         return bin_idxs, None
 

@@ -1,30 +1,126 @@
-import numpy as np
-import torch
-import torch.nn.functional as F
+from abc import ABC, abstractmethod
 
-from blancops.rl.neural_nets.neural_nets import MLP, BinEmbeddingDQN, ContextualScoreMLP
-from blancops.math import geometry
+import torch
 
 import logging
 logger = logging.getLogger(__name__)
 
-from pathlib import Path
 
-class AlgorithmBase:
-    """Computes losses, steps optimizer, and managers learning rates"""
-    def __init__(self):
+class AlgorithmBase(ABC):
+    """Owns the optimizer/scheduler lifecycle and the train/val step template.
+
+    Subclasses fill in three hooks:
+      * `_unpack_batch(batch) -> dict`            — algorithm-specific tensors
+      * `_compute_loss(batch_dict, ...) -> (loss, metrics_dict)`
+      * `_post_step()` (optional)                 — e.g. target-net soft update
+    """
+    def __init__(
+        self, 
+        policy, 
+        optimizer, 
+        lr_scheduler, 
+        lr_scheduler_epoch_start=1, 
+        lr_scheduler_num_epochs=50, 
+        optimizer_kwargs=None, 
+        lr_scheduler_kwargs=None, 
+        device='cpu'
+    ):
         super().__init__()
+        self.device = device
+        self.device_type_str = 'cuda' if 'cuda' in str(self.device) else 'cpu'
+        self.amp_dtype = torch.bfloat16
         
-    def train_step(self, batch):
-        raise NotImplementedError
+        self.policy = policy.to(self.device)
+        self.optimizer = optimizer
+        self.lr_scheduler = self._initialize_scheduler(lr_scheduler, lr_scheduler_kwargs, self.optimizer)
+        
+        self.lr_scheduler_epoch_start = lr_scheduler_epoch_start
+        self.lr_scheduler_num_epochs = lr_scheduler_num_epochs
+    
+    # ----------------------------------------------------------------------- #
+    # Public API: template methods. Subclasses don't override these.
+    # ----------------------------------------------------------------------- #
+
+    def train_step(
+        self, batch, epoch_num, step_num=None, hpGrid=None, compute_metrics=False) -> dict:
+        self.policy.train()
+        self.optimizer.zero_grad(set_to_none=True)
+
+        batch_dict = self._unpack_batch(batch)
+
+        with torch.amp.autocast(self.device_type_str, dtype=self.amp_dtype):
+            loss, metrics = self._compute_loss(
+                batch_dict, hpGrid=hpGrid, compute_metrics=compute_metrics
+            )
+
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
+        self.optimizer.step()
+        self._scheduler_step(epoch_num)
+        self._post_step()
+
+        metrics["train_loss"] = loss.item()
+        return metrics
+
+    def val_step(self, batch, hpGrid=None) -> dict:
+        self.policy.eval()
+        batch_dict = self._unpack_batch(batch)
+
+        with torch.no_grad():
+            with torch.amp.autocast(self.device_type_str, dtype=self.amp_dtype):
+                loss, metrics = self._compute_loss(
+                    batch_dict, hpGrid=hpGrid, compute_metrics=True
+                )
+
+        metrics["val_loss"] = loss.item()
+        return metrics
+
+
+    # ----------------------------------------------------------------------- #
+    # Hooks: subclasses implement these.
+    # ----------------------------------------------------------------------- #
+
+    @abstractmethod
+    def _unpack_batch(self, batch) -> dict:
+        ...
+
+    @abstractmethod
+    def _compute_loss(
+        self, batch_dict: dict, hpGrid=None, compute_metrics: bool = False) -> tuple[torch.Tensor, dict]:
+        """Return (loss_tensor, metrics_dict). metrics_dict may be empty if
+        compute_metrics is False."""
+        ...
+
+    def _post_step(self) -> None:
+        """Optional hook for things like target-network soft updates."""
+        pass
+    
+    # ----------------------------------------------------------------------- #
+    # Shared utilities
+    # ----------------------------------------------------------------------- #
 
     def _initialize_scheduler(self, lr_scheduler, lr_scheduler_kwargs, optimizer):
         if lr_scheduler is None:
             return None
-        
-        if lr_scheduler == 'cosine_annealing' or lr_scheduler == torch.optim.lr_scheduler.CosineAnnealingLR:
-            assert lr_scheduler_kwargs is not None, "Cosine annealing lr scheduler requires T_max and eta_min kwargs"
-            lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, **lr_scheduler_kwargs) 
-        else:
-            raise NotImplementedError
-        return lr_scheduler
+        if lr_scheduler in ("cosine_annealing", torch.optim.lr_scheduler.CosineAnnealingLR):
+            assert lr_scheduler_kwargs is not None, (
+                "Cosine annealing scheduler requires T_max and eta_min kwargs"
+            )
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer=optimizer, **lr_scheduler_kwargs
+            )
+        raise NotImplementedError(f"Scheduler {lr_scheduler!r} not implemented.")
+
+    def _scheduler_step(self, epoch_num: int) -> None:
+        if self.lr_scheduler is None:
+            return
+        in_window = (
+            self.lr_scheduler_epoch_start
+            <= epoch_num
+            <= self.lr_scheduler_epoch_start + self.lr_scheduler_num_epochs
+        )
+        if in_window:
+            self.lr_scheduler.step()
+
+    def _to_dev(self, tensor: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        return tensor.to(device=self.device, dtype=dtype)

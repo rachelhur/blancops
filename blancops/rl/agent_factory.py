@@ -7,8 +7,8 @@ from pathlib import Path
 # Import your domain-specific modules
 from blancops.configs.constants import WORKSPACE
 from blancops.configs.enums import Algorithm
-from blancops.configs.schema import ExperimentConfig, load_and_validate
-from blancops.rl.policies.policies import FlatQNetWrapper
+from blancops.configs.rl_schema import ExperimentConfig, load_and_validate
+from blancops.rl.policies.q_policies import QFlatPolicy
 from blancops.rl.registry import _build_bc_policy, build_network
 from blancops.rl.agent import Agent
 
@@ -105,7 +105,7 @@ class AgentFactory:
         if cfg.model.algorithm == Algorithm.BC:
             policy = _build_bc_policy(cfg, core_net)
         elif cfg.model.algorithm == Algorithm.DDQN:
-            policy = FlatQNetWrapper(core_net)
+            policy = QFlatPolicy(core_net)
         
         try:
             checkpoint = torch.load(weights_path, map_location=device)

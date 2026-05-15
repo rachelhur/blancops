@@ -14,6 +14,7 @@ from pathlib import Path
 from blancops.configs.constants import *
 import logging
 
+from blancops.configs.enums import Algorithm
 from blancops.rl.algorithms.base import AlgorithmBase
 from blancops.rl.checkpointer import Checkpointer
 
@@ -62,38 +63,6 @@ class Trainer:
         if len(valloader) == 0:
             raise ValueError("Validation dataloader is empty! Check dataset split logic.")
     
-    def _setup_run(self, trainloader, batch_size, num_epochs, patience):
-        raise NotImplementedError
-        val_metrics = defaultdict(list)
-        train_metrics = defaultdict(list)
-        
-        # Set to train mode
-        self.algorithm.policy.train()
-        save_filepath = self.train_outdir / 'best_weights.pt'
-        train_metrics_filepath = self.train_outdir / 'metrics' / 'train_metrics.pkl'
-        val_metrics_filepath = self.train_outdir / 'metrics' / 'val_metrics.pkl'
-
-        dataset_size = len(trainloader.dataset)
-        steps_per_epoch = np.max([dataset_size // batch_size, 1])
-        total_steps = int(num_epochs * steps_per_epoch) # ie, total number of times dataset is sampled
-        loader_iter = iter(trainloader)  # create iterator
-
-        use_best_val_loss = self.algorithm.name == 'BC'
-        use_best_ang_sep = self.algorithm.name in ["DDQN", "DQN", "CQL"]
-        assert use_best_val_loss or use_best_ang_sep, "Algorithm name is not valid. Check config file."
-        best_val_loss = 1e5
-        best_ang_sep = 1e5
-        best_epoch = 0
-        patience_cur = patience
-        use_patience = patience != 0
-        i_epoch = 0
-
-        # total_lr_scheduler_steps = int(args.lr_scheduler_max_epochs * iterations_per_epoch // args.lr_scheduler_step_freq)
-        logger.info(f"Total number of training steps: {total_steps}")
-        logger.info(f"Steps per epoch: {steps_per_epoch}")
-        logger.debug(f"Total number of lr scheduler steps: {self.algorithm.lr_scheduler_num_epochs if self.algorithm.lr_scheduler is not None else None}")
-        logger.info(f"Number of transitions in dataset: {len(trainloader.dataset)}")
-        
     def fit(self, num_epochs, batch_size, trainloader, valloader, patience=10, train_log_freq=10, hpGrid=None, norm_stats=None, start_epoch=None):
         
         if (self.overwrite or self.hard_overwrite) and start_epoch > 0:
@@ -106,7 +75,7 @@ class Trainer:
         train_metrics_filepath = self.train_outdir / 'metrics' / 'train_metrics.pkl'
         val_metrics_filepath = self.train_outdir / 'metrics' / 'val_metrics.pkl'
         
-        # --- NEW: Reload previous metric histories if resuming ---
+        # --- Reload previous metric histories if resuming ---
         if start_epoch > 0:
             if train_metrics_filepath.exists():
                 with open(train_metrics_filepath, 'rb') as f:
@@ -121,17 +90,15 @@ class Trainer:
         dataset_size = len(trainloader.dataset)
         steps_per_epoch = np.max([dataset_size // batch_size, 1])
         
-        # --- NEW: Calculate total and starting steps ---
         total_steps = int(num_epochs * steps_per_epoch)
         start_step = int(start_epoch * steps_per_epoch) 
         
         loader_iter = iter(trainloader)
 
-        use_best_val_loss = self.algorithm.name == 'BC'
-        use_best_ang_sep = self.algorithm.name in ["DDQN", "DQN", "CQL"]
+        use_best_val_loss = self.algorithm.name == Algorithm.BC
+        use_best_ang_sep = self.algorithm.name in [Algorithm.DQN, Algorithm.DDQN, Algorithm.CQL]
         assert use_best_val_loss or use_best_ang_sep, "Algorithm name is not valid."
         
-        # --- NEW: Recover the best historical metric so early stopping doesn't reset ---
         best_val_loss = min(val_metrics.get('val_loss', [1e5])) 
         best_ang_sep = min(val_metrics.get('ang_sep', [1e5])) 
         
@@ -139,7 +106,6 @@ class Trainer:
         patience_cur = patience
         use_patience = patience != 0
         
-        # --- NEW: Initialize the epoch counter at the resumed epoch ---
         i_epoch = start_epoch
 
         logger.debug(f"Total number of training steps: {total_steps}")
@@ -148,10 +114,8 @@ class Trainer:
         logger.debug(f"Number of transitions in dataset: {len(trainloader.dataset)}")
 
         with logging_redirect_tqdm():
-            # --- NEW: Add the `initial` argument to tqdm so it doesn't start at 0% ---
             pbar = tqdm(initial=start_step, total=total_steps, dynamic_ncols=True, desc="Training")
             
-            # --- NEW: Start the loop from start_step instead of 0 ---
             for i_step in range(start_step, total_steps):
                 try:
                     batch = next(loader_iter)
@@ -318,3 +282,38 @@ class Trainer:
 
         # Return the epoch so your fit() loop knows where to pick up!
         return checkpoint.get('epoch', 0)
+    
+
+
+    def _setup_run(self, trainloader, batch_size, num_epochs, patience):
+        raise NotImplementedError
+        val_metrics = defaultdict(list)
+        train_metrics = defaultdict(list)
+        
+        # Set to train mode
+        self.algorithm.policy.train()
+        save_filepath = self.train_outdir / 'best_weights.pt'
+        train_metrics_filepath = self.train_outdir / 'metrics' / 'train_metrics.pkl'
+        val_metrics_filepath = self.train_outdir / 'metrics' / 'val_metrics.pkl'
+
+        dataset_size = len(trainloader.dataset)
+        steps_per_epoch = np.max([dataset_size // batch_size, 1])
+        total_steps = int(num_epochs * steps_per_epoch) # ie, total number of times dataset is sampled
+        loader_iter = iter(trainloader)  # create iterator
+
+        use_best_val_loss = self.algorithm.name == 'BC'
+        use_best_ang_sep = self.algorithm.name in ["DDQN", "DQN", "CQL"]
+        assert use_best_val_loss or use_best_ang_sep, "Algorithm name is not valid. Check config file."
+        best_val_loss = 1e5
+        best_ang_sep = 1e5
+        best_epoch = 0
+        patience_cur = patience
+        use_patience = patience != 0
+        i_epoch = 0
+
+        # total_lr_scheduler_steps = int(args.lr_scheduler_max_epochs * iterations_per_epoch // args.lr_scheduler_step_freq)
+        logger.info(f"Total number of training steps: {total_steps}")
+        logger.info(f"Steps per epoch: {steps_per_epoch}")
+        logger.debug(f"Total number of lr scheduler steps: {self.algorithm.lr_scheduler_num_epochs if self.algorithm.lr_scheduler is not None else None}")
+        logger.info(f"Number of transitions in dataset: {len(trainloader.dataset)}")
+        

@@ -1,304 +1,178 @@
 import numpy as np
 import torch
-import torch.nn.functional as F
 
+from blancops.configs.enums import Algorithm
 from blancops.ephemerides.ephemerides import HealpixGrid
-from blancops.math import geometry
 from blancops.rl.algorithms.base import AlgorithmBase
+
 import logging
 logger = logging.getLogger(__name__)
 
+
 class DDQN(AlgorithmBase):
+    """(Double) DQN.
+
+    Set `use_double=False` to fall back to vanilla DQN. The CQL subclass
+    extends this by adding a conservative penalty in `_compute_loss`.
+    """
+    name = Algorithm.DDQN
+
     def __init__(
-        self, 
-        policy,             # Inject the wrapped policy network
-        target,             # Inject the wrapped target network
-        gamma=0.99, 
-        tau=0.005, 
-        loss_function=None, 
-        optimizer=None,
-        lr_scheduler=None, 
-        device='cpu', 
-        use_double=True, 
-        use_cql=True, 
-        cql_alpha=1.0, 
-        cql_margin=0.0,
-        dist_matrix=None,
-        dist_scaling_factor=1.0
+        self,
+        policy,
+        target,
+        optimizer,
+        loss_function,
+        gamma: float = 0.99,
+        tau: float = 0.005,
+        use_double: bool = True,
+        lr_scheduler=None,
+        lr_scheduler_kwargs=None,
+        lr_scheduler_epoch_start: int = 1,
+        lr_scheduler_num_epochs: int = 50,
+        device: str | torch.device = "cpu",
     ):
-        super().__init__()
-        assert loss_function is not None, "loss_fxn needs to be passed"
+        super().__init__(
+            policy=policy,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            lr_scheduler_kwargs=lr_scheduler_kwargs,
+            lr_scheduler_epoch_start=lr_scheduler_epoch_start,
+            lr_scheduler_num_epochs=lr_scheduler_num_epochs,
+            device=device,
+        )
         
-        self.device = device
+        assert loss_function is not None, "loss_function must be provided"
+
+        self.loss_function = loss_function
         self.gamma = gamma
         self.tau = tau
-        self.loss_function = loss_function
         self.use_double = use_double
-        self.use_cql = use_cql
-        self.cql_alpha = cql_alpha
-        self.cql_margin = cql_margin
-        self.dist_matrix = dist_matrix
-        self.dist_scaling_factor = dist_scaling_factor
 
-        # 1. Store the injected networks
-        self.policy = policy.to(device)
         self.target_net = target.to(device)
         self.target_net.eval()
-        for param in self.target_net.parameters():
-            param.requires_grad = False
+        for p in self.target_net.parameters():
+            p.requires_grad = False
 
-        # 2. Setup Optimizer (Injected from config)
-        self.optimizer = optimizer
-        self.lr_scheduler = lr_scheduler
+    # ----------------------------------------------------------------------- #
+    # Hook implementations
+    # ----------------------------------------------------------------------- #
+
+    def _unpack_batch(self, batch) -> dict:
         
-    def train_step(self, batch, epoch_num, step_num=None, hpGrid=None, compute_metrics=False):  
-        state, actions, rewards, next_state, dones, action_masks, next_action_masks, bin_states, next_bin_states = batch
+        (state, actions_flat, rewards, next_state, 
+         dones, action_masks, next_action_masks, bin_states, next_bin_states, slew_dists) = batch
 
-        state_dtype = torch.float32
-        state = state.to(device=self.device, dtype=state_dtype)
-        next_state = next_state.to(device=self.device, dtype=state_dtype)
-        bin_states = bin_states.to(device=self.device, dtype=state_dtype)
-        next_bin_states = next_bin_states.to(device=self.device, dtype=state_dtype)
-        actions = actions.to(device=self.device, dtype=torch.long).unsqueeze(1)
-        action_masks = action_masks.to(device=self.device, dtype=torch.bool)
-        next_action_masks = next_action_masks.to(device=self.device, dtype=torch.bool)
-        rewards = rewards.to(device=self.device, dtype=state_dtype)
-        dones = dones.to(device=self.device, dtype=state_dtype)
-        
-        with torch.amp.autocast(device_type='cuda'):
-            q_vals_all = self.policy.get_q_values(state, bin_states)
-            q_val = q_vals_all.gather(1, actions).squeeze(1) 
-            
-            with torch.no_grad():
-                if self.use_double:
-                    q_vals_next = self.policy.get_q_values(next_state, next_bin_states)
-                    
-                    mask_val = torch.finfo(q_vals_next.dtype).min
-                    q_vals_next = q_vals_next.masked_fill(~next_action_masks, mask_val)
-                    a_best = q_vals_next.argmax(1).type(torch.long)
-                    
-                    target_q_next = self.target_net.get_q_values(next_state, next_bin_states)
-                    target_q_state = target_q_next.gather(1, a_best.unsqueeze(1)).squeeze(1)
-                else:    
-                    next_q = self.target_net.get_q_values(next_state, next_bin_states)
-                    mask_val = torch.finfo(next_q.dtype).min
-                    next_q = next_q.masked_fill(~next_action_masks, mask_val) 
-                    target_q_state = next_q.max(dim=1)[0]
-                q_expected = rewards + self.gamma * target_q_state * (1 - dones)
+        return {
+            "state":             self._to_dev(state, torch.float32),
+            "next_state":        self._to_dev(next_state, torch.float32),
+            "bin_states":        self._to_dev(bin_states, torch.float32),
+            "next_bin_states":   self._to_dev(next_bin_states, torch.float32),
+            "actions":           self._to_dev(actions_flat, torch.long).unsqueeze(1),
+            "rewards":           self._to_dev(rewards, torch.float32),
+            "dones":             self._to_dev(dones, torch.float32),
+            "action_masks":      self._to_dev(action_masks, torch.bool),
+            "next_action_masks": self._to_dev(next_action_masks, torch.bool),
+        }
 
-            loss = self.loss_function(q_val, q_expected)
+    def _compute_loss(self, batch_dict, hpGrid=None, compute_metrics=False):
+        q_vals_all, q_val, q_expected = self._forward_q(batch_dict)
+        loss = self._td_loss(q_val, q_expected)
 
-            # CQL Penalty
-            cql_loss_val = 0.0 
-            if self.use_cql:
-                cql_loss = self._calculate_cql_loss(q_vals_all, q_val, actions, action_masks, margin=self.cql_margin)
-                loss = loss + cql_loss
-                cql_loss_val = cql_loss.item()
-            
-        # 3. Optimize
-        self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
-        self.optimizer.step()
-        
-        do_lr_scheduler_step = (self.lr_scheduler is not None
-                                and epoch_num >= self.lr_scheduler_epoch_start
-                                and epoch_num <= self.lr_scheduler_num_epochs + self.lr_scheduler_epoch_start)
-        if do_lr_scheduler_step:
-            self.lr_scheduler.step()
+        metrics = {}
+        if compute_metrics:
+            metrics = self._build_metrics(q_vals_all, q_val, q_expected, batch_dict, hpGrid)
+        return loss, metrics
 
+    def _post_step(self) -> None:
         self._soft_update()
 
-        # 4. Metrics
-        metrics_dict = {}
+    # ----------------------------------------------------------------------- #
+    # Q-learning math — broken out so CQL can reuse it
+    # ----------------------------------------------------------------------- #
+
+    def _forward_q(self, batch_dict):
+        """Forward pass: current Q values, taken-action Q, and TD target."""
+        state           = batch_dict["state"]
+        bin_states      = batch_dict["bin_states"]
+        next_state      = batch_dict["next_state"]
+        next_bin_states = batch_dict["next_bin_states"]
+        actions         = batch_dict["actions"]
+        rewards         = batch_dict["rewards"]
+        dones           = batch_dict["dones"]
+        next_masks      = batch_dict["next_action_masks"]
+
+        q_vals_all = self.policy.get_q_values(state, bin_states)
+        q_val = q_vals_all.gather(1, actions).squeeze(1)
+
         with torch.no_grad():
-            if compute_metrics:
-                q_vals_eval = q_vals_all.clone()
-                mask_val = torch.finfo(q_vals_eval.dtype).min
-                q_vals_eval = q_vals_eval.masked_fill(~action_masks, mask_val)
-                predicted_actions = q_vals_eval.argmax(1)
-                
-                metrics_dict = {
-                    'train_loss': loss.item(),
-                    'td_error': (q_val - q_expected).abs().mean().item(),
-                    'q_std': q_vals_all.std().item(),
-                    'q_policy': q_vals_all.max(dim=1)[0].mean().item(),
-                    'q_expert': q_val.mean().item(),
-                    'accuracy': (predicted_actions == actions.squeeze(1)).float().mean().item(),
-                    'cql_loss': cql_loss_val,
-                }
-                if hpGrid is not None:
-                    heavy_metrics = self.policy._compute_heavy_metrics(predicted_actions, actions.squeeze(1), hpGrid)
-                    metrics_dict.update(heavy_metrics)
-                    
-                
+            if self.use_double:
+                q_vals_next = self.policy.get_q_values(next_state, next_bin_states)
+                mask_val = torch.finfo(q_vals_next.dtype).min
+                q_vals_next = q_vals_next.masked_fill(~next_masks, mask_val)
+                a_best = q_vals_next.argmax(1)
 
-        return metrics_dict
-        # if self.use_cql:
-        #     bin_idxs = actions // self.num_filters
-        #     base_penalty_weights = self.cql_penalty_matrix[bin_idxs.squeeze(1)]
-        #     penalty_weights = torch.repeat_interleave(base_penalty_weights, self.num_filters, dim=1)
-        #     weighted_q_vals = q_vals_all_masked + penalty_weights # Q(s, a) + Penalty(a, a_exp)
-        #     cql_logsumexp = torch.logsumexp(weighted_q_vals, dim=1)
-        #     cql_penalty = (cql_logsumexp - q_val).mean() # log
-        #     loss = loss + self.cql_alpha * cql_penalty
+                target_q_next = self.target_net.get_q_values(next_state, next_bin_states)
+                target_q_state = target_q_next.gather(1, a_best.unsqueeze(1)).squeeze(1)
+            else:
+                next_q = self.target_net.get_q_values(next_state, next_bin_states)
+                mask_val = torch.finfo(next_q.dtype).min
+                next_q = next_q.masked_fill(~next_masks, mask_val)
+                target_q_state = next_q.max(dim=1)[0]
 
-    def val_step(self, eval_batch, hpGrid=None):
-        state, actions, rewards, next_state, dones, action_masks, next_action_masks, bin_states, next_bin_states = eval_batch
+            q_expected = rewards + self.gamma * target_q_state * (1 - dones)
 
-        with torch.no_grad():      
-            state_dtype = torch.float32
-            state = state.to(device=self.device, dtype=state_dtype)
-            next_state = next_state.to(device=self.device, dtype=state_dtype)
-            bin_states = bin_states.to(device=self.device, dtype=state_dtype)
-            next_bin_states = next_bin_states.to(device=self.device, dtype=state_dtype)
-            actions = actions.to(device=self.device, dtype=torch.long).unsqueeze(1)
-            action_masks = action_masks.to(device=self.device, dtype=torch.bool)
-            next_action_masks = next_action_masks.to(device=self.device, dtype=torch.bool)
-            rewards = rewards.to(device=self.device, dtype=state_dtype)
-            dones = dones.to(device=self.device, dtype=state_dtype)
+        return q_vals_all, q_val, q_expected
 
-            # Warning log
-            expert_actions_squeezed = actions.squeeze(1)
-            invalid_expert_mask = ~action_masks[torch.arange(action_masks.size(0)), expert_actions_squeezed]
-            if invalid_expert_mask.any():
-                logger.debug(f"WARNING: {invalid_expert_mask.sum().item()} expert actions in this batch are masked as INVALID!")
-            
-            with torch.amp.autocast(device_type='cuda'):
-                q_vals_all = self.policy.core_net(x_glob=state, x_bin=bin_states)
-                q_val = q_vals_all.gather(1, actions).squeeze(1)
+    def _td_loss(self, q_val, q_expected) -> torch.Tensor:
+        return self.loss_function(q_val, q_expected)
 
-                q_vals_eval = q_vals_all.clone()
-                q_vals_eval[~action_masks] = -1e9
-                predicted_actions = q_vals_eval.argmax(1)
+    def _build_metrics(self, q_vals_all, q_val, q_expected, batch_dict, hpGrid):
+        actions = batch_dict["actions"]
+        action_masks = batch_dict["action_masks"]
 
-                if self.use_double:
-                    q_vals_next = self.policy.core_net(x_glob=next_state, x_bin=next_bin_states)
-                    q_vals_next[~next_action_masks] = -1e9
-                    a_best = q_vals_next.argmax(1)
-                    
-                    target_q_next = self.target_net(x_glob=next_state, x_bin=next_bin_states)
-                    target_q_state = target_q_next.gather(1, a_best.unsqueeze(1)).squeeze(1) # FIX: squeeze(1)
-                else:
-                    target_q_next = self.target_net(x_glob=next_state, x_bin=next_bin_states).clone()
-                    target_q_next[~next_action_masks] = float('-inf')
-                    target_q_state = target_q_next.max(1)[0]
-                
-                q_expected = rewards + self.gamma * target_q_state * (1 - dones)
-                loss = self.loss_function(q_val, q_expected)
-                td_loss = loss.item()
+        # Warn if any expert action is masked invalid (mainly a sanity check).
+        expert_squeezed = actions.squeeze(1)
+        invalid = ~action_masks[torch.arange(action_masks.size(0)), expert_squeezed]
+        if invalid.any():
+            logger.debug(
+                f"{invalid.sum().item()} expert actions in this batch are masked invalid"
+            )
 
-                cql_loss_val = 0.0 
-                if self.use_cql:
-                    cql_loss = self._calculate_cql_loss(q_vals_all, q_val, actions, action_masks, margin=self.cql_margin)
-                    loss = loss + cql_loss
-                    cql_loss_val = cql_loss.item()
+        q_eval = q_vals_all.clone()
+        mask_val = torch.finfo(q_eval.dtype).min
+        q_eval = q_eval.masked_fill(~action_masks, mask_val)
+        predicted_actions = q_eval.argmax(1)
 
+        metrics = {
+            "td_error": (q_val - q_expected).abs().mean().item(),
+            "td_loss":  self._td_loss(q_val, q_expected).item(),
+            "q_std":    q_vals_all.std().item(),
+            "q_policy": q_vals_all.max(dim=1)[0].mean().item(),
+            "q_expert": q_val.mean().item(),
+            "accuracy": (predicted_actions == expert_squeezed).float().mean().item(),
+        }
 
-            td_error_mean = (q_val - q_expected).abs().mean()
-            mean_accuracy = (predicted_actions == actions.squeeze(1)).float().mean() 
-            q_dataset_mean = q_val.mean()
-            q_policy_mean = q_vals_all.max(dim=1)[0].mean()
-            q_std = q_vals_all.std()
+        if hpGrid is not None:
+            heavy = self.policy.compute_heavy_metrics(
+                predicted_actions, expert_squeezed, hpGrid, self.policy.num_filters
+            )
+            metrics.update(heavy)
+        return metrics
 
-            ang_sep = 0.0
-            unique_bins = 0.0
-            filter_accuracy = 0.0
+    # ----------------------------------------------------------------------- #
+    # Target network update
+    # ----------------------------------------------------------------------- #
 
-            if hpGrid is not None:
-                predicted_actions_cpu = predicted_actions.cpu()
-                actions_cpu = actions.squeeze(1).cpu() # FIX: Squeeze before CPU math
-
-                if self.num_filters is not None and self.num_filters != 1:                  
-                    predicted_bins = predicted_actions_cpu // self.num_filters
-                    expert_bins = actions_cpu // self.num_filters
-                    predicted_filters = predicted_actions_cpu % self.num_filters
-                    expert_filters = actions_cpu % self.num_filters
-                    filter_accuracy = (predicted_filters == expert_filters).float().mean().item()
-                else:
-                    predicted_bins = predicted_actions_cpu
-                    expert_bins = actions_cpu
-
-                predicted_coords = np.array((hpGrid.lon[predicted_bins], hpGrid.lat[predicted_bins]))
-                actions_coords = np.array((hpGrid.lon[expert_bins], hpGrid.lat[expert_bins]))
-                ang_seps = geometry.angular_separation(predicted_coords, actions_coords)
-                ang_sep = ang_seps.mean()
-
-                num_actions_space = len(hpGrid.lon)
-                unique_preds = len(torch.unique(predicted_actions_cpu))
-                unique_bins = unique_preds / num_actions_space
-
-            return loss.item(), td_error_mean.item(), q_std.item(), q_policy_mean.item(), q_dataset_mean.item(), mean_accuracy.item(), ang_sep, \
-                unique_bins, filter_accuracy, cql_loss_val, td_loss
-
-            ## distance
-            # if self.use_cql:
-            #     q_vals_all_masked = q_vals.clone()
-            #     q_vals_all_masked[~action_masks] = -1e9
-                
-            #     bin_idxs = actions // self.num_filters
-            #     base_penalty_weights = self.cql_penalty_matrix[bin_idxs.squeeze(1)]
-            #     penalty_weights = torch.repeat_interleave(base_penalty_weights, self.num_filters, dim=1)
-                
-            #     weighted_q_vals = q_vals_all_masked + penalty_weights
-            #     cql_logsumexp = torch.logsumexp(weighted_q_vals, dim=1)
-            #     cql_penalty = (cql_logsumexp - q_current).mean()
-            #     cql_loss = self.cql_alpha * cql_penalty
-            #     loss = loss + cql_loss
-            #     cql_loss = cql_loss.item()
-
-    def _calculate_cql_loss(self, q_vals_all, q_val_expert, actions, action_masks, margin=0.):
-        """
-        Calculates the Conservative Q-Learning (CQL) penalty with a discrete margin.
-        
-        Returns:
-            cql_loss_tensor (torch.Tensor): For backpropagation.
-            cql_loss_val (float): For detached metric logging.
-        """
-        # 1. Clone to protect the forward computation graph
-        q_vals_cql = q_vals_all.clone()
-        q_vals_cql[~action_masks] = -1e9 
-        num_total_actions = q_vals_all.shape[1]
-        expert_mask = F.one_hot(actions.squeeze(1), num_classes=num_total_actions).bool()
-        q_vals_cql[~expert_mask] += margin
-
-        cql_logsumexp = torch.logsumexp(q_vals_cql, dim=1)
-        cql_penalty = (cql_logsumexp - q_val_expert).mean()
-        
-        # Calculate cql loss
-        cql_loss_tensor = self.cql_alpha * cql_penalty
-        
-        return cql_loss_tensor
-
-    def _compute_metrics(self):
-        pass
-    # def _calculate_cql_loss(self, q_vals, action_masks, actions, q_current, penalty_choice):
-        # if penalty_choice == 'pointing_distance':
-        #     q_vals_all_masked = q_vals.clone()
-        #     q_vals_all_masked[~action_masks] = -1e9
-            
-        #     bin_idxs = actions // self.num_filters
-        #     base_penalty_weights = self.cql_penalty_matrix[bin_idxs.squeeze(1)]
-        #     penalty_weights = torch.repeat_interleave(base_penalty_weights, self.num_filters, dim=1)
-            
-        #     weighted_q_vals = q_vals_all_masked + penalty_weights
-        #     cql_logsumexp = torch.logsumexp(weighted_q_vals, dim=1)
-        #     cql_penalty = (cql_logsumexp - q_current).mean()
-        #     cql_loss = self.cql_alpha * cql_penalty
-        #     loss = loss + cql_loss
-        #     cql_loss = cql_loss.item()
-        
     def _soft_update(self):
-        # update target network
-        for target_param, param in zip(self.target_net.parameters(), self.policy.parameters()):
-            target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
+        for tgt, src in zip(self.target_net.parameters(), self.policy.parameters()):
+            tgt.data.copy_(self.tau * src.data + (1.0 - self.tau) * tgt.data)
+
 
 def calculate_distance_matrix(nside, is_azel):
     hpGrid = HealpixGrid(nside, is_azel)
-    lons = hpGrid.lon
-    lats = hpGrid.lat
-    distance_matrix = np.zeros( (len(hpGrid.lon), len(hpGrid.lon)) )
+    lons, lats = hpGrid.lon, hpGrid.lat
+    dist = np.zeros((len(lons), len(lons)))
     for i, (lon, lat) in enumerate(zip(lons, lats)):
-        distance_matrix[i] = hpGrid.get_angular_separations(lon, lat)
-    return distance_matrix
-    
+        dist[i] = hpGrid.get_angular_separations(lon, lat)
+    return dist
