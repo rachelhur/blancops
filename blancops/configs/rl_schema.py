@@ -11,17 +11,17 @@ from blancops.configs.enums import *
 from blancops.configs.constants import _DEFAULT_NORM_MAPPING, TRAIN_DATA_PATH, _BIN_FEATURES
 from blancops.configs.constants import FILTER2IDX
 
-from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, NORM_TYPES
+from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, _NORM_TYPES
 
 class ActionConstraints(BaseModel): 
-    sun_el_limit: float = -15
+    sun_el_limit: float = -10
     airmass_limit: float = 3.0
     
 class NormalizationConfig(BaseModel):
     # feature_names: List[str] = Field(
     #     default_factory=lambda: list(DEFAULT_NORM_MAPPING.keys())
     #     )
-    feature_norm_mappings: Dict[str, List[NORM_TYPES]] = Field(
+    feature_norm_mappings: Dict[str, List[_NORM_TYPES]] = Field(
         default_factory=lambda: {k: v.copy() for k, v in _DEFAULT_NORM_MAPPING.items()})
     fix_nans: bool = True
 
@@ -68,6 +68,7 @@ class BaseDataConfig(BaseModel):
             if bin_feat not in _BIN_FEATURES:
                 raise ValueError(f"{bin_feat} is not implemented.")
         return self
+    
       
 class TrainDataConfig(BaseDataConfig):
     years: List[int] = [2013, 2014, 2015, 2016, 2017, 2018, 2019] # full set of data
@@ -82,23 +83,75 @@ class TrainDataConfig(BaseDataConfig):
     
 class BaseAlgConfig(BaseModel):
     network: Network = Network.CONTEXTUAL_SCORE_MLP
-    loss_strategy: LossStrategy = LossStrategy.PURE_JOINT
+    loss_strategy: ActionArchitecture = ActionArchitecture.PURE_JOINT
     hidden_dim: int = 128
     nlayers: int = 4
     loss_function: str
     contextual_gating: bool = False
     activation: str = "relu"
     
+    @model_validator(mode='after')
+    def validate_autoregressive_net(self) -> "BaseAlgConfig":
+        if is_autoregressive(self.network):
+            if self.loss_strategy != ActionArchitecture.AUTOREGRESSIVE:
+                raise ValueError(
+                    f"Network {self.network} requires "
+                    f"LossStrategy.AUTOREGRESSIVE, got {self.loss_strategy}"
+                )
+        return self
+    
+    
 class BCAlgConfig(BaseAlgConfig):
     algorithm: Literal[Algorithm.BC]
 
+    # Loss function knobs (used by some strategies, ignored by others)
+    reduction: str = "mean"
+    gamma_focal: float = 2.0
+    alpha: Optional[float] = None
+
+    # Pseudo-autoregressive knobs
+    filter_penalty: float | None = None
+
+    # Hybrid-marginal weights
+    alpha_bin: float | None = None
+    beta_filter: float | None = None
+    zeta_joint: float | None = None
+    reward: RewardStructure | None = None
+    
+    
+    @model_validator(mode="after")
+    def validate_strategy_requirements(self) -> "BCAlgConfig":
+        # Optional: enforce that focal-loss configs explicitly set gamma_focal,
+        # etc. Pydantic will already have applied defaults, so this is for
+        # cross-field constraints only.
+        if self.loss_function == "focal_loss" and self.alpha is not None:
+            if not 0.0 <= self.alpha <= 1.0:
+                raise ValueError("alpha must be in [0, 1] for focal_loss")
+        return self
+
 class DDQNAlgConfig(BaseAlgConfig):
     algorithm: Literal[Algorithm.DDQN]
+    reward: RewardStructure = RewardStructure.TEFF
     tau: float = 0.005 # DDQN specific parameter
     gamma: float = 0.99 # DDQN specific parameter
     
-class RewardConfig(BaseModel):
-    reward_choice: str = 'expert_actions'
+    @model_validator(mode="after")
+    def validate_reward(self) -> "DDQNAlgConfig":
+        assert self.reward in RewardStructure, f"Reward structure {self.reward} is not supported."
+        return self
+
+class CQLAlgConfig(DDQNAlgConfig):
+    algorithm: Literal[Algorithm.CQL]
+    cql_alpha: float = 1.0
+    cql_margin: float = 0.0
+    
+class IQLAlgConfig(DDQNAlgConfig):
+    algorithm: Literal[Algorithm.IQL]
+    expectile: float = 0.7
+    awr_beta: float = 3.0
+    awr_clip: float = 100.0
+
+AnyModelConfig = Union[BCAlgConfig, DDQNAlgConfig, CQLAlgConfig]
     
 class TrainConfig(BaseModel):
     max_epochs: int = 50
@@ -122,7 +175,6 @@ class TrainConfig(BaseModel):
             assert self.max_epochs - self.lr_sched_epoch_start - self.lr_sched_epoch_duration >= 0, "The number of epochs must be greater than lr_scheduler_epoch_start + lr_scheduler_dur_epochs"
         return self
     
-AnyModelConfig = Union[BCAlgConfig, DDQNAlgConfig]
 
 class ExperimentConfig(BaseModel):
     experiment_name: str
@@ -131,7 +183,6 @@ class ExperimentConfig(BaseModel):
     orig_cfg_path: Optional[str] = None
     data: TrainDataConfig
     model: AnyModelConfig = Field(discriminator="algorithm")
-    reward: RewardConfig
     train: TrainConfig
     device: str = 'cuda'
 
@@ -144,12 +195,24 @@ class ExperimentConfig(BaseModel):
             parent = data.get('parent_dir', 'experiments/')
             
             if exp_name:
-                # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                # data['outdir'] = str(Path(parent) / exp_name / f"run_{timestamp}")
-                data['outdir'] = str(Path(parent) / exp_name)
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                data['outdir'] = str(Path(parent) / exp_name / f"run_{timestamp}")
+                # data['outdir'] = str(Path(parent) / exp_name)
                     
         return data # Return the modified dictionary
-
+    
+    @model_validator(mode="after")
+    def validate_algorithm_compatibility(self) -> "ExperimentConfig":
+        if (
+            self.model.algorithm == Algorithm.BC
+            and self.data.action_space == ActionSpace.FILTER
+            and self.model.loss_strategy != ActionArchitecture.PURE_JOINT
+        ):
+            raise ValueError(
+                f"action_space=FILTER only supports loss_strategy=PURE_JOINT, "
+                f"got {self.model.loss_strategy}"
+            )
+        return self
     # @model_validator(mode='before')
     # @classmethod
     # def set_outdir(self) -> 'ExperimentConfig':
@@ -157,10 +220,10 @@ class ExperimentConfig(BaseModel):
     #         self.outdir = str(Path(self.parent_dir) / self.experiment_name)
     #     return self
     
-class ScheduleConfig(BaseModel):
-    model_dir: str
-    data: BaseDataConfig
 
+# ----------------------------------
+# Experiment Config helpers
+# ----------------------------------
 def load_and_validate(yaml_path: str | Path) -> ExperimentConfig:
     """Loads the YAML config and validates it against the ExperimentConfig schema."""
     with open(yaml_path, "r") as f:
@@ -200,7 +263,7 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
     with open(Path(resolved_cfg.outdir) / "configs" /"resolved_config.yaml", "w") as f:
         # Use mode='json' to force Pydantic to convert complex types (like Enums) to strings
         resolved_dict = resolved_cfg.model_dump(mode='json') 
-        print('DUMPING RESOLVED CONFIG IN ', f)
+        # print('DUMPING RESOLVED CONFIG IN ', f)
         yaml.dump(resolved_dict, f, sort_keys=False)
     
         
