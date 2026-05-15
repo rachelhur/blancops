@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from blancops.configs.constants import FILTER2IDX
-from blancops.math import geometry
+from blancops.math import geometry, units
 
 class PolicyBase(nn.Module, ABC):
     @abstractmethod
@@ -135,6 +135,6 @@ class QPolicyBase(BCPolicyBase):
 def compute_slew_distance(predicted_bins, expert_bins, hpGrid) -> float:
     predicted_coords = np.array((hpGrid.lon[predicted_bins], hpGrid.lat[predicted_bins]))
     expert_coords = np.array((hpGrid.lon[expert_bins], hpGrid.lat[expert_bins]))
-    return float(geometry.angular_separation(predicted_coords, expert_coords).mean())
+    return float(geometry.angular_separation(predicted_coords, expert_coords).mean()) / units.deg
 
 
