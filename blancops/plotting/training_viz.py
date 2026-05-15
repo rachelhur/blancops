@@ -2,6 +2,8 @@ import numpy as np
 import pickle
 from blancops.math import geometry
 from blancops.math import units
+import logging
+logger = logging.getLogger(__name__)
 
 import matplotlib.pyplot as plt
 
@@ -46,8 +48,8 @@ def plot_train_metrics(results_outdir, dataset):
         ang_seps = geometry.angular_separation(pos1=pos1, pos2=pos2)
         average_bin_sep = np.mean(ang_seps)
 
-        axs[2].plot(train_metrics['epoch'], np.array(train_metrics['ang_sep'])/units.deg, label='train', color='black', linestyle='dotted')
-        axs[2].plot(val_metrics['epoch'], np.array(val_metrics['ang_sep'])/units.deg, label='val')
+        axs[2].plot(train_metrics['epoch'], np.array(train_metrics['ang_sep']), label='train', color='black', linestyle='dotted')
+        axs[2].plot(val_metrics['epoch'], np.array(val_metrics['ang_sep']), label='val')
         axs[2].set_ylabel('Angular separation \n (deg)', fontsize=14)
         axs[2].set_xlabel('Epoch')
         axs[2].hlines(y=average_bin_sep/units.deg, xmin=0, xmax=np.max(train_metrics['epoch']), label='average bin sep', color='red', linestyle='dashed')
@@ -121,17 +123,17 @@ def plot_global_feature_distributions(dataset, fig_outdir):
     fig.savefig(fig_outdir / 'train_global_feature_distributions.png')
     
 def plot_bin_feature_distributions(dataset, fig_outdir):
-
     ncols = 5
     nrows = len(dataset.bin_feature_names) // ncols + 1
     fig = plt.figure(figsize=(ncols * 4, nrows * 3))
 
     bs_np = dataset.bin_states.cpu().numpy()
-
+    sm_np = dataset.bin_sentinel_mask.cpu().numpy() 
+    
     for i, feat_name in enumerate(dataset.bin_feature_names):
         ax = fig.add_subplot(nrows, ncols, i+1)
-        feat = bs_np[..., i]                                 # (T, B)
-        feat = np.where(feat == -1.0, np.nan, feat)          # mask sentinels
+        feat = bs_np[..., i].copy()
+        feat[sm_np[..., i]] = np.nan  # mask sentinels
         
         means = np.nanmean(feat, axis=1)                     # (T,)
         stds  = np.nanstd(feat,  axis=1)                     # (T,)
