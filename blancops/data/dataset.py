@@ -10,12 +10,13 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader, Subset, RandomSampler
 
+from blancops.configs.enums import RewardStructure
 from blancops.ephemerides import ephemerides
 from blancops.math import geometry
 
 from blancops.data.preprocessing import drop_rows_in_DECam_data
 from blancops.data.constants import *
-from blancops.configs.constants import _CYCLICAL_FEATURE_NAMES
+from blancops.configs.constants import _CYCLICAL_FEATURE_NAMES, _NUM_FILTERS
 
 from blancops.data.features.glob_features import GlobalFeatureEngineer, calc_inst_teff_rate
 from blancops.data.features.bin_features import BinFeatureEngineer
@@ -68,7 +69,6 @@ def _collapse_cyclical_expansions(feature_names, cyclical_names):
 class OfflineDataset(torch.utils.data.Dataset):
     def __init__(
         self, mode, df=None, cfg=None, lookups=None,
-        global_normalizer=None, bin_normalizer=None,
         years=None, months=None, days=None, filters=None,
         z_score_stats=None, rel_norm_stats=None
     ): 
@@ -77,7 +77,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         self._setup_configuration(cfg, norm_kwargs)
         self.lookups = lookups
 
-        # 2. Raw Data Filtering
+        # Raw Data Filtering
         df = drop_rows_in_DECam_data(
             df,
             specific_years=cfg.data.years if years is None else years, 
@@ -86,10 +86,13 @@ class OfflineDataset(torch.utils.data.Dataset):
             specific_filters=cfg.data.filters if filters is None else filters,
         )
         
-        # 3. Feature Engineering Pipeline
+        # Feature Engineering Pipeline
         self._engineer_features(df, cfg, norm_kwargs)
 
-        # 4. RL Transition Construction
+        # Extract feature "prev_bin_features"
+        # self._extract_prev_bin_features()
+    
+        # RL Transition Construction
         self._build_transitions(cfg.data.action_space)
         
         # 5. Train/Val Split
@@ -107,13 +110,13 @@ class OfflineDataset(torch.utils.data.Dataset):
 
     def _setup_configuration(self, cfg, norm_kwargs):
         """Initializes constants, spaces, and feature names."""
-        self.reward_choice = cfg.reward.reward_choice
+        self.reward = cfg.model.reward
         self._calculate_action_mask = cfg.model.algorithm != 'bc'
         self.include_bin_features = len(cfg.data.bin_features) > 0
         
         action_space = cfg.data.action_space
         self.hpGrid = ephemerides.HealpixGrid(nside=cfg.data.nside, is_azel=('azel' in action_space))
-        self.num_filters = NUM_FILTERS if 'filter' in action_space else 1
+        self.num_filters = _NUM_FILTERS if 'filter' in action_space else 1
         self.nbins = len(self.hpGrid.lon)
 
         if action_space == 'filter':
@@ -125,25 +128,14 @@ class OfflineDataset(torch.utils.data.Dataset):
         else:
             raise NotImplementedError(f"Action space {action_space} not supported.")
 
+        self.base_global_feature_names = list(cfg.data.global_features)
+        self.base_bin_feature_names = list(cfg.data.bin_features)
         self.global_feature_names, self.bin_feature_names = setup_feature_names(
-            base_global_feature_names=cfg.data.global_features.copy(),
-            base_bin_feature_names=cfg.data.bin_features.copy(),
-            cyclical_feature_names=_CYCLICAL_FEATURE_NAMES,
-            do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', False),
-        )
-        # `cfg.data.global_features` / `bin_features` arrives in one of two forms:
-        #   - the raw user config: ['lst', 'sun_ra', ...]
-        #   - the resolved (post-expansion) form saved by training:
-        #     ['lst_cos', 'lst_sin', 'sun_ra_cos', 'sun_ra_sin', ...]
-        # The feature engineers need BASE names (they'll add the cyclical
-        # expansions themselves); column selection needs EXPANDED names. We
-        # collapse to base form here so both training (already base, no-op) and
-        # validation (resolved, gets undone) drive the engineers consistently.
-        self.base_global_features = _collapse_cyclical_expansions(
-            cfg.data.global_features, _CYCLICAL_FEATURE_NAMES
-        )
-        self.base_bin_features = _collapse_cyclical_expansions(
-            cfg.data.bin_features, _CYCLICAL_FEATURE_NAMES
+            self.base_global_feature_names,
+            self.base_bin_feature_names,
+            norm_kwargs['cyclical_feature_names'], 
+            norm_kwargs['do_cyclical_norm'],
+            do_filt='filter' in cfg.data.action_space
         )
         self.do_local_mean_z_score = any('rel_' in name for name in self.bin_feature_names)
 
@@ -152,16 +144,17 @@ class OfflineDataset(torch.utils.data.Dataset):
         glob_feature_eng = GlobalFeatureEngineer(
             lookups=self.lookups, 
             hpGrid=self.hpGrid, 
-            base_features=self.base_global_features,
+            base_features=self.base_global_feature_names,
             cyclical_features=_CYCLICAL_FEATURE_NAMES, 
-            do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', True)
+            do_cyclical_norm=norm_kwargs.get('do_cyclical_norm', True),
+            do_filt='filter' in cfg.data.action_space
         )
         self._df = glob_feature_eng.transform(df)
         
         if self.include_bin_features:
             bin_feature_eng = BinFeatureEngineer(
                 hpGrid=self.hpGrid, 
-                base_features=self.base_bin_features, 
+                base_features=self.base_bin_feature_names, 
                 cyclical_features=_CYCLICAL_FEATURE_NAMES, 
                 action_space=cfg.data.action_space,
                 lookups=self.lookups,
@@ -202,11 +195,12 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         # 2. Normalize Global Features
         if mode == 'train':
-            self.states, self.global_zscore_stats, self.global_rel_stats, self.global_nan_mask = global_normalizer.fit_transform(
+            self.states, self.global_zscore_stats, self.global_rel_stats, self.global_sentinel_mask = global_normalizer.fit_transform(
                 state=self.states, train_state_idxs=self.train_state_idxs
             )
         else:
-            self.states = global_normalizer.transform(
+            # checkpoint = torch.load(weights_path, map_location=device)
+            self.states, self.global_sentinel_mask = global_normalizer.transform(
                 state=self.states, 
                 z_stats_dict=z_stats.get('global_features', {}), 
                 rel_stats_dict=rel_stats.get('global_features', {})
@@ -215,13 +209,13 @@ class OfflineDataset(torch.utils.data.Dataset):
 
         # 3. Normalize Bin Features
         if self.include_bin_features and self._prenorm_bin_states is not None:
-            bin_tensor = torch.tensor(self._prenorm_bin_states.detach().clone())
+            bin_tensor = torch.as_tensor(self._prenorm_bin_states)
             if mode == 'train':
-                self.bin_states, self.bin_zscore_stats, self.bin_rel_stats, self.bin_nan_mask = bin_normalizer.fit_transform(
+                self.bin_states, self.bin_zscore_stats, self.bin_rel_stats, self.bin_sentinel_mask = bin_normalizer.fit_transform(
                     state=bin_tensor, train_state_idxs=self.train_state_idxs
                 )
             else:
-                self.bin_states = bin_normalizer.transform(
+                self.bin_states, self.bin_sentinel_mask = bin_normalizer.transform(
                     state=bin_tensor, 
                     z_stats_dict=z_stats.get('bin_features', {}), 
                     rel_stats_dict=rel_stats.get('bin_features', {})
@@ -286,7 +280,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         num_transitions = len(next_state_idxs)
 
         actions = self._construct_actions(df, action_space=action_space, next_state_idxs=next_state_idxs)
-        rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, reward_choice=self.reward_choice)
+        rewards = self._construct_rewards(df, next_state_idxs=next_state_idxs, reward=self.reward)
         dones = self._construct_dones(num_transitions=num_transitions, next_state_idxs=next_state_idxs, current_state_idxs=current_state_idxs)
         action_masks = self._construct_action_masks(state_df=df, action_space=action_space, num_states=len(state_idxs), state_idxs=state_idxs)
         
@@ -326,7 +320,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         current_state_idxs = next_state_idxs - 1
         state_idxs = np.unique(np.concatenate([current_state_idxs, next_state_idxs]))
         df_idx_to_compact = {df_idx: compact_idx for compact_idx, df_idx in enumerate(state_idxs)}
-        logger.info(f'Removing {np.sum(~keep)} transitions with large time diffs > {max_time_diff_min} min. Total transitions: {len(keep)}')
+        logger.info(f'Removing {np.sum(~keep)} transitions with large time diffs > {max_time_diff_min} min. Total transitions in train+val dataset: {len(keep)}')
         return state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact
 
     def _construct_global_features(self, df, state_idxs):
@@ -359,15 +353,17 @@ class OfflineDataset(torch.utils.data.Dataset):
                 f"Invalid data: Found '{ZENITH_FILTER}' in next_state_df."
             filter_series = next_state_df['filter']
             filter_indices = filter_series.map(FILTER2IDX).values.astype(np.int32)
-            return (bin_indices * NUM_FILTERS) + filter_indices
+            return (bin_indices * _NUM_FILTERS) + filter_indices
 
-    def _construct_rewards(self, df, next_state_idxs, reward_choice='teff_rate'):
-        assert reward_choice in ['teff_rate', 'expert_actions']
-        if reward_choice == 'teff_rate':
-            return calc_inst_teff_rate(df=df, next_state_idxs=next_state_idxs)
-        elif reward_choice == 'expert_actions':
+    def _construct_rewards(self, df, next_state_idxs, reward):
+        if reward == RewardStructure.TEFF:
+            return df.iloc[next_state_idxs]['teff'].fillna(0).values
+            # return calc_inst_teff_rate(df=df, next_state_idxs=next_state_idxs)
+        elif (reward == RewardStructure.EXPERT_ACTION) or (reward is None):
             next_state_df = df.iloc[next_state_idxs]
             return np.ones(len(next_state_df), dtype=np.float32)
+        else:
+            raise NotImplementedError
     
     def _construct_slew_distances(self, df):
         curr_bids = df.iloc[self.current_state_idxs]['bin'].values.copy()
@@ -423,6 +419,12 @@ class OfflineDataset(torch.utils.data.Dataset):
             json.dump(all_stats, f, indent=4)
         logger.info(f"Normalization stats successfully saved to {save_path}")
 
+    def _extract_prev_bin_globals(self,):
+        pass
+        # prev_bin_idxs = self._df['bin'].values.astype(np.int64)  # (n_t,)
+        # # (n_t, n_bin_feats) — features of each timestep's "where I am now" bin
+        # prev_bin_feats = self._prenorm_bin_states[np.arange(n_t), prev_bin_idxs, :]
+    
     def get_norm_stats(self) -> dict:
         """Returns the normalization stats dictionary."""
         return {
@@ -458,7 +460,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         if method == 'by_night':
             num_val_nights = max(1, int(self.n_nights * val_split))
             val_nights = np.random.choice(self.unique_nights, size=num_val_nights, replace=False)
-            logger.info(f"VAL NIGHTS ({len(val_nights)}): {val_nights}")
+            # logger.info(f"VAL NIGHTS ({len(val_nights)}): {val_nights}")
             
             transition_nights = self._df.iloc[self.next_state_idxs - 1]['night']
             val_mask = np.isin(transition_nights, val_nights)
@@ -466,7 +468,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             train_indices = np.where(~val_mask)[0]
             val_indices = np.where(val_mask)[0]
 
-            self.val_nights = val_nights.tolist()
+            self.val_nights = val_nights.astype(str).tolist()
             self.train_nights = set(self.unique_nights) - set(val_nights)
             
         elif method == 'by_transition':
@@ -524,3 +526,4 @@ def load_field_lookup_df(filepath):
     field_lookup_df = pd.read_json(filepath)
     _validate_field_lookup_df(field_lookup_df)
     return field_lookup_df
+

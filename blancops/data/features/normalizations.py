@@ -2,15 +2,16 @@ import torch
 import numpy as np
 import logging
 
-from blancops.configs.schema import NormalizationConfig
+from blancops.configs.constants import _FILTER_DEP_FEATURE_NAMES, FILTER2IDX
+from blancops.configs.rl_schema import NormalizationConfig
 
 logger = logging.getLogger(__name__)
 
 def build_normalizer(state_feature_names, cfg):
-    norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
+    norm_kwargs = build_normalizer_kwargs(cfg.data.norm, 'filter' in cfg.data.action_space)
     return StateNormalizer(state_feature_names=state_feature_names, **norm_kwargs)
 
-def build_normalizer_kwargs(norm_config: NormalizationConfig) -> dict:
+def build_normalizer_kwargs(norm_config: NormalizationConfig, do_filt=True) -> dict:
     """Translates the Pydantic schema into the exact kwargs expected by StateNormalizer."""
     kwargs = {
         'cyclical_feature_names': [],
@@ -34,7 +35,6 @@ def build_normalizer_kwargs(norm_config: NormalizationConfig) -> dict:
         for norm in requested_norms:
             target_list = name_map[norm]
             kwargs[target_list].append(feature)
-    
     kwargs['do_cyclical_norm'] = len(kwargs['cyclical_feature_names']) > 0
     kwargs['do_sin_norm'] = len(kwargs['sin_norm_feature_names']) > 0
     kwargs['do_log_norm'] = len(kwargs['log_norm_feature_names']) > 0
@@ -47,25 +47,42 @@ def build_normalizer_kwargs(norm_config: NormalizationConfig) -> dict:
     
     return kwargs
 
-def expand_feature_names_for_cyclic_norm(feature_names, cyclical_feature_names):
+def expand_feature_set(feature_names, cyclical_feature_names, do_filt=True):
     feature_names_out = []
     for feat_name in feature_names:
+        if do_filt:
+            has_filt_dep = feat_name in _FILTER_DEP_FEATURE_NAMES
+            if has_filt_dep:
+                [feature_names_out.append(f"{feat_name}_{filt}") for filt in FILTER2IDX.keys()] 
+
         is_rel_feat = feat_name.startswith('rel_')
         is_delta_feat = feat_name.startswith('delta_')
         never_cyclic_feat = is_rel_feat or is_delta_feat
         is_cyclic = any((feat_name == cyc_feat) or feat_name.endswith(f"_{cyc_feat}") for cyc_feat in cyclical_feature_names)
         
-        if is_cyclic and not never_cyclic_feat:
+        is_cyclic = is_cyclic and not never_cyclic_feat
+        if is_cyclic:
             logger.info(f"Expanding {feat_name} to {feat_name}_cos and {feat_name}_sin")
             feature_names_out.extend([f"{feat_name}_cos", f"{feat_name}_sin"])
-        else:
+        if not has_filt_dep and not is_cyclic:
             feature_names_out.append(feat_name)
     return feature_names_out
 
-def setup_feature_names(base_global_feature_names, base_bin_feature_names, cyclical_feature_names, do_cyclical_norm):
+
+def _base_feature_name(name: str) -> str:
+    # Strip filter suffix
+    for filt in FILTER2IDX.keys():
+        if name.endswith(f"_{filt}"):
+            name = name[: -(len(filt) + 1)]
+            break
+    return name
+
+
+def setup_feature_names(base_global_feature_names, base_bin_feature_names, cyclical_feature_names, do_cyclical_norm, do_filt):
+    """Expands feature list to include filter dependence and cyclical normalizations where applicable."""
     if do_cyclical_norm:
-        global_feature_names = expand_feature_names_for_cyclic_norm(base_global_feature_names.copy(), cyclical_feature_names)
-        bin_feature_names = expand_feature_names_for_cyclic_norm(base_bin_feature_names.copy(), cyclical_feature_names)
+        global_feature_names = expand_feature_set(base_global_feature_names.copy(), cyclical_feature_names, do_filt)
+        bin_feature_names = expand_feature_set(base_bin_feature_names.copy(), cyclical_feature_names, do_filt)
     else:
         global_feature_names = base_global_feature_names.copy()
         bin_feature_names = base_bin_feature_names.copy()
@@ -82,8 +99,8 @@ def apply_cyclical_features(features, base_names, cyclical_names):
         if any(name == cyc or name.endswith(f"_{cyc}") for cyc in cyclical_names):
             features[f"{name}_cos"] = np.cos(features[name])
             features[f"{name}_sin"] = np.sin(features[name])
-
-
+            
+            
 class StateNormalizer:
     def __init__(
         self, 
@@ -129,22 +146,40 @@ class StateNormalizer:
         """Build boolean masks for each normalization type."""
         names = self.feature_names
         
+        
+        def matches(feat, allowed):
+            base = _base_feature_name(feat)
+            return base in allowed
+
+
         # Base exclusion masks
-        rel_exclusion = np.array(['rel_' in f for f in names], dtype=bool)
+        # rel_exclusion = np.array(['rel_' in f for f in names], dtype=bool)
+        # self.masks = {
+        #     'sin': np.array([any(nf == f for nf in sin_feats) for f in names]) & ~rel_exclusion,
+        #     'log': np.array([any(nf == f for nf in log_feats) for f in names]) & ~rel_exclusion,
+        #     'frac': np.array([any(nf == f for nf in frac_feats) for f in names]) & ~rel_exclusion,
+        #     'rel': np.array([any(nf == f for nf in rel_feats) for f in names]),
+        #     'z': np.array([any(f == nf or f.endswith(f"_{nf}") for nf in z_feats) for f in names]) & ~rel_exclusion,
+        # }
+        # Cache active feature names for dictionary building later
+        # self.active_features = {
+        #     name: [f for f, m in zip(names, mask) if m] 
+        #     for name, mask in self.masks.items()
+        # }
         
         self.masks = {
-            'sin': np.array([any(nf == f for nf in sin_feats) for f in names]) & ~rel_exclusion,
-            'log': np.array([any(nf == f for nf in log_feats) for f in names]) & ~rel_exclusion,
-            'frac': np.array([any(nf == f for nf in frac_feats) for f in names]) & ~rel_exclusion,
-            'rel': np.array([any(nf == f for nf in rel_feats) for f in names]),
-            'z': np.array([any(f == nf or f.endswith(f"_{nf}") for nf in z_feats) for f in names]) & ~rel_exclusion,
+            'sin': np.array([matches(f, sin_feats) for f in names]),
+            'log': np.array([matches(f, log_feats) for f in names]),
+            'frac': np.array([matches(f, frac_feats) for f in names]),
+            'z': np.array([matches(f, z_feats) for f in names]),
+            'rel': np.array([matches(f, rel_feats) for f in names]),
         }
         
-        # Cache active feature names for dictionary building later
         self.active_features = {
-            name: [f for f, m in zip(names, mask) if m] 
+            name: [f for f, m in zip(names, mask) if m]
             for name, mask in self.masks.items()
         }
+
 
     def _get_backend(self, state):
         """Returns the appropriate math module and converts masks to the correct device."""
@@ -173,7 +208,7 @@ class StateNormalizer:
 
         # 1. Z-Score (Global Mean/Std)
         if self.do_z and m['z'].sum() > 0:
-            logger.info(f"[Normalizer] Performing Z-Score Normalization for {self.active_features['z']}")
+            # logger.info(f"Performing Z-Score Normalization for {self.active_features['z']}")
             train_data = state[train_state_idxs][..., m['z']]
             train_flat = train_data.reshape(-1, train_data.shape[-1])
             
@@ -185,7 +220,7 @@ class StateNormalizer:
 
         # 2. Relative Local Mean Z-Score (Global Std only)
         if self.do_rel and m['rel'].sum() > 0:
-            logger.info(f"[Normalizer] Performing Relative Local Mean Z-Score Normalization for {self.active_features['rel']}")
+            # logger.info(f"Performing Relative Local Mean Z-Score Normalization for {self.active_features['rel']}")
             train_data = state[train_state_idxs][..., m['rel']]
             train_flat = train_data.reshape(-1, train_data.shape[-1])
             
@@ -219,8 +254,11 @@ class StateNormalizer:
 
         if self.fix_nans:
             state[backend.isnan(state)] = self.sentinel_value
+            nan_mask = backend.isnan(state)
+            state[nan_mask] = self.sentinel_value
+            assert backend.isnan(state).sum() == 0, f"State contains nans"
 
-        return state
+        return state, nan_mask
 
     def _apply_stateless_norms(self, state, backend, m):
         if self.do_sin and m['sin'].sum() > 0:

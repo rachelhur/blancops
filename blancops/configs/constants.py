@@ -34,6 +34,14 @@ PATHS = {
 TRAIN_DATA_DIR = PATHS["TRAIN_DIR"]
 TRAIN_DATA_PATH = TRAIN_DATA_DIR / "decam-exposures-20251211.fits"
 
+
+_CYCLICAL_FEATURE_NAMES = ["ra", "az", "ha", "lst"]
+_FILTER_DEP_FEATURE_NAMES = [
+    'min_tiling', 'num_unvisited_fields', 'num_incomplete_fields', 'mean_tiling', 't_since_last_visit',
+    'rel_min_tiling', 'rel_num_unvisited_fields', 'rel_num_incomplete_fields', 'rel_mean_tiling', 'rel_t_since_last_visit',
+    'urgency', 'sky_brightness', 'is_filter', 'survey_progress'
+    ]
+
 _GLOBAL_FEATURES = [
     "t_night", 
     "t_survey", 
@@ -43,9 +51,9 @@ _GLOBAL_FEATURES = [
     "airmass", 
     "sun_ra", "sun_dec", "sun_az", "sun_el", 
     "moon_ra", "moon_dec", "moon_az", "moon_el",
-    "survey_num_unvisited_fields",
-    "survey_num_incomplete_fields",
-    "survey_min_tiling",
+    "num_unvisited_fields",
+    "num_incomplete_fields",
+    "min_tiling",
     "filter_wave", "filter_idx",
     "is_filter_g", "is_filter_r", "is_filter_i", "is_filter_z", "is_filter_Y",
     "urgency_g", "urgency_r", "urgency_i", "urgency_z", "urgency_Y",
@@ -59,7 +67,6 @@ _BIN_FEATURES = [
     "airmass",
     "moon_distance", 
     "rel_ha", "rel_moon_distance", 
-    # "is_rising",
     "delta_az", 
     "delta_el", 
     "az", 
@@ -67,22 +74,21 @@ _BIN_FEATURES = [
     "ra", 
     "dec",
     "pointing_distance", 
-    "survey_num_unvisited_fields",
-    "survey_num_unvisited_fields_r", "survey_num_unvisited_fields_g", "survey_num_unvisited_fields_i", "survey_num_unvisited_fields_z", "survey_num_unvisited_fields_Y", 
-    "survey_num_incomplete_fields",
-    "survey_num_incomplete_fields_r", "survey_num_incomplete_fields_g",  "survey_num_incomplete_fields_i", "survey_num_incomplete_fields_z", "survey_num_incomplete_fields_Y",
-    "survey_min_tiling", 
-    "survey_min_tiling_r", "survey_min_tiling_g",  "survey_min_tiling_i",  "survey_min_tiling_z", "survey_min_tiling_Y",
-    "rel_survey_num_unvisited_fields", "rel_survey_num_unvisited_fields_r", "rel_survey_num_unvisited_fields_g", "rel_survey_num_unvisited_fields_i",  "rel_survey_num_unvisited_fields_z", "rel_survey_num_unvisited_fields_Y", 
-    "rel_survey_num_incomplete_fields", "rel_survey_num_incomplete_fields_r", "rel_survey_num_incomplete_fields_g",  "rel_survey_num_incomplete_fields_i", "rel_survey_num_incomplete_fields_z",  "rel_survey_num_incomplete_fields_Y",
-    "rel_survey_min_tiling", 
-    "rel_survey_min_tiling_r", "rel_survey_min_tiling_g", "rel_survey_min_tiling_i", "rel_survey_min_tiling_z", "rel_survey_min_tiling_Y",
-    "t_until_set"
+    "num_unvisited_fields",
+    "num_incomplete_fields",
+    "min_tiling", 
+    "mean_tiling", 
+    "rel_num_unvisited_fields", 
+    "rel_num_incomplete_fields", 
+    "rel_min_tiling",
+    "rel_t_since_last_visit",
+    "t_until_set",
+    "t_since_last_visit"
 ]
 
 
 # 1. Define allowed normalization strings to catch typos instantly
-NORM_TYPES = Literal[
+_NORM_TYPES = Literal[
     'cyclical', # cos/sin - this normalization is run before all others
     'sin', # sin only
     'log',
@@ -126,9 +132,17 @@ _ALLOWED_NORMS_PER_FEATURE = {
     'survey_progress': {'fractional', 'sin', 'z_score'},
     'urgency': {'log', 'z_score'},
     
+    'pointing_distance': ['z_score'],
+    'num_unvisited_fields': ['z_score'],
+    'num_incomplete_fields': ['z_score'],
+    'mean_tiling': ['z_score'],
+    'min_tiling': ['z_score'],
+    
     'rel_num_unvisited_fields': {'local_mean_z'},
     'rel_num_incomplete_fields': {'local_mean_z'},
     'rel_min_tiling': {'local_mean_z'},
+    'rel_mean_tiling': {'local_mean_z'},
+    'rel_t_since_last_visit': {'local_mean_z'}, 
     'rel_moon_distance': {'local_mean_z'},
     'rel_ha': {'local_mean_z'},
     
@@ -136,11 +150,11 @@ _ALLOWED_NORMS_PER_FEATURE = {
     't_survey': {'fractional'},
     'moon_phase': {'fractional'},
     'survey_num_visits_done': {'fractional'},
-    't_until_set': {'fractional'}
+    't_until_set': {'fractional'},
+    't_since_last_visit': {'fractional', 'z_score'}, 
 }
 
 _DEFAULT_NORM_MAPPING = {
-    
     # Telescope coords
     'ra': ['cyclical'],
     'az': ['cyclical'],
@@ -172,18 +186,29 @@ _DEFAULT_NORM_MAPPING = {
     
     # Bin features
     'pointing_distance': ['z_score'],
+    'num_unvisited_fields': ['z_score'],
+    'num_incomplete_fields': ['z_score'],
+    'min_tiling': ['z_score'],
+    'mean_tiling': ['z_score'],
+    
     'rel_num_unvisited_fields': ['local_mean_z'],
     'rel_num_incomplete_fields': ['local_mean_z'],
     'rel_min_tiling': ['local_mean_z'],
     'rel_moon_distance': ['local_mean_z'],
     'rel_ha': ['local_mean_z'],
+    'rel_t_since_last_visit': ['local_mean_z'],
     
     't_night': ['fractional'],
     't_survey': ['fractional'],
     'moon_phase': ['fractional'],
     'survey_num_visits_done': ['fractional'],
     't_until_set': ['fractional'],
+    't_since_last_visit': ['z_score'],
 }
+
+"""
+SISPI FORMAT
+"""
 
 _EMPTY_SISPI_DICT = OrderedDict([
     ("object",  None),
@@ -201,9 +226,6 @@ _EMPTY_SISPI_DICT = OrderedDict([
     ("propid",  None),
     ("comment", ""),
 ])
-
-_CYCLICAL_FEATURE_NAMES = ["ra", "az", "ha", "lst"]
-
 
 """
 
@@ -262,7 +284,7 @@ FILTER2WAVE = {
     'Y': 990
 }
 
-NUM_FILTERS = len(FILTER2WAVE)
+_NUM_FILTERS = len(FILTER2WAVE)
 IDX2WAVE = {i: FILTER2WAVE[k] for i, k in enumerate(FILTER2WAVE.keys())}
 FILTERWAVENORM = 1000.
 

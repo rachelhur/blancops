@@ -118,81 +118,6 @@ def compute_global_pointing_features(*, timestamp, ra, dec) -> dict:
     return features
 
 
-# def apply_cyclical_global_features(features, base_names, cyclical_names):
-#     """Add ``<feat>_cos`` and ``<feat>_sin`` for cyclical features, in place.
-
-#     Walks ``base_names`` (the pre-expansion config list), matches against
-#     ``cyclical_names``, and writes cos/sin if the feature exists in
-#     ``features``. Works on a dict (live, scalar values) or a pandas
-#     DataFrame (offline, columns) — both support
-#     ``__contains__`` / ``__getitem__`` / ``__setitem__``.
-
-#     Matching rule: a name is cyclical iff it equals a cyclical name exactly
-#     or ends with ``_<cyc>`` (e.g. ``sun_ha`` matches cyclical ``ha``).
-#     ``rel_*`` names are skipped defensively even though they don't currently
-#     appear in the global feature list.
-
-#     Note: the previous offline implementation used ``feat_name.endswith(cyc)``
-#     *without* the leading underscore, which spuriously matched ``rel_ha``
-#     against cyclical ``ha`` (since ``"rel_ha"`` ends with ``"ha"``). This
-#     helper uses the correct rule and fixes that.
-#     """
-#     for name in base_names:
-#         is_match = any(
-#             name == cyc or name.endswith(f"_{cyc}")
-#             for cyc in cyclical_names
-#         )
-#         is_excluded = name.startswith("rel_") or name.startswith("delta_")
-#         if is_match and not is_excluded and name in features:
-#             features[f"{name}_cos"] = np.cos(features[name])
-#             features[f"{name}_sin"] = np.sin(features[name])
-
-
-# Only required for validation/inference
-def _collapse_cyclical_expansions(feature_names, cyclical_names):
-    """Collapse ``<name>_cos`` / ``<name>_sin`` pairs back to ``<name>``.
- 
-    A name is treated as a cyclical expansion iff it ends with ``_cos`` or
-    ``_sin`` AND the stripped base "looks cyclical" — i.e. equals a name in
-    ``cyclical_names`` or ends with ``_<cyc>`` for some such name.
- 
-    The live env stores its base feature names for use by
-    ``apply_cyclical_*_features``, which matches base names against the
-    cyclical-name list to decide what to expand. When the env is built from
-    a resolved config (the normal validate / eval flow), the config has
-    already been expanded — so without this collapse, ``self.base_*_feature_names``
-    would contain things like ``lst_cos`` instead of ``lst``, the matcher
-    wouldn't fire, the ``_cos`` / ``_sin`` columns wouldn't get written into
-    the per-step feature dict, and the final stack step would surface them
-    as NaN. Idempotent on already-collapsed lists, so training (raw config)
-    is unaffected.
- 
-    Note: a duplicate of this helper lives in
-    ``blancops.data.dataset._collapse_cyclical_expansions``. Both should
-    eventually consolidate into a shared utility module.
-    """
-    def _is_cyclical(name):
-        return any(
-            name == cyc or name.endswith(f"_{cyc}")
-            for cyc in cyclical_names
-        )
- 
-    result = []
-    seen = set()
-    for name in feature_names:
-        base = name
-        for suffix in ("_cos", "_sin"):
-            if name.endswith(suffix):
-                candidate = name[:-len(suffix)]
-                if _is_cyclical(candidate):
-                    base = candidate
-                    break
-        if base not in seen:
-            result.append(base)
-            seen.add(base)
-    return result
-
-
 # ============================================================================
 # GlobalFeatureEngineer — offline batch pipeline.
 # ============================================================================
@@ -202,21 +127,22 @@ class GlobalFeatureEngineer:
     """Pipeline for calculating global state features for blancops RL."""
 
     def __init__(self, lookups, hpGrid, base_features, cyclical_features,
-                 do_cyclical_norm=True):
+                 do_cyclical_norm=True, do_filt=True):
         self.lookups = lookups
         self.hpGrid = hpGrid
         self.base_features = base_features
         self.cyclical_features = cyclical_features
         self.do_cyclical_norm = do_cyclical_norm
+        self.do_filt = do_filt
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """Executes the full feature engineering pipeline."""
         return (df
             .pipe(self._add_zenith_rows)
-            .pipe(self._add_time_features)
+            .pipe(self._add_time_dependent_features)
             .pipe(self._map_bins_and_fields)
-            .pipe(self._add_filter_features)
-            .pipe(self._add_sky_brightness)
+            .pipe(self._add_filter_choice)
+            .pipe(self._add_filter_dep_features)
             .pipe(self._apply_cyclical_norms)
             .pipe(self._ensure_32_bit)
         )
@@ -226,7 +152,7 @@ class GlobalFeatureEngineer:
         df = _backfill_zenith_states(merge_zenith_df(df, zenith_df))
         return df
 
-    def _add_time_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _add_time_dependent_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Fill LST + sun/moon + moon_phase columns via the shared helper,
         then add ``t_night`` (which needs per-night normalization).
         """
@@ -271,25 +197,26 @@ class GlobalFeatureEngineer:
 
         return df
 
-    def _add_filter_features(self, df: pd.DataFrame):
+    def _add_filter_choice(self, df: pd.DataFrame):
         df['filter_wave'] = df['filter'].map(FILTER2WAVE)
         df['filter_wave'] = df['filter_wave'].fillna(ZENITH_WAVELENGTH) / FILTERWAVENORM # zenith "filter" set to 0, then normalize
         df['filter_idx'] = df['filter'].map(FILTER2IDX)
         for feat_name in self.base_features:
-            if feat_name.startswith('is_filter_'):
-                filt_str = feat_name.split('_')[-1]
-                df[feat_name] = (df['filter'] == filt_str).astype(np.float32)
+            if feat_name == 'is_filter':
+                for filt in FILTER2IDX.keys():
+                    df[f'{feat_name}_{filt}'] = (df['filter'] == filt).astype(np.float32)
         return df
 
-    def _add_sky_brightness(self, df):
+    def _add_filter_dep_features(self, df):
         """Vectorized per-filter sky brightness. Kept separate from the
         shared per-timestep helper because ``estimate_sky_brightness``
         accepts arrays — calling it five times with N-element arrays is
         much faster than calling it per row in the time-features loop.
         """
-        if any(('sky_brightness' in base_feat) for base_feat in self.base_features):
-            for filt in FILTER2WAVE.keys():
-                if filt != ZENITH_FILTER:
+        # if any(('sky_brightness' in base_feat) for base_feat in self.base_features):
+        for filt in FILTER2WAVE.keys():
+            if filt != ZENITH_FILTER:
+                if any(('sky_brightness' == base_feat) for base_feat in self.base_features):
                     df[f'sky_brightness_{filt}'] = estimate_sky_brightness(
                         time=df['timestamp'].values,
                         ra=df['ra'].values,
@@ -297,7 +224,7 @@ class GlobalFeatureEngineer:
                         band=filt,
                     )
         return df
-
+    
     def _ensure_32_bit(self, df):
         for bin_str, np_bit in zip(['float64', 'int64'], [np.float32, np.int32]):
             cols = df.select_dtypes(include=[bin_str]).columns
