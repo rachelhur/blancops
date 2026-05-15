@@ -21,15 +21,16 @@ import numpy as np
 import gymnasium as gym
 from collections import defaultdict
 from blancops import math
-from blancops.configs.schema import ActionConstraints, ExperimentConfig
+from blancops.configs.constants import _NUM_FILTERS
+from blancops.configs.rl_schema import ActionConstraints, ExperimentConfig
 from blancops.data.features.bin_features import (
     # Shared per-timestep helpers — single source of truth for bin features.
+    _STALENESS_BASE_KEYS,
     _SURVEY_PROGRESS_BASE_KEYS,
     compute_bin_ephemeris_features,
     compute_bin_progress_features,
     apply_relative_bin_features,
     validate_history_bin_features,
-    replace_invalid_with_sentinel,
     # Small math helpers still imported by other callers.
     get_delta_az_el,
     get_relative_feature,
@@ -48,6 +49,12 @@ from blancops.configs.constants import *
 
 logger = logging.getLogger(__name__)
 
+
+
+# ---------------------------------------------------------------------------
+# State Snapshot holds a point-in-time snapshot of the env's mutable state
+# ---------------------------------------------------------------------------
+
 @dataclass
 class StateSnapshot:
     """A point-in-time snapshot of the env's mutable state.
@@ -58,6 +65,8 @@ class StateSnapshot:
     bin_num: int = ZENITH_BIN_NUM
     filter_idx: int = ZENITH_FILTER_IDX
     counts_cur : Optional[np.ndarray] = None # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
+    last_visit_ts_cur: Optional[np.ndarray] = None    # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
+    
 
 
 # ---------------------------------------------------------------------------
@@ -124,12 +133,12 @@ class BaseBlancoEnv(gym.Env, ABC):
         norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
         self.base_global_feature_names = list(cfg.data.global_features)
         self.base_bin_feature_names = list(cfg.data.bin_features)
-        print('BASE GLOBAL FEATURE NAMES', self.base_global_feature_names)
         self.global_feature_names, self.bin_feature_names = setup_feature_names(
             self.base_global_feature_names,
             self.base_bin_feature_names,
             norm_kwargs['cyclical_feature_names'], 
-            norm_kwargs['do_cyclical_norm']
+            norm_kwargs['do_cyclical_norm'],
+            do_filt='filter' in cfg.data.action_space
         )
         self.include_bin_features = cfg.data.bin_state_dim > 0
         self.do_filt = 'filter' in cfg.data.action_space
@@ -138,13 +147,15 @@ class BaseBlancoEnv(gym.Env, ABC):
         self.global_normalizer = StateNormalizer(state_feature_names=self.global_feature_names, **norm_kwargs)
         self.bin_normalizer = StateNormalizer(state_feature_names=self.bin_feature_names, **norm_kwargs)
         self.do_cyclical_norm = self.global_normalizer.do_cyclical_norm or self.bin_normalizer.do_cyclical_norm
-        
-        self._has_historical_features = any(feat_substr in bf for feat_substr in _SURVEY_PROGRESS_BASE_KEYS  
+                
+        self._has_historical_features = any(
+            feat_substr in bf 
+            for feat_substr in (_SURVEY_PROGRESS_BASE_KEYS + _STALENESS_BASE_KEYS)
             for bf in self.bin_feature_names
         )
         
         self.idx2filter = IDX2FILTER
-        self.nfilters = NUM_FILTERS
+        self.nfilters = _NUM_FILTERS
         
         # Heapix Grid
         self.hpGrid = ephemerides.HealpixGrid(
@@ -186,6 +197,10 @@ class BaseBlancoEnv(gym.Env, ABC):
         # Survey progress tracker - built once at construction so that concrete subclasses can validate it
         target_counts = self.lookups.target_fidfilt_counts if self.do_filt else self.lookups.target_fid_counts
         self._survey_progress_tracker = SurveyProgressTracker(target_counts=target_counts)
+        self._last_visit_ts = np.full(
+            self._survey_progress_tracker.raw_counts.shape,
+            np.nan, dtype=np.float64,
+        )
         
         # Sentinel for inactive bins, written into history features at the
         # tail end of `_calculate_bin_features`. Internal computation uses
@@ -323,6 +338,14 @@ class BaseBlancoEnv(gym.Env, ABC):
                 f"match tracker shape {tracker_shape}"
             )
             self._survey_progress_tracker.set_counts(snap.counts_cur)
+        if snap.last_visit_ts_cur is not None:
+            expected_shape = self._last_visit_ts.shape
+            assert snap.last_visit_ts_cur.shape == expected_shape, (
+                f"snapshot last_visit_ts_cur shape {snap.last_visit_ts_cur.shape} "
+                f"does not match {expected_shape}"
+            )
+            self._last_visit_ts[:] = snap.last_visit_ts_cur
+        
  
     def _record_visit(self, field_id: int, filter_idx: int = None) -> None:
         """Bookkeeping after a successful observation.
@@ -337,6 +360,10 @@ class BaseBlancoEnv(gym.Env, ABC):
             filter_idx = filter_idx if self.do_filt else None
             )
 
+        if self.do_filt:
+            self._last_visit_ts[field_id, filter_idx] = self._ts
+        else:
+            self._last_visit_ts[field_id] = self._ts
     # -----------------------------------------------------------------------
     # Concrete helpers for setting action mask constraints
     # -----------------------------------------------------------------------
@@ -385,14 +412,14 @@ class BaseBlancoEnv(gym.Env, ABC):
     def get_obs(self) -> dict:
         """Normalizes and returns the current state"""
         global_state = np.array(self._global_state, dtype=np.float32)
-        global_state_normed = self.global_normalizer.transform(
+        global_state_normed, _ = self.global_normalizer.transform(
             global_state,
             self._z_score_stats['global_features'],
             self._rel_norm_stats['global_features']
         )
         if self.include_bin_features:
             bin_state_arr = np.array(self._bin_state, dtype=np.float32)
-            bin_state_normed = self.bin_normalizer.transform(
+            bin_state_normed, _ = self.bin_normalizer.transform(
                 bin_state_arr,
                 self._z_score_stats['bin_features'],
                 self._rel_norm_stats['bin_features']
@@ -573,9 +600,9 @@ class BaseBlancoEnv(gym.Env, ABC):
             for filt, idx in FILTER2IDX.items():
                 p_name = f"survey_progress_{filt}"
                 u_name = f"urgency_{filt}"
-                if p_name in self.base_global_feature_names:
+                if p_name in self.global_feature_names:
                     new_features[p_name] = tracker.get_filter_progress(idx)
-                if u_name in self.base_global_feature_names:
+                if u_name in self.global_feature_names:
                     visits = int(tracker.raw_counts[:, idx].sum())
                     target = int(tracker.target_counts[:, idx].sum())
                     if target == 0:
@@ -600,7 +627,6 @@ class BaseBlancoEnv(gym.Env, ABC):
             sunset_timestamp=self._sunset_ts,
             sunrise_timestamp=self._sunrise_ts,
         )
-
         # 8. Cyclical norms via the shared helper.
         if self.global_normalizer.do_cyclical_norm:
             apply_cyclical_features(
@@ -613,6 +639,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         global_state_features = [
             new_features.get(feat, np.nan) for feat in self.global_feature_names
         ]
+        
         nan_feats = np.isnan(global_state_features)
         if any(nan_feats):
             nan_idx = int(np.where(nan_feats)[0][0])
@@ -678,9 +705,15 @@ class BaseBlancoEnv(gym.Env, ABC):
                     nbins=self.nbins,
                     do_filt=self.do_filt,
                     idx2filter=self.idx2filter,
+                    timestamp=timestamp,
+                    last_visit_timestamps=self._last_visit_ts
                 )
             )
-
+        # for key in self.bin_feature_names:
+        #     print(key)
+        # for key in features.keys():
+        #     print(key)
+            
         # 4. Relative + cyclical features (in place on the dict).
         el_mask = features['el'] > 0
         apply_relative_bin_features(
@@ -692,7 +725,6 @@ class BaseBlancoEnv(gym.Env, ABC):
                 self.bin_feature_names,
                 self.bin_normalizer.cyclical_feature_names,
             )
-
         # 5. Validate (NaN-aware). Only meaningful when history features exist.
         if self._has_historical_features:
             validate_history_bin_features(
@@ -700,7 +732,8 @@ class BaseBlancoEnv(gym.Env, ABC):
             )
 
         # 6. Convert internal NaN sentinels (inactive bins) to the external value.
-        replace_invalid_with_sentinel(features, self._bin_feat_sentinel)
+        # Is now done in state normalizer
+        # replace_invalid_with_sentinel(features, self._bin_feat_sentinel)
 
         # 7. Stack in requested order. After step 6 there should be no NaNs;
         #    a remaining NaN means a missing feature implementation or a leak
@@ -712,10 +745,10 @@ class BaseBlancoEnv(gym.Env, ABC):
                     f"Requested feature '{key}' was not calculated by the pipeline."
                 )
             arr = features.pop(key)
-            assert not np.isnan(arr).any(), (
-                f"NaN values found in feature '{key}' after sentinel "
-                f"replacement: {arr}"
-            )
+            # assert not np.isnan(arr).any(), (
+            #     f"NaN values found in feature '{key}' after sentinel "
+            #     f"replacement: {arr}"
+            # )
             final_arrays.append(arr)
         assert len(final_arrays) == len(self.bin_feature_names), (
             "Number of final arrays should match number of requested bin features"
@@ -801,7 +834,7 @@ class BaseBlancoEnv(gym.Env, ABC):
                 start=min([WAIT_SIGNAL, ZENITH_FIELD_ID]),
             ),
             "filter_idx": gym.spaces.Discrete(
-                NUM_FILTERS - smallest_sentinel,
+                _NUM_FILTERS - smallest_sentinel,
                 start=min([WAIT_SIGNAL, ZENITH_FILTER_IDX]),
             ),
         })
@@ -825,7 +858,7 @@ class BaseBlancoEnv(gym.Env, ABC):
             
             if self.do_filt:
                 self._action_mask = np.zeros(
-                    shape=(self.nbins * NUM_FILTERS,), dtype=bool
+                    shape=(self.nbins * _NUM_FILTERS,), dtype=bool
                 )
             else:
                 self._action_mask = np.zeros(shape=self.nbins, dtype=bool)
@@ -863,7 +896,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         clean_bins = np.array(valid_field_bins)[valid_bin_mask].astype(int)
  
         if self.do_filt:
-            action_mask = np.zeros(shape=(self.nbins, NUM_FILTERS), dtype=bool)
+            action_mask = np.zeros(shape=(self.nbins, _NUM_FILTERS), dtype=bool)
             clean_ff = sel_valid[sel_valid_fields][valid_bin_mask]
             np.logical_or.at(action_mask, clean_bins, clean_ff)
             action_mask = action_mask.flatten()

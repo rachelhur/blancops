@@ -114,7 +114,7 @@ class HistoricBlancoEnv(OfflineBlancoEnvBase):
             field_id=night_cfg["field_id"],
             bin_num=night_cfg["bin_num"],
             filter_idx=night_cfg["filter_idx"],
-            counts_cur = history_lookup[night_id].copy()
+            counts_cur = history_lookup[night_id].copy(),
         )
 
     # -----------------------------------------------------------------------

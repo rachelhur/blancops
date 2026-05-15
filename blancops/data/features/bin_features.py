@@ -24,7 +24,7 @@ To add a new feature:
     4. Add feature key to _BIN_FEATURE_NAMES in configs/constants.py
     5. Add feature key and default normalization to _DEFAULT_NORM_MAPPING in configs/constants.py
     
-    If adding a new helper, must update base_env.py `_calculate_bin_features`
+    If adding a new helper, must also update base_env.py `_calculate_bin_features`
     method and `BinFeatureEngineer.transform` method.
 """
 import warnings
@@ -45,11 +45,12 @@ logger = logging.getLogger(__name__)
 # requested feature whose name contains one of these substrings will
 # trigger the history pass.
 _SURVEY_PROGRESS_BASE_KEYS = [
-        'survey_num_unvisited_fields',
-        'survey_num_incomplete_fields',
-        'survey_min_tiling',
-        'survey_mean_tiling'
+        'num_unvisited_fields',
+        'num_incomplete_fields',
+        'min_tiling',
+        'mean_tiling'
     ]
+_STALENESS_BASE_KEYS = ['t_since_last_visit']
  
 # ============================================================================
 # Canonical per-timestep helpers — single source of truth, shared between
@@ -105,7 +106,14 @@ def compute_bin_ephemeris_features(timestamp, pointing_radec, hpGrid, night_dura
     features['delta_az'], features['delta_el'] = get_delta_az_el(
         features['az'], features['el'], pointing_az, pointing_el
     )
-    features['t_until_set'] = hpGrid.get_time_until_set(time=timestamp) / night_duration_in_sec
+    t_until_set_raw = hpGrid.get_time_until_set(time=timestamp) / night_duration_in_sec
+    # The above method outputs np.inf. Convert to NaN.
+    # This will be handled by StateNormalizer at the end of its pipeline. 
+    features['t_until_set'] = np.where(
+        np.isfinite(t_until_set_raw), 
+        t_until_set_raw / night_duration_in_sec,
+        np.nan
+    )
     return features
  
  
@@ -119,7 +127,7 @@ def compute_bin_progress_features(
     idx2filter=None,
     timestamp=None,
     last_visit_timestamps=None,
-    staleness_horizon_sec=30*24*3600
+    staleness_horizon_sec=1*24*3600
 ):
     """Per-timestep survey-progress features per bin.
  
@@ -141,8 +149,8 @@ def compute_bin_progress_features(
         idx2filter: filter idx -> name mapping. Defaults to ``IDX2FILTER``.
  
     Returns:
-        dict with ``survey_num_unvisited_fields``,
-        ``survey_num_incomplete_fields``, ``survey_min_tiling`` (always)
+        dict with ``num_unvisited_fields``,
+        ``num_incomplete_fields``, ``min_tiling`` (always)
         and per-filter variants if ``do_filt``.
  
     Note on normalization: the "adjusted max" used in ratios is
@@ -187,6 +195,26 @@ def compute_bin_progress_features(
     )
     act_s = bin_in_plan_counts > 0
  
+    def _assign_staleness(last_visit_per_field, in_plan_mask, key):
+        """Min staleness (freshest visit) across in-plan fields per bin.
+        Fields never visited contribute +inf (NaN last_visit -> inf staleness),
+        so they don't pull the min down."""
+        # Per-field staleness in normalized units; +inf where never visited
+        # OR out of plan.
+        age_v = np.where(
+            in_plan_mask & ~np.isnan(last_visit_per_field),
+            (timestamp - last_visit_per_field) / staleness_horizon_sec,
+            np.inf,
+        )
+        
+        res = np.full(nbins, np.inf, dtype=np.float32)
+        np.minimum.at(res, bins_mem, age_v)
+        
+        # Bins with no contributing field (all inf): mark NaN sentinel
+        res[~act_s | np.isinf(res)] = np.nan
+        # Cap saturated staleness at 1.0
+        features[key] = np.minimum(res, 1.0).astype(np.float32)
+    
     def _assign_fraction(field_mask, key):
         """Fraction of in-plan fields in each bin satisfying ``field_mask``."""
         res = np.full(nbins, np.nan, dtype=np.float32)
@@ -195,10 +223,10 @@ def compute_bin_progress_features(
         features[key] = res
  
     _assign_fraction(
-        (v_cur_field == 0) & in_plan, "survey_num_unvisited_fields"
+        (v_cur_field == 0) & in_plan, "num_unvisited_fields"
     )
     _assign_fraction(
-        (v_cur_field < max_adj) & in_plan, "survey_num_incomplete_fields"
+        (v_cur_field < max_adj) & in_plan, "num_incomplete_fields"
     )
  
     # Per-bin min tiling. Out-of-plan fields contribute +inf so they're ignored
@@ -213,9 +241,19 @@ def compute_bin_progress_features(
     s_mins = np.full(nbins, np.inf, dtype=np.float32)
     np.minimum.at(s_mins, bins_mem, tiling)
     s_mins[~act_s | np.isinf(s_mins)] = np.nan
-    features["survey_min_tiling"] = np.minimum(s_mins, 1.0)
+    features["min_tiling"] = np.minimum(s_mins, 1.0)
  
     if not do_filt:
+        if timestamp is not None and last_visit_timestamps is not None:
+            if last_visit_timestamps.ndim == 2:
+                # Aggregate to per-field: most-recent visit across filters
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    last_visit_field = np.nanmax(last_visit_timestamps, axis=1)
+            else:
+                last_visit_field = last_visit_timestamps
+            _assign_staleness(last_visit_field, in_plan[v_mask], "t_since_last_visit")
+            
         return features
  
     # Per-filter family of features
@@ -233,6 +271,13 @@ def compute_bin_progress_features(
     )
  
     for f, filt_name in idx2filter.items():
+        if timestamp is not None and last_visit_timestamps is not None:
+            _assign_staleness(
+                last_visit_timestamps[v_mask, f],
+                in_ff_plan[:, f],
+                f"t_since_last_visit_{filt_name}",
+            )
+            
         bc_f = np.bincount(
             bins_mem, weights=in_ff_plan[:, f], minlength=nbins
         )
@@ -247,7 +292,7 @@ def compute_bin_progress_features(
             ),
             bc_f, out=unv, where=act_f,
         )
-        features[f"survey_num_unvisited_fields_{filt_name}"] = unv
+        features[f"num_unvisited_fields_{filt_name}"] = unv
  
         inc = np.full(nbins, np.nan, dtype=np.float32)
         np.divide(
@@ -258,13 +303,13 @@ def compute_bin_progress_features(
             ),
             bc_f, out=inc, where=act_f,
         )
-        features[f"survey_num_incomplete_fields_{filt_name}"] = inc
+        features[f"num_incomplete_fields_{filt_name}"] = inc
  
         s_f_mins = np.full(nbins, np.inf, dtype=np.float32)
         np.minimum.at(s_f_mins, bins_mem, ff_tiling[:, f])
         s_f_mins[~act_f | np.isinf(s_f_mins)] = np.nan
-        features[f"survey_min_tiling_{filt_name}"] = np.minimum(s_f_mins, 1.0)
- 
+        features[f"min_tiling_{filt_name}"] = np.minimum(s_f_mins, 1.0)
+        
     return features
  
  
@@ -283,42 +328,21 @@ def apply_relative_bin_features(features, el_mask, has_historical, do_filt):
  
     if not has_historical:
         return
- 
-    # base_keys = [
-    #     'survey_num_unvisited_fields',
-    #     'survey_num_incomplete_fields',
-    #     'survey_min_tiling',
-    #     'survey_mean_tiling'
-    # ]
+    
     if do_filt:
-        keys = [f"{bk}_{filt}" for bk in _SURVEY_PROGRESS_BASE_KEYS for filt in FILTER2IDX.keys()]
+        base_keys = _SURVEY_PROGRESS_BASE_KEYS + _STALENESS_BASE_KEYS
+        keys = [f"{bk}_{filt}" for bk in base_keys for filt in FILTER2IDX.keys()]
     else:
-        keys = _SURVEY_PROGRESS_BASE_KEYS
+        keys = _SURVEY_PROGRESS_BASE_KEYS + _STALENESS_BASE_KEYS
     for k in keys:
         if k in features:
             features[f"rel_{k}"] = get_relative_feature(features[k], el_mask)
  
  
-# def apply_cyclical_bin_features(features, base_names, cyclical_names):
-#     """Add ``<feat>_cos`` and ``<feat>_sin`` for cyclical features, in place.
- 
-#     Walks ``base_names`` (the pre-expansion feature list from the config),
-#     matches against ``cyclical_names``, and writes cos/sin if the feature
-#     exists in ``features``. Works for any array shape — cos/sin are
-#     elementwise.
-#     """
-#     for cyc in cyclical_names:
-#         for name in base_names:
-#             is_exact = (name == cyc)
-#             is_suffix = name.endswith(f"_{cyc}")
-#             is_excluded = name.startswith("rel_") or name.startswith("delta_")
-#             if (is_exact or is_suffix) and not is_excluded and name in features:
-#                 features[f"{name}_cos"] = np.cos(features[name])
-#                 features[f"{name}_sin"] = np.sin(features[name])
- 
- 
 def validate_history_bin_features(features, do_filt, idx2filter=None):
     """Sanity-check history features. NaN-aware (NaN = inactive bin).
+    
+    Does not check mean_tiling
  
     Raises ``RuntimeError`` on:
       * Bounds: fractions outside [0, 1]
@@ -331,17 +355,17 @@ def validate_history_bin_features(features, do_filt, idx2filter=None):
         idx2filter = IDX2FILTER
  
     check_groups = [{
-        'unv': 'survey_num_unvisited_fields',
-        'inc': 'survey_num_incomplete_fields',
-        'til': 'survey_min_tiling',
+        'unv': 'num_unvisited_fields',
+        'inc': 'num_incomplete_fields',
+        'til': 'min_tiling',
         'name': 'survey (base)',
     }]
     if do_filt:
         for filt_name in idx2filter.values():
             check_groups.append({
-                'unv': f'survey_num_unvisited_fields_{filt_name}',
-                'inc': f'survey_num_incomplete_fields_{filt_name}',
-                'til': f'survey_min_tiling_{filt_name}',
+                'unv': f'num_unvisited_fields_{filt_name}',
+                'inc': f'num_incomplete_fields_{filt_name}',
+                'til': f'min_tiling_{filt_name}',
                 'name': f'survey ({filt_name})',
             })
  
@@ -392,22 +416,38 @@ def validate_history_bin_features(features, do_filt, idx2filter=None):
                 f"min_tiling > 0 at idx {bad[0][0]}. "
                 f"Unv: {unv[bad][0]}, Til: {til[bad][0]}"
             )
- 
- 
-def replace_nan_with_sentinel(features, sentinel_val, keys=None):
-    """Convert NaN -> ``sentinel_val`` in place for the given keys
-    (or every key if ``keys`` is None). Only writes when a NaN exists,
-    leaving non-history features untouched.
-    """
-    if keys is None:
-        keys = list(features.keys())
-    for k in keys:
-        if k not in features:
+            
+    for bk in (_STALENESS_BASE_KEYS if not do_filt else
+        [f"{bk}_{filt_name}" for bk in _STALENESS_BASE_KEYS 
+        for filt_name in idx2filter.values()]):
+        if bk not in features:
             continue
-        arr = features[k]
-        nan_mask = np.isnan(arr)
-        if nan_mask.any():
-            arr[nan_mask] = sentinel_val
+        arr = features[bk]
+        valid = ~np.isnan(arr)
+        bad = valid & ((arr < 0.0) | (arr > 1.0))
+        if np.any(bad):
+            b = np.where(bad)
+            raise RuntimeError(
+                f"FATAL BOUNDS: {bk} out of [0,1] at idx {b[0][0]}. "
+                f"Val: {arr[b][0]}"
+            )
+                
+
+# Keep just in case. Remove when StateNormalizer.fit_transform() is confidently implemented.
+# def replace_nan_with_sentinel(features, sentinel_val, keys=None):
+#     """Convert NaN -> ``sentinel_val`` in place for the given keys
+#     (or every key if ``keys`` is None). Only writes when a NaN exists,
+#     leaving non-history features untouched.
+#     """
+#     if keys is None:
+#         keys = list(features.keys())
+#     for k in keys:
+#         if k not in features:
+#             continue
+#         arr = features[k]
+#         nan_mask = np.isnan(arr)
+#         if nan_mask.any():
+#             arr[nan_mask] = sentinel_val
             
 def replace_invalid_with_sentinel(features, sentinel_val, keys=None):
     """Convert NaN and ±inf -> ``sentinel_val`` in place for the given keys
@@ -497,7 +537,7 @@ class BinFeatureEngineer:
         self.has_historical = any(
             hk in f
             for f in self.base_features
-            for hk in _SURVEY_PROGRESS_BASE_KEYS
+            for hk in _SURVEY_PROGRESS_BASE_KEYS + _STALENESS_BASE_KEYS
         )
         self.sentinel_val = (
             AZEL_BIN_FEAT_SENTINEL if self.is_azel else RADEC_BIN_FEAT_SENTINEL
@@ -541,7 +581,9 @@ class BinFeatureEngineer:
             validate_history_bin_features(features, self.do_filt)
  
         # Final step: convert internal NaN sentinels to the external value.
-        replace_invalid_with_sentinel(features, self.sentinel_val)
+        # replace_invalid_with_sentinel(features, self.sentinel_val)
+        # Instead, do this at last step of normalization so that we can save the sentinel mask
+        # and use for plotting bin_features per timestamp
  
         return self._stack_and_rearrange(features, requested_features)
  
@@ -561,15 +603,12 @@ class BinFeatureEngineer:
             'rel_ha', 'rel_moon_distance', 't_until_set'
         ]
         features = {k: np.empty(shape, dtype=np.float32) for k in ephemeris_keys}
- 
         if self.has_historical:
-            for bk in _SURVEY_PROGRESS_BASE_KEYS:
+            for bk in _SURVEY_PROGRESS_BASE_KEYS + _STALENESS_BASE_KEYS:
                 features[bk] = np.empty(shape, dtype=np.float32)
                 if self.do_filt:
                     for filt in FILTER2IDX.keys():
-                        features[f"{bk}_{filt}"] = np.empty(
-                            shape, dtype=np.float32
-                        )
+                        features[f"{bk}_{filt}"] = np.empty(shape, dtype=np.float32)
         return features
  
  
@@ -632,7 +671,8 @@ class BinFeatureEngineer:
  
         pbar = tqdm(total=len(pt_df), desc='Computing bin features')
         i = 0  # Global row index — matches the row's slot in pre-allocated arrays.
- 
+
+        nfields, nfilters = len(ra_arr), len(FILTER2IDX)
         for night, group in pt_df_with_filt.groupby('night', sort=False):
             # Per-night running counter, seeded from the visit history.
             if self.do_filt:
@@ -640,14 +680,28 @@ class BinFeatureEngineer:
                     self.lookups.night2fidfilt_visit_hist[night]
                     .copy().astype(np.int32)
                 )
+                # NEW: seed from history if you have it, else NaN.
+                # If lookups exposes a night2fidfilt_last_visit, use it; else start
+                # from NaN — meaning "no recorded visit" → infinite staleness → sentinel.
+                last_visit_ts = (
+                    self.lookups.night2fidfilt_last_visit[night].copy().astype(np.float64)
+                    if hasattr(self.lookups, "night2fidfilt_last_visit")
+                    else np.full((nfields, nfilters), np.nan, dtype=np.float64)
+                )
                 cur_s_vis = None
+                last_visit_ts_1d = None
             else:
                 cur_s_vis = (
                     self.lookups.night2fid_visit_hist[night]
                     .copy().astype(np.int32)
                 )
+                last_visit_ts_1d = (
+                    self.lookups.night2fid_last_visit[night].copy().astype(np.float64)
+                    if hasattr(self.lookups, "night2fid_last_visit")
+                    else np.full(nfields, np.nan, dtype=np.float64)
+                )
                 cur_s_f_vis = None
- 
+                last_visit_ts = None
             # Extract group columns as ndarrays for the inner loop.
             step_timestamps = group['timestamp'].to_numpy()
             step_pointing_ras = group['ra'].to_numpy()
@@ -697,6 +751,8 @@ class BinFeatureEngineer:
                         target_counts=self.lookups.target_fidfilt_counts,
                         bins_per_field=bpf, v_mask=vm,
                         nbins=nbins, do_filt=True,
+                        timestamp=t,
+                        last_visit_timestamps=last_visit_ts,
                     )
                 else:
                     hist = compute_bin_progress_features(
@@ -704,6 +760,8 @@ class BinFeatureEngineer:
                         target_counts=self.lookups.target_fid_counts,
                         bins_per_field=bpf, v_mask=vm,
                         nbins=nbins, do_filt=False,
+                        timestamp=t,
+                        last_visit_timestamps=last_visit_ts_1d,
                     )
                 for k, v in hist.items():
                     if k in features:
@@ -715,8 +773,10 @@ class BinFeatureEngineer:
                     if self.do_filt:
                         if obs_filt != ZENITH_FILTER_IDX:
                             cur_s_f_vis[obs_fid, obs_filt] += 1
+                            last_visit_ts[obs_fid, obs_filt] = t  
                     else:
                         cur_s_vis[obs_fid] += 1
+                        last_visit_ts_1d[obs_fid] = t
  
                 i += 1
                 pbar.update(1)
