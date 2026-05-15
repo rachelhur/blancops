@@ -52,7 +52,7 @@ python scripts/run_live_scheduler.py
 For detailed Live Scheduler documentation, see [live scheduler README](./blancops/live_scheduler/README.md).
 
 
-## Project Structure
+<!-- ## Project Structure
 
 ```
 blancops/
@@ -96,7 +96,7 @@ deployable_models/         # Trained model weights
 ├── bc_v0/                # Simple production model
 └── bc_v0_simple/         # Test model
 
-```
+``` -->
 
 <!-- ### CLI Entry Points
 
