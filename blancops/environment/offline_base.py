@@ -117,8 +117,9 @@ class OfflineBlancoEnvBase(BaseBlancoEnv):
         self._sunrise_ts = cfg["sunrise_ts"]
         self._night_end_ts = cfg["end_ts"]
  
-        snap = self._build_night_start_snapshot(self._night_idx)
-        self._apply_state_snapshot(snap)
+        self._apply_state_snapshot(
+            self._build_night_start_snapshot(self._night_idx)
+        )
  
         logger.info(
             f"Night {self._night_idx+1}/{self.max_nights}: "
