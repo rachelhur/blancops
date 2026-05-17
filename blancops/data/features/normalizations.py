@@ -28,13 +28,14 @@ def build_normalizer_kwargs(norm_config: NormalizationConfig, do_filt=True) -> d
         'log': 'log_norm_feature_names',
         'fractional': 'fractional_norm_feature_names',
         'z_score': 'z_score_feature_names',
-        'local_mean_z': 'local_mean_z_score_feature_names'
+        'local_mean_z': 'local_mean_z_score_feature_names',
     }
     
     for feature, requested_norms in norm_config.feature_norm_mappings.items():
         for norm in requested_norms:
-            target_list = name_map[norm]
-            kwargs[target_list].append(feature)
+            if norm is not None:
+                target_list = name_map[norm]
+                kwargs[target_list].append(feature)
     kwargs['do_cyclical_norm'] = len(kwargs['cyclical_feature_names']) > 0
     kwargs['do_sin_norm'] = len(kwargs['sin_norm_feature_names']) > 0
     kwargs['do_log_norm'] = len(kwargs['log_norm_feature_names']) > 0
