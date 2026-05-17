@@ -308,7 +308,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         return None
  
     def _get_survey_nights_total(self) -> Optional[int]:
-        """Total scheduled survey nights; used by urgency calculation."""
+        """Total scheduled survey nights."""
         return None
  
     def _get_survey_night_idx(self) -> Optional[int]:

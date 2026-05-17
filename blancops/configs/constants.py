@@ -37,27 +37,36 @@ TRAIN_DATA_PATH = TRAIN_DATA_DIR / "decam-exposures-20251211.fits"
 
 _CYCLICAL_FEATURE_NAMES = ["ra", "az", "ha", "lst"]
 _FILTER_DEP_FEATURE_NAMES = [
+     # global features
+    'global_mean_tiling',
+    'urgency', 'sky_brightness', 'is_filter', 'survey_progress',
+    # bin features
     'min_tiling', 'num_unvisited_fields', 'num_incomplete_fields', 'mean_tiling', 't_since_last_visit',
     'rel_min_tiling', 'rel_num_unvisited_fields', 'rel_num_incomplete_fields', 'rel_mean_tiling', 'rel_t_since_last_visit',
-    'urgency', 'sky_brightness', 'is_filter', 'survey_progress'
     ]
 
 _GLOBAL_FEATURES = [
     "t_night", 
-    "t_survey", 
+    "t_survey",  # loss of generality
     "lst", 
     "ha", 
-    "el", 
+    "el",
+    "ra",
+    "dec",
+    "az",
     "airmass", 
+    "dec",  # redundant with el, airmass
     "sun_ra", "sun_dec", "sun_az", "sun_el", 
     "moon_ra", "moon_dec", "moon_az", "moon_el",
-    "num_unvisited_fields",
-    "num_incomplete_fields",
-    "min_tiling",
-    "filter_wave", "filter_idx",
-    "is_filter_g", "is_filter_r", "is_filter_i", "is_filter_z", "is_filter_Y",
-    "urgency_g", "urgency_r", "urgency_i", "urgency_z", "urgency_Y",
-    "sky_brightness_g", "sky_brightness_r", "sky_brightness_i", "sky_brightness_z", "sky_brightness_Y",
+    #TODO: moon_distance
+    # "num_unvisited_fields",
+    # "num_incomplete_fields",
+    # "min_tiling",
+    "filter_wave", "filter_idx", "is_filter", # is_filter one-hot encoded is probably best
+    # "urgency",    #  loss of generality
+    # "survey_progress",   # mostly parallel to mean_tiling
+    "global_mean_tiling",
+    "sky_brightness",
     "moon_phase",
     "fwhm",
 ]
@@ -127,9 +136,7 @@ _ALLOWED_NORMS_PER_FEATURE = {
     
     'fwhm': {'log', 'z_score'},
     'urgency': {'log', 'z_score'},
-    
     'survey_progress': {'fractional', 'sin', 'z_score'},
-    'urgency': {'log', 'z_score'},
     
     'pointing_distance': ['z_score'],
     'num_unvisited_fields': ['z_score'],
@@ -151,6 +158,7 @@ _ALLOWED_NORMS_PER_FEATURE = {
     'survey_num_visits_done': {'fractional'},
     't_until_set': {'fractional'},
     't_since_last_visit': {'fractional', 'z_score', 'log', None}, 
+    'global_mean_tiling': {'fractional'},
 }
 
 _DEFAULT_NORM_MAPPING = {
@@ -203,6 +211,8 @@ _DEFAULT_NORM_MAPPING = {
     'survey_num_visits_done': ['fractional'],
     't_until_set': ['fractional'],
     't_since_last_visit': ['z_score'],
+    'global_mean_tiling': ['fractional'],
+    
 }
 
 """

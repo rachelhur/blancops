@@ -8,7 +8,7 @@ from blancops.math import units
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 from blancops.configs.constants import FILTER2IDX
 from blancops.data.lookup_tables import LookupTables
-from blancops.data.preprocessing import drop_rows_in_DECam_data, preprocess_train_df
+from blancops.data.preprocessing import drop_rows_in_DECam_data, preprocess_historic_data
 import matplotlib.pyplot as plt
 import warnings
 import logging
@@ -28,7 +28,7 @@ def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
     fits_path = Path(fits_path or TRAIN_DATA_PATH).resolve()
     outdir = Path(outdir or TRAIN_DATA_DIR).resolve()
     
-    df = preprocess_train_df(fits_path=fits_path)
+    df = preprocess_historic_data(fits_path=fits_path)
     df = drop_rows_in_DECam_data(df)
     if len(df) == 0: # Fixed the logical bug here: len(df) == 0 means no obs found
         logger.warning("No observations found for the specified year/month/day/filter selections.")
@@ -119,14 +119,15 @@ def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
     night2fid_last_visit_ot = {}
     night2fidfilt_last_visit_ot = {}
     night2ot_clock_seconds = {}     # night -> OT(sunset_n)
+    night2idx = {}
 
     cum_ot = 0.0
         
-    for night, night_df in df.groupby("night"):
-            
+    for i, (night, night_df) in enumerate(df.groupby("night")):
         sunset_ts, sunrise_ts = get_night_boundaries(night, sun_el_limit=-10)
         night2ot_clock_seconds[night] = cum_ot
         night_dur = sunrise_ts - sunset_ts
+        night2idx[night] = i
 
         # Snapshot start-of-night state BEFORE adding this night's
         # contributions. Matches existing visit_hist semantics so
@@ -200,7 +201,7 @@ def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
                 )
 
         cum_ot += night_dur
-
+    total_nights = len(night2idx)
     total_observing_seconds = cum_ot
 
     logger.info(" [+] Constructed start-of-night 'Snapshots' Lookup (required for history-based feature construction) ")
@@ -218,7 +219,9 @@ def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
         night2fid_last_visit_ot=night2fid_last_visit_ot,
         night2fidfilt_last_visit_ot=night2fidfilt_last_visit_ot,
         night2ot_clock_seconds=night2ot_clock_seconds,
-        total_ot_sec=total_observing_seconds
+        total_ot_sec=total_observing_seconds,
+        night2idx=night2idx,
+        total_nights=total_nights
     )
     lookups.write_to_disk(outdir)
     logger.info(f" [+] Successfully generated all lookup tables in {outdir}")

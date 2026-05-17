@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 from blancops.data.features.glob_features import calc_t_survey, calc_urgency
 import numpy as np
@@ -14,11 +16,20 @@ logger = logging.getLogger(__name__)
 from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 
-def preprocess_train_df(fits_path, add_survey_progress_cols=True) -> pd.DataFrame:
-    """Loads train data from fits file, performs hard coded cuts, adds universally required columns, converts to degrees and utc timestamp"""
+def preprocess_historic_data(fits_path: str | Path | None = None, df=None, sel=None) -> pd.DataFrame:
+    """Loads data from fits file, performs hard coded cuts, adds universally required columns, and converts to degrees and utc timestamp
+    
+    Args:
+    =====
+    fits_path: str | Path
+        Path to fits file
+    sel: 
+        NOT YET IMPLEMENTED. Will be selection criteria for the dataframe
+    """
     df = fits_to_df(fits_path)
     
-    sel = (df['propid'] == '2012B-0001') & (df['exptime'] > 40) & (df['exptime'] < 100) & (~np.isnan(df['teff']))
+    if sel is None:
+        sel = (df['propid'] == '2012B-0001') & (df['exptime'] > 40) & (df['exptime'] < 100) & (~np.isnan(df['teff']))
     # sel &= df['exptime'] == 90 # use only 90s exposures
     df = df[sel].copy()
     df['datetime'] = pd.to_datetime(df['datetime'], utc=True)
@@ -26,35 +37,34 @@ def preprocess_train_df(fits_path, add_survey_progress_cols=True) -> pd.DataFram
     df['night'] = df['night'] + (timedelta(days=1) - pd.Timedelta(seconds=1))
     df = df[df['datetime'].dt.year > 2010] # There are some 1970 rows even after selecting propid
     
-    df = _convert_df_to_deg(df)
+    df = _convert_df_to_radians(df)
 
     timestamps = (df['datetime'] - pd.Timestamp("1970-01-01", tz='utc')) // pd.Timedelta("1s")
     df['timestamp'] = timestamps
     df = df.sort_values(by='timestamp').reset_index(drop=True)
-    if add_survey_progress_cols:
-        df = _add_cols_to_raw_dataframe(df)
+    df = _add_essential_cols(df)
     return df
 
-def _convert_df_to_deg(df: pd.DataFrame, key_list: list = []):
+def _convert_df_to_radians(df: pd.DataFrame, key_list: list = []):
     key_list += ['ra', 'dec', 'az', 'zd', 'ha']
     key_list = list(set(key_list))
     df.loc[:, ['ra', 'dec', 'az', 'zd', 'ha']] *= units.deg
     return df
 
-def _add_cols_to_raw_dataframe(df):
-    df['night_idx'] = pd.factorize(df['night'])[0]
-    df['t_survey'] = calc_t_survey(df['night_idx'].values, df['night_idx'].max() + 1)
+def _add_essential_cols(df):
     df['el'] = np.pi/2 - df['zd'].values
+    # df['night_idx'] = pd.factorize(df['night'])[0]
+    # df['t_survey'] = calc_t_survey(df['night_idx'].values, df['night_idx'].max() + 1)
     
-    # df['t_survey'] = df['night_idx']/(df['night_idx'].max() + 1) # normalize to [0, 1]
+    # # df['t_survey'] = df['night_idx']/(df['night_idx'].max() + 1) # normalize to [0, 1]
     
-    for f in FILTER2IDX.keys():
-        condition = (df['filter'] == f) & (df['teff'] >= 0.3)
-        filter_counts_arr = condition.cumsum()
-        urgency = calc_urgency(filter_counts_arr, filter_counts_arr.max(), df['night_idx'].values, df['night_idx'].max() + 1)
-        df[f'raw_survey_progress_{f}'] = filter_counts_arr
-        df[f'survey_progress_{f}'] = filter_counts_arr / filter_counts_arr.max()
-        df[f'urgency_{f}'] = urgency
+    # for f in FILTER2IDX.keys():
+    #     condition = (df['filter'] == f) & (df['teff'] >= 0.3)
+    #     filter_counts_arr = condition.cumsum()
+    #     urgency = calc_urgency(filter_counts_arr, filter_counts_arr.max(), df['night_idx'].values, df['night_idx'].max() + 1)
+    #     df[f'raw_survey_progress_{f}'] = filter_counts_arr
+    #     df[f'survey_progress_{f}'] = filter_counts_arr / filter_counts_arr.max()
+    #     df[f'urgency_{f}'] = urgency
     return df
     
 def drop_rows_in_DECam_data(df, objects_to_remove=None, specific_years=None, specific_months=None, specific_days=None, specific_filters=None):
@@ -84,18 +94,6 @@ def _remove_outliers(df):
     """Removes objects that have (outlier) in its object name"""
     df = df[~df['object'].astype(str).str.contains('(outlier)', regex=False, na=False)]
     return df
-
-# def _remove_specific_objects(df, objects_to_remove):
-#     nights_with_special_fields = set()
-#     for i, spec_obj in enumerate(objects_to_remove):
-#         for night, subdf in df.groupby('night'):
-#             if any(spec_obj in obj_name for obj_name in subdf['object'].values) or any(subdf['object'] == ""):
-#                 nights_with_special_fields.add(night)
-#     nights_to_remove_mask = df['night'].isin(nights_with_special_fields)
-
-#     df = df[~nights_to_remove_mask]
-#     assert not df.empty, "All nights have special fields"
-#     return df
 
 def _relabel_mislabelled_objects(df):
     """Renames object columns with 'object_name (outlier)' if they are outside of a certain cutoff from the median RA/Dec.

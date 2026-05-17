@@ -61,6 +61,8 @@ class LookupTables:
     night2fidfilt_last_visit_ot: Optional[dict] = None
     night2ot_clock_seconds: Optional[dict] = None
     total_ot_sec: Optional[float] = None
+    night2idx: Optional[dict] = None
+    total_nights: Optional[int] = None
     
  
     # Derived marginals — populated in __post_init__, never set by callers.
@@ -76,13 +78,14 @@ class LookupTables:
     def load_from_dir(
         cls,
         data_dir: Path,
-        is_historic: bool = False,
+        include_historic: bool = False,
         overrides: Optional[Dict[LookupKeys, str]] = None,
     ) -> "LookupTables":
         """Load lookups from a directory.
         """
         overrides = overrides or {}
         data_dir = Path(data_dir).resolve()
+        cls_kwargs = {}
  
         def get_path(key):
             return data_dir / overrides.get(key, key.value)
@@ -93,7 +96,7 @@ class LookupTables:
             fields = fields.set_index("field_id")
         fields = fields.sort_index()
         fields.index.name = "field_id"
- 
+    
         # Per-(field, filter) matrices
         with open(get_path(LookupKeys.TARGET_FIDFILT_COUNTS), "rb") as f:
             target_fidfilt_counts = pickle.load(f)
@@ -107,19 +110,27 @@ class LookupTables:
         night2fidfilt_last_visit_ts = None
         night2fid_last_visit_ot = None
         night2fidfilt_last_visit_ot = None
+        night2ot_clock_seconds = None
+        night2idx = None
         total_ot_sec = 0
-        if is_historic:
+        total_nights = 0
+        
+        if include_historic:
             with open(get_path(LookupKeys.NIGHT2FID_VISIT_HIST), "rb") as f:
                 night2fid_visit_hist = pickle.load(f)
             with open(get_path(LookupKeys.NIGHT2FIDFILT_VISIT_HIST), "rb") as f:
                 night2fidfilt_visit_hist = pickle.load(f)
             with open(get_path(LookupKeys.NIGHT2OT_CLOCK_SECONDS), "rb") as f:
                 night2ot_clock_seconds = pickle.load(f)
+                print(night2ot_clock_seconds)
             with open(get_path(LookupKeys.TOTAL_OT_SECONDS), "r") as f:
                 total_ot_sec = np.float64(f.read())
-            # Last-visit dicts: optional for backward-compat with older
-            # lookup directories. Warn (not error) so older artifacts
-            # still load, but downstream staleness will be wrong.
+            with open(get_path(LookupKeys.NIGHT2IDX), "rb") as f:
+                night2idx = pickle.load(f)
+            with open(get_path(LookupKeys.TOTAL_NIGHTS), "r") as f:
+                total_nights = int(f.read())
+            
+            # Last-visit timestamps
             fid_lv_path = get_path(LookupKeys.NIGHT2FID_LAST_VISIT_TS)
             ff_lv_path = get_path(LookupKeys.NIGHT2FIDFILT_LAST_VISIT_TS)
             if fid_lv_path.exists():
@@ -174,7 +185,9 @@ class LookupTables:
             night2fid_last_visit_ot=night2fid_last_visit_ot,
             night2fidfilt_last_visit_ot=night2fidfilt_last_visit_ot,
             night2ot_clock_seconds=night2ot_clock_seconds,
-            total_ot_sec=total_ot_sec
+            total_ot_sec=total_ot_sec,
+            night2idx=night2idx,
+            total_nights=total_nights
         )
  
     def write_to_disk(self, outdir: Optional[Path] = None) -> None:
@@ -222,6 +235,12 @@ class LookupTables:
         if self.total_ot_sec is not None:
             with open(outdir / LookupKeys.TOTAL_OT_SECONDS.value, "w") as f:
                 f.write(f"{self.total_ot_sec}")
+                
+        # NIGHT INDICES
+        with open(outdir / LookupKeys.NIGHT2IDX.value, "wb") as f:
+            pickle.dump(self.night2idx, f)
+        with open(outdir / LookupKeys.TOTAL_NIGHTS.value, "w") as f:
+            f.write(f"{self.total_nights}")
                 
     # ------------------------------------------------------------------
     # Composition

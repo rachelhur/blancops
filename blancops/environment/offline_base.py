@@ -31,7 +31,6 @@ class OfflineBlancoEnvBase(BaseBlancoEnv):
     def __init__(self, *, max_nights: int, **kwargs):
         super().__init__(**kwargs)
         self.max_nights = max_nights
-        self._night_idx = -1
  
     # -----------------------------------------------------------------------
     # Abstract hooks specific to multi-night scheduling

@@ -117,6 +117,60 @@ def compute_global_pointing_features(*, timestamp, ra, dec) -> dict:
 
     return features
 
+def compute_global_mean_tiling_features(running_counts, target_counts) -> dict:
+    """Survey-completion scalars from a running visit-count snapshot.
+
+    Computes "what fraction of the survey is done" without referencing
+    calendar time. Replaces `t_survey` / `survey_progress` as a
+    survey-agnostic strategic-shift signal: 0 means nothing done, 1 means
+    everything at or above target, intermediate values encode partial
+    completion that the agent can use to shift strategy without leaking
+    the calendar identity of this specific survey.
+
+    Returns a dict with:
+      - 'global_mean_tiling': scalar in [0, 1]. Mean of per-(field, filter)
+        tiling across all in-plan fields (target > 0). Per-(field,filter) tiling
+        is `current / max(current, target)`, naturally capped at 1.
+      - 'global_mean_tiling_{filt}' for each filter in FILTER2IDX: scalar in
+        [0, 1]. Mean of per-field tiling across in-plan fields in
+        that filter. Useful when filter strategy shifts late-survey
+        (e.g., Y dominating after g/r/i complete).
+
+    Args:
+        running_counts: (nfields, nfilters) int — visit counts so far.
+        target_counts: (nfields, nfilters) int — survey targets, fixed.
+    """
+    features = {}
+    in_plan = target_counts > 0
+
+    if not in_plan.any():
+        # Defensive: empty lookup. Return zeros for every key the caller
+        # might request rather than crashing.
+        features['global_mean_tiling'] = 0.0
+        for filt in FILTER2IDX.keys():
+            features[f'global_mean_tiling_{filt}'] = 0.0
+        return features
+
+    max_adj = np.maximum(running_counts, target_counts)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        tiling = np.where(
+            in_plan,
+            running_counts / max_adj.astype(np.float32),
+            0.0,
+        )
+
+    features['global_mean_tiling'] = float(tiling[in_plan].mean())
+
+    for filt, fidx in FILTER2IDX.items():
+        col_in_plan = in_plan[:, fidx]
+        if col_in_plan.any():
+            features[f'global_mean_tiling_{filt}'] = float(
+                tiling[col_in_plan, fidx].mean()
+            )
+        else:
+            features[f'global_mean_tiling_{filt}'] = 0.0
+
+    return features
 
 # ============================================================================
 # GlobalFeatureEngineer — offline batch pipeline.
@@ -141,8 +195,9 @@ class GlobalFeatureEngineer:
             .pipe(self._add_zenith_rows)
             .pipe(self._add_time_dependent_features)
             .pipe(self._map_bins_and_fields)
-            .pipe(self._add_filter_choice)
-            .pipe(self._add_filter_dep_features)
+            .pipe(self._add_current_filter)
+            .pipe(self._add_sky_brightness)
+            .pipe(self._add_global_mean_tiling)
             .pipe(self._apply_cyclical_norms)
             .pipe(self._ensure_32_bit)
         )
@@ -197,7 +252,7 @@ class GlobalFeatureEngineer:
 
         return df
 
-    def _add_filter_choice(self, df: pd.DataFrame):
+    def _add_current_filter(self, df: pd.DataFrame):
         df['filter_wave'] = df['filter'].map(FILTER2WAVE)
         df['filter_wave'] = df['filter_wave'].fillna(ZENITH_WAVELENGTH) / FILTERWAVENORM # zenith "filter" set to 0, then normalize
         df['filter_idx'] = df['filter'].map(FILTER2IDX)
@@ -207,7 +262,7 @@ class GlobalFeatureEngineer:
                     df[f'{feat_name}_{filt}'] = (df['filter'] == filt).astype(np.float32)
         return df
 
-    def _add_filter_dep_features(self, df):
+    def _add_sky_brightness(self, df):
         """Vectorized per-filter sky brightness. Kept separate from the
         shared per-timestep helper because ``estimate_sky_brightness``
         accepts arrays — calling it five times with N-element arrays is
@@ -223,6 +278,83 @@ class GlobalFeatureEngineer:
                         dec=df['dec'].values,
                         band=filt,
                     )
+        return df
+    
+    def _add_global_mean_tiling(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Per-row survey-completion scalars: `global_mean_tiling` and per-filter
+        variants. Survey-agnostic — depends only on visit counts and targets.
+
+        Maintains a running visit counter per night, seeded from the
+        start-of-night snapshot in `lookups.night2fidfilt_visit_hist`. The
+        counter is incremented row-by-row; `global_mean_tiling` values are computed
+        BEFORE each row's increment so row i's value describes the state
+        going into row i's action — same semantics as bin_features.
+
+        Skips work entirely if no `global_mean_tiling*` feature is in the requested
+        base_features list.
+        """
+        requested = [
+            f for f in self.base_features
+            if f == 'global_mean_tiling' or f.startswith('global_mean_tiling_')
+        ]
+        if not requested:
+            return df
+
+        if not hasattr(self.lookups, 'night2fidfilt_visit_hist'):
+            raise AttributeError(
+                "LookupTables is missing `night2fidfilt_visit_hist`; cannot "
+                "compute global_mean_tiling. Rebuild lookups via build_train_lookups.py."
+            )
+
+        target_counts = self.lookups.target_fidfilt_counts
+        nfields, nfilters = target_counts.shape
+
+        # Per-row output buffers, indexed by df row order (df has a clean
+        # 0..n-1 index after _add_zenith_rows's reset_index).
+        out_overall = np.full(len(df), np.nan, dtype=np.float32)
+        out_per_filt = {
+            f: np.full(len(df), np.nan, dtype=np.float32)
+            for f in FILTER2IDX.keys()
+        }
+
+        visit_hist_dict = self.lookups.night2fidfilt_visit_hist
+
+        for night, group in df.groupby('night', sort=False):
+            running = visit_hist_dict[night].copy().astype(np.int32)
+
+            # Extract once per night for the inner loop.
+            fids = group['field_id'].to_numpy(dtype=np.int64)
+            # filter_idx is float64 with NaN for zenith rows; fillna(-1)
+            # marks zenith so the inner check skips it.
+            filt_idxs = (
+                group['filter_idx'].fillna(-1).to_numpy(dtype=np.int64)
+            )
+            row_idxs = group.index.to_numpy(dtype=np.int64)
+
+            for j in range(len(group)):
+                mt = compute_global_mean_tiling_features(
+                    running_counts=running, target_counts=target_counts,
+                )
+                out_overall[row_idxs[j]] = mt['global_mean_tiling']
+                for f in FILTER2IDX.keys():
+                    out_per_filt[f][row_idxs[j]] = mt[f'global_mean_tiling_{f}']
+
+                # Increment for next row. Zenith rows (ZENITH_FIELD_ID or
+                # zenith filter, which maps to -1 via fillna) don't count.
+                # Note: no teff gating here — matches the bin_features.py
+                # inner-loop semantics. If you ever add teff gating
+                # consistently, do it in both places.
+                fid_j, filt_j = fids[j], filt_idxs[j]
+                if fid_j != ZENITH_FIELD_ID and 0 <= filt_j < nfilters:
+                    running[fid_j, filt_j] += 1
+
+        # Attach only the columns the user actually requested.
+        if 'global_mean_tiling' in self.base_features:
+            df['global_mean_tiling'] = out_overall
+        for filt in FILTER2IDX.keys():
+            if any(('global_mean_tiling' == base_feat) for base_feat in self.base_features):
+                df[f'global_mean_tiling_{filt}'] = out_per_filt[filt]
+
         return df
     
     def _ensure_32_bit(self, df):
@@ -463,12 +595,12 @@ def get_zenith_features(original_df):
 def _backfill_zenith_states(df):
     """Back fills zenith state for relevant features"""
     df['fwhm'] = df.groupby('night')['fwhm'].bfill()
-    df['night_idx'] = df.groupby('night')['night_idx'].bfill()
-    df['t_survey'] = df.groupby('night')['t_survey'].bfill()
-    for f in FILTER2IDX.keys():
-        df[f'raw_survey_progress_{f}'] = df.groupby('night')[f'raw_survey_progress_{f}'].bfill()
-        df[f'survey_progress_{f}'] = df.groupby('night')[f'survey_progress_{f}'].bfill()
-        df[f'urgency_{f}'] = df.groupby('night')[f'urgency_{f}'].bfill()
+    # df['night_idx'] = df.groupby('night')['night_idx'].bfill()
+    # df['t_survey'] = df.groupby('night')['t_survey'].bfill()
+    # for f in FILTER2IDX.keys():
+    #     df[f'raw_survey_progress_{f}'] = df.groupby('night')[f'raw_survey_progress_{f}'].bfill()
+    #     df[f'survey_progress_{f}'] = df.groupby('night')[f'survey_progress_{f}'].bfill()
+    #     df[f'urgency_{f}'] = df.groupby('night')[f'urgency_{f}'].bfill()
     return df
 
 
