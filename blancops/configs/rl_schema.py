@@ -1,6 +1,6 @@
 import datetime
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 import yaml
 from pathlib import Path
 from typing import Any, List, Union, Literal, Dict
@@ -25,6 +25,21 @@ class NormalizationConfig(BaseModel):
         default_factory=lambda: {k: v.copy() for k, v in _DEFAULT_NORM_MAPPING.items()})
     fix_nans: bool = True
 
+    @field_validator('feature_norm_mappings', mode='before')
+    @classmethod
+    def merge_with_defaults(cls, v: Any) -> Any:
+        # If the input is a dictionary, merge it with the defaults
+        if isinstance(v, dict):
+            # 1. Start with a fresh copy of the default mappings
+            merged = {k: val.copy() for k, val in _DEFAULT_NORM_MAPPING.items()}
+            
+            # 2. Overwrite only the keys the user explicitly provided in the config
+            merged.update(v)
+            
+            # 3. Return the merged dictionary for Pydantic to validate
+            return merged
+        return v
+        
     @model_validator(mode='after')
     def validate_legal_normalizations(self) -> 'NormalizationConfig':
         for feature, requested_norms in self.feature_norm_mappings.items():
