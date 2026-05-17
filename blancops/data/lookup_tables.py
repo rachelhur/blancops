@@ -22,84 +22,52 @@ logger = logging.getLogger(__name__)
 class LookupTables:
     """Universal container for telescope/survey metadata.
  
-    Shape contract: `target_fidfilt_counts` and `fidfilt_exptime` are
-    both `(len(fields), len(FILTER2IDX))`, indexed by `field_id` along
-    axis 0 and `filter_idx` along axis 1. The `fields` index must be
-    `0..N-1` contiguous so array index and `field_id` coincide;
-    `__post_init__` enforces this.
+    **Shape contract: `*_fidfilt_*` are of shape `(len(fields), len(FILTER2IDX))`,
+        indexed by `field_id` along axis 0 and `filter_idx` along axis 1.
+        The `fields` index must be `0..N-1` contiguous so array index and `field_id` coincide;
+        `__post_init__` enforces this.
+        #TODO do I want to change from contiguous to saving an additional fid->idx mapping?
+
+    Visit-history dicts (set when ``is_historic=True``) are snapshots
+    taken at the START of each observing night, derived from the FULL
+    survey history regardless of which subset a downstream training run
+    selects. Two parallel families exist:
+
+    - ``night2{fid,fidfilt}_visit_hist``: integer running counts.
+    - ``night2{fid,fidfilt}_last_visit``: number of observing time seconds that have passed since its last visit; 
+        NaN means "no recorded visit so far".
+
+        (if `is_historic` AND present on disk — older lookup dirs may predate these fields, 
+            in which case they're loaded as None and downstream code falls back to the
+            "no recorded visit" sentinel)
+    - `total_ot_sec`
+        
+    Both are 1-D over fields or 2-D over (field, filter) respectively.
+    Quality gating (``teff > 0.3``) must match between the two so the
+    "what counted as a visit" semantics agree.
     """
+    # Required lookup tables
     fields: pd.DataFrame                # index=field_id; required cols: name, ra, dec
     target_fidfilt_counts: np.ndarray   # (nfields, nfilters) int
     fidfilt_exptime: np.ndarray         # (nfields, nfilters) float
     dir: Path
+    
+    # Required lookup tables if is_historic is true
     night2fid_visit_hist: Optional[dict] = None
     night2fidfilt_visit_hist: Optional[dict] = None
+    night2fid_last_visit_ts: Optional[dict] = None
+    night2fidfilt_last_visit_ts: Optional[dict] = None
+    night2fid_last_visit_ot: Optional[dict] = None
+    night2fidfilt_last_visit_ot: Optional[dict] = None
+    night2ot_clock_seconds: Optional[dict] = None
+    total_ot_sec: Optional[float] = None
+    
  
     # Derived marginals — populated in __post_init__, never set by callers.
     target_fid_counts: np.ndarray = field(init=False, default=None, repr=False)
     target_filt_counts: np.ndarray = field(init=False, default=None, repr=False)
 
     
-    # ------------------------------------------------------------------
-    # Validation + derived attributes
-    # ------------------------------------------------------------------
- 
-    def __post_init__(self):
-        # Coerce arrays to canonical dtype/layout
-        object.__setattr__(
-            self, "target_fidfilt_counts",
-            np.ascontiguousarray(self.target_fidfilt_counts, dtype=np.int32),
-        )
-        object.__setattr__(
-            self, "fidfilt_exptime",
-            np.ascontiguousarray(self.fidfilt_exptime, dtype=np.float32),
-        )
- 
-        # Validate fields index is 0..N-1 contiguous (required so that
-        # `field_id` doubles as an array index in env code).
-        expected_idx = pd.RangeIndex(len(self.fields))
-        if not self.fields.index.equals(expected_idx):
-            raise ValueError(
-                "`fields` index must be 0..N-1 contiguous; got "
-                f"min={self.fields.index.min()}, "
-                f"max={self.fields.index.max()}, "
-                f"len={len(self.fields)}, "
-                f"unique={self.fields.index.nunique()}"
-            )
- 
-        # Validate matrix shapes
-        nfields, nfilters = self.target_fidfilt_counts.shape
-        if nfields != len(self.fields):
-            raise ValueError(
-                f"target_fidfilt_counts has {nfields} rows but `fields` has "
-                f"{len(self.fields)}"
-            )
-        if nfilters != len(FILTER2IDX):
-            raise ValueError(
-                f"target_fidfilt_counts has {nfilters} filter columns but "
-                f"FILTER2IDX defines {len(FILTER2IDX)}"
-            )
-        if self.fidfilt_exptime.shape != self.target_fidfilt_counts.shape:
-            raise ValueError(
-                f"fidfilt_exptime shape {self.fidfilt_exptime.shape} does not "
-                f"match target_fidfilt_counts shape "
-                f"{self.target_fidfilt_counts.shape}"
-            )
- 
-        # Validate per-field columns
-        required_cols = {"object", "ra", "dec"}
-        missing = required_cols - set(self.fields.columns)
-        if missing:
-            raise ValueError(f"`fields` is missing required columns: {missing}")
- 
-        # Compute marginals
-        object.__setattr__(
-            self, "target_fid_counts", self.target_fidfilt_counts.sum(axis=1)
-        )
-        object.__setattr__(
-            self, "target_filt_counts", self.target_fidfilt_counts.sum(axis=0)
-        )
-
     # ------------------------------------------------------------------
     # I/O
     # ------------------------------------------------------------------
@@ -112,14 +80,6 @@ class LookupTables:
         overrides: Optional[Dict[LookupKeys, str]] = None,
     ) -> "LookupTables":
         """Load lookups from a directory.
- 
-        Loads:
-          - `fields` → `fields` DataFrame (index restored from
-            `field_id` column if present)
-          - `TARGET_FIDFILT_COUNTS` → 2D int array
-          - `FIDFILT_EXPTIME` → 2D float array
-          - `NIGHT2FID_VISIT_HIST`, `NIGHT2FIDFILT_VISIT_HIST` (if
-            `is_historic`)
         """
         overrides = overrides or {}
         data_dir = Path(data_dir).resolve()
@@ -140,14 +100,67 @@ class LookupTables:
         with open(get_path(LookupKeys.FIDFILT_EXPTIME), "rb") as f:
             fidfilt_exptime = pickle.load(f)
  
-        # Historic visit history
+        # Visit history
         night2fid_visit_hist = None
         night2fidfilt_visit_hist = None
+        night2fid_last_visit_ts = None
+        night2fidfilt_last_visit_ts = None
+        night2fid_last_visit_ot = None
+        night2fidfilt_last_visit_ot = None
+        total_ot_sec = 0
         if is_historic:
             with open(get_path(LookupKeys.NIGHT2FID_VISIT_HIST), "rb") as f:
                 night2fid_visit_hist = pickle.load(f)
             with open(get_path(LookupKeys.NIGHT2FIDFILT_VISIT_HIST), "rb") as f:
                 night2fidfilt_visit_hist = pickle.load(f)
+            with open(get_path(LookupKeys.NIGHT2OT_CLOCK_SECONDS), "rb") as f:
+                night2ot_clock_seconds = pickle.load(f)
+            with open(get_path(LookupKeys.TOTAL_OT_SECONDS), "r") as f:
+                total_ot_sec = np.float64(f.read())
+            # Last-visit dicts: optional for backward-compat with older
+            # lookup directories. Warn (not error) so older artifacts
+            # still load, but downstream staleness will be wrong.
+            fid_lv_path = get_path(LookupKeys.NIGHT2FID_LAST_VISIT_TS)
+            ff_lv_path = get_path(LookupKeys.NIGHT2FIDFILT_LAST_VISIT_TS)
+            if fid_lv_path.exists():
+                with open(fid_lv_path, "rb") as f:
+                    night2fid_last_visit_ts = pickle.load(f)
+            else:
+                logger.warning(
+                    f"{fid_lv_path.name} not found in {data_dir}; "
+                    f"t_since_last_visit will start from sentinel for every "
+                    f"field. Rebuild lookups to enable staleness seeding."
+                )
+            if ff_lv_path.exists():
+                with open(ff_lv_path, "rb") as f:
+                    night2fidfilt_last_visit_ts = pickle.load(f)
+            else:
+                logger.warning(
+                    f"{ff_lv_path.name} not found in {data_dir}; "
+                    f"per-filter t_since_last_visit will start from sentinel."
+                )
+                
+            # Last-visit dicts in ot
+            fid_lv_path = get_path(LookupKeys.NIGHT2FID_LAST_VISIT_OT)
+            ff_lv_path = get_path(LookupKeys.NIGHT2FIDFILT_LAST_VISIT_OT)
+            if fid_lv_path.exists():
+                with open(fid_lv_path, "rb") as f:
+                    night2fid_last_visit_ot = pickle.load(f)
+            else:
+                logger.warning(
+                    f"{fid_lv_path.name} not found in {data_dir}; "
+                    f"t_since_last_visit will start from sentinel for every "
+                    f"field. Rebuild lookups to enable staleness seeding."
+                )
+            if ff_lv_path.exists():
+                with open(ff_lv_path, "rb") as f:
+                    night2fidfilt_last_visit_ot = pickle.load(f)
+            else:
+                logger.warning(
+                    f"{ff_lv_path.name} not found in {data_dir}; "
+                    f"per-filter t_since_last_visit will start from sentinel."
+                )
+            
  
         return cls(
             fields=fields,
@@ -156,28 +169,60 @@ class LookupTables:
             dir=data_dir,
             night2fid_visit_hist=night2fid_visit_hist,
             night2fidfilt_visit_hist=night2fidfilt_visit_hist,
+            night2fid_last_visit_ts=night2fid_last_visit_ts,
+            night2fidfilt_last_visit_ts=night2fidfilt_last_visit_ts,
+            night2fid_last_visit_ot=night2fid_last_visit_ot,
+            night2fidfilt_last_visit_ot=night2fidfilt_last_visit_ot,
+            night2ot_clock_seconds=night2ot_clock_seconds,
+            total_ot_sec=total_ot_sec
         )
  
     def write_to_disk(self, outdir: Optional[Path] = None) -> None:
         """Persist non-derived state. Marginals are recomputed on load."""
         outdir = Path(outdir if outdir is not None else self.dir)
         outdir.mkdir(parents=True, exist_ok=True)
- 
+        
         # Round-trip the index by resetting it as a column before save.
-        self.fields.reset_index().to_json(outdir / LookupKeys.FIELDS.value)
+        self.fields.reset_index().to_json(outdir / LookupKeys.FIELDS.value, orient='records')
  
+        # TARGET COUNTS
         with open(outdir / LookupKeys.TARGET_FIDFILT_COUNTS.value, "wb") as f:
             pickle.dump(self.target_fidfilt_counts, f)
+        # EXPOSURE TIME PER (FIELD, FILTER) PAIR
         with open(outdir / LookupKeys.FIDFILT_EXPTIME.value, "wb") as f:
             pickle.dump(self.fidfilt_exptime, f)
- 
+        
+        # VISIT HISTORY
         if self.night2fid_visit_hist is not None:
             with open(outdir / LookupKeys.NIGHT2FID_VISIT_HIST.value, "wb") as f:
                 pickle.dump(self.night2fid_visit_hist, f)
         if self.night2fidfilt_visit_hist is not None:
             with open(outdir / LookupKeys.NIGHT2FIDFILT_VISIT_HIST.value, "wb") as f:
                 pickle.dump(self.night2fidfilt_visit_hist, f)
- 
+
+        # LAST VISIT TIMESTAMP
+        if self.night2fid_last_visit_ts is not None:
+            with open(outdir / LookupKeys.NIGHT2FID_LAST_VISIT_TS.value, "wb") as f:
+                pickle.dump(self.night2fid_last_visit_ts, f)
+        if self.night2fidfilt_last_visit_ts is not None:
+            with open(outdir / LookupKeys.NIGHT2FIDFILT_LAST_VISIT_TS.value, "wb") as f:
+                pickle.dump(self.night2fidfilt_last_visit_ts, f)
+        
+        # LAST VISIT TIME IN UNITS OBSERVING TIME
+        if self.night2fid_last_visit_ot is not None:
+            with open(outdir / LookupKeys.NIGHT2FID_LAST_VISIT_OT.value, "wb") as f:
+                pickle.dump(self.night2fid_last_visit_ot, f)
+        if self.night2fidfilt_last_visit_ts is not None:
+            with open(outdir / LookupKeys.NIGHT2FIDFILT_LAST_VISIT_OT.value, "wb") as f:
+                pickle.dump(self.night2fidfilt_last_visit_ot, f)
+        
+        # TOTAL OBSERVABLE SECONDS IN SURVEY
+        with open(outdir / LookupKeys.NIGHT2OT_CLOCK_SECONDS.value, "wb") as f:
+            pickle.dump(self.night2ot_clock_seconds, f)
+        if self.total_ot_sec is not None:
+            with open(outdir / LookupKeys.TOTAL_OT_SECONDS.value, "w") as f:
+                f.write(f"{self.total_ot_sec}")
+                
     # ------------------------------------------------------------------
     # Composition
     # ------------------------------------------------------------------
@@ -187,7 +232,7 @@ class LookupTables:
         new_lookups: "LookupTables",
         new_dir: Optional[Path] = None,
     ) -> "LookupTables":
-        """Append `new_lookups` to this one, returning a new LookupTables.
+        """Append new field targets to existing lookup table, returning a new LookupTables.
  
         Field IDs in `new_lookups` are reindexed to start at
         `self.fields.index.max() + 1`, so the combined index stays
@@ -217,6 +262,11 @@ class LookupTables:
             dir=new_dir if new_dir is not None else self.dir,
             night2fid_visit_hist=self.night2fid_visit_hist,
             night2fidfilt_visit_hist=self.night2fidfilt_visit_hist,
+            night2fid_last_visit_ts=self.night2fid_last_visit_ts,
+            night2fidfilt_last_visit_ts=self.night2fidfilt_last_visit_ts,
+            night2fid_last_visit_ot=self.night2fid_last_visit_ot,
+            night2fidfilt_last_visit_ot=self.night2fidfilt_last_visit_ot,
+            total_ot_sec=self.total_ot_sec
         )
  
     # ------------------------------------------------------------------
@@ -224,7 +274,7 @@ class LookupTables:
     # ------------------------------------------------------------------
  
     @staticmethod
-    def generate_lookups_from_fields(
+    def build_lookups_from_fields(
         fields_path: Path,
         outdir: Optional[Path] = None,
         write_to_disk: bool = False,
@@ -346,3 +396,123 @@ class LookupTables:
             lookups.write_to_disk(Path(outdir))
  
         return lookups
+
+
+    # ------------------------------------------------------------------
+    # Validation + derived attributes
+    # ------------------------------------------------------------------
+ 
+    def __post_init__(self):
+        # Coerce arrays to canonical dtype/layout
+        object.__setattr__(
+            self, "target_fidfilt_counts",
+            np.ascontiguousarray(self.target_fidfilt_counts, dtype=np.int32),
+        )
+        object.__setattr__(
+            self, "fidfilt_exptime",
+            np.ascontiguousarray(self.fidfilt_exptime, dtype=np.float32),
+        )
+ 
+        # Validate fields index is 0..N-1 contiguous (required so that
+        # `field_id` doubles as an array index in env code).
+        expected_idx = pd.RangeIndex(len(self.fields))
+        if not self.fields.index.equals(expected_idx):
+            raise ValueError(
+                "`fields` index must be 0..N-1 contiguous; got "
+                f"min={self.fields.index.min()}, "
+                f"max={self.fields.index.max()}, "
+                f"len={len(self.fields)}, "
+                f"unique={self.fields.index.nunique()}"
+            )
+ 
+        # Validate matrix shapes
+        nfields, nfilters = self.target_fidfilt_counts.shape
+        if nfields != len(self.fields):
+            raise ValueError(
+                f"target_fidfilt_counts has {nfields} rows but `fields` has "
+                f"{len(self.fields)}"
+            )
+        if nfilters != len(FILTER2IDX):
+            raise ValueError(
+                f"target_fidfilt_counts has {nfilters} filter columns but "
+                f"FILTER2IDX defines {len(FILTER2IDX)}"
+            )
+        if self.fidfilt_exptime.shape != self.target_fidfilt_counts.shape:
+            raise ValueError(
+                f"fidfilt_exptime shape {self.fidfilt_exptime.shape} does not "
+                f"match target_fidfilt_counts shape "
+                f"{self.target_fidfilt_counts.shape}"
+            )
+ 
+        # Validate per-field columns
+        required_cols = {"object", "ra", "dec"}
+        missing = required_cols - set(self.fields.columns)
+        if missing:
+            raise ValueError(f"`fields` is missing required columns: {missing}")
+
+        # Validate visit-history shapes when present. Either both families
+        # are populated together (built from the same loop) or both are
+        # absent (non-historic lookups).
+        self._validate_history_shapes(nfields, nfilters)
+ 
+        # Compute marginals
+        object.__setattr__(
+            self, "target_fid_counts", self.target_fidfilt_counts.sum(axis=1)
+        )
+        object.__setattr__(
+            self, "target_filt_counts", self.target_fidfilt_counts.sum(axis=0)
+        )
+
+    def _validate_history_shapes(self, nfields, nfilters):
+        """Per-night snapshot dicts must have matching keys and the
+        expected per-field / per-(field, filter) shapes. Treats the
+        last-visit dicts as optional even when visit-hist is present,
+        for backward-compat with lookup directories written before the
+        last-visit fields existed.
+        """
+        if self.night2fid_visit_hist is not None:
+            for night, arr in self.night2fid_visit_hist.items():
+                if arr.shape != (nfields,):
+                    raise ValueError(
+                        f"night2fid_visit_hist[{night!r}] has shape "
+                        f"{arr.shape}; expected ({nfields},)"
+                    )
+        if self.night2fidfilt_visit_hist is not None:
+            for night, arr in self.night2fidfilt_visit_hist.items():
+                if arr.shape != (nfields, nfilters):
+                    raise ValueError(
+                        f"night2fidfilt_visit_hist[{night!r}] has shape "
+                        f"{arr.shape}; expected ({nfields}, {nfilters})"
+                    )
+        if self.night2fid_last_visit_ts is not None:
+            for night, arr in self.night2fid_last_visit_ts.items():
+                if arr.shape != (nfields,):
+                    raise ValueError(
+                        f"night2fid_last_visit[{night!r}] has shape "
+                        f"{arr.shape}; expected ({nfields},)"
+                    )
+        if self.night2fidfilt_last_visit_ts is not None:
+            for night, arr in self.night2fidfilt_last_visit_ts.items():
+                if arr.shape != (nfields, nfilters):
+                    raise ValueError(
+                        f"night2fidfilt_last_visit_ts[{night!r}] has shape "
+                        f"{arr.shape}; expected ({nfields}, {nfilters})"
+                    )
+        # Key-set agreement between parallel dicts: if both members of a
+        # pair are present, they should snapshot the same nights.
+        def _check_keys(a, a_name, b, b_name):
+            if a is not None and b is not None:
+                if set(a.keys()) != set(b.keys()):
+                    raise ValueError(
+                        f"{a_name} and {b_name} have mismatched night keys: "
+                        f"symmetric_diff="
+                        f"{set(a.keys()).symmetric_difference(set(b.keys()))}"
+                    )
+        _check_keys(
+            self.night2fid_visit_hist, "night2fid_visit_hist",
+            self.night2fid_last_visit_ts, "night2fid_last_visit_ts",
+        )
+        _check_keys(
+            self.night2fidfilt_visit_hist, "night2fidfilt_visit_hist",
+            self.night2fidfilt_last_visit_ts, "night2fidfilt_last_visit_ts",
+        )

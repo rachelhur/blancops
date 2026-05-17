@@ -51,6 +51,17 @@ _SURVEY_PROGRESS_BASE_KEYS = [
         'mean_tiling'
     ]
 _STALENESS_BASE_KEYS = ['t_since_last_visit']
+_INTERNAL_SENTINEL = np.nan
+
+# Sun-elevation horizon (degrees) used to define night boundaries for
+# feature computation. MUST match the value used in `build_train_lookups.py`
+# when constructing `night2ot_clock_seconds` — otherwise the OT clock here
+# and the OT clock baked into the lookups will disagree, and staleness math
+# will be off by the per-night delta in night duration. Hard-coded in both
+# places by design for now; promote to a shared constant if you find
+# yourself changing it.
+_SUN_EL_LIMIT_DEG = -10
+
  
 # ============================================================================
 # Canonical per-timestep helpers — single source of truth, shared between
@@ -106,13 +117,14 @@ def compute_bin_ephemeris_features(timestamp, pointing_radec, hpGrid, night_dura
     features['delta_az'], features['delta_el'] = get_delta_az_el(
         features['az'], features['el'], pointing_az, pointing_el
     )
-    t_until_set_raw = hpGrid.get_time_until_set(time=timestamp) / night_duration_in_sec
+    t_until_set_raw = hpGrid.get_time_until_set(time=timestamp)
     # The above method outputs np.inf. Convert to NaN.
     # This will be handled by StateNormalizer at the end of its pipeline. 
     features['t_until_set'] = np.where(
         np.isfinite(t_until_set_raw), 
         t_until_set_raw / night_duration_in_sec,
-        np.nan
+        _INTERNAL_SENTINEL
+        
     )
     return features
  
@@ -127,7 +139,7 @@ def compute_bin_progress_features(
     idx2filter=None,
     timestamp=None,
     last_visit_timestamps=None,
-    staleness_horizon_sec=1*24*3600
+    t_since_last_visit_divisor=None
 ):
     """Per-timestep survey-progress features per bin.
  
@@ -172,7 +184,7 @@ def compute_bin_progress_features(
             f"current_counts shape {current_counts.shape} != target_counts "
             f"shape {target_counts.shape}"
         )
- 
+    
     features = {}
     bins_mem = bins_per_field[v_mask].astype(np.int32)
  
@@ -196,28 +208,28 @@ def compute_bin_progress_features(
     act_s = bin_in_plan_counts > 0
  
     def _assign_staleness(last_visit_per_field, in_plan_mask, key):
-        """Min staleness (freshest visit) across in-plan fields per bin.
-        Fields never visited contribute +inf (NaN last_visit -> inf staleness),
-        so they don't pull the min down."""
-        # Per-field staleness in normalized units; +inf where never visited
-        # OR out of plan.
+        """Per-bin staleness = freshest in-plan field's age, OT-normalized.
+
+        Single division: the OT delta is divided by the total OT span
+        once, inside the ``np.where``. The reduction (``np.minimum.at``)
+        picks the freshest (smallest age) in-plan field per bin. NaN
+        last-visit values become +inf age so they don't pull the min
+        down; bins with no contributing in-plan field stay +inf and get
+        converted to the internal NaN sentinel.
+        """
         age_v = np.where(
             in_plan_mask & ~np.isnan(last_visit_per_field),
-            (timestamp - last_visit_per_field) / staleness_horizon_sec,
+            (timestamp - last_visit_per_field) / t_since_last_visit_divisor,
             np.inf,
         )
-        
         res = np.full(nbins, np.inf, dtype=np.float32)
         np.minimum.at(res, bins_mem, age_v)
-        
-        # Bins with no contributing field (all inf): mark NaN sentinel
-        res[~act_s | np.isinf(res)] = np.nan
-        # Cap saturated staleness at 1.0
-        features[key] = np.minimum(res, 1.0).astype(np.float32)
-    
+        res[~act_s | np.isinf(res)] = _INTERNAL_SENTINEL
+        features[key] = res
+
     def _assign_fraction(field_mask, key):
         """Fraction of in-plan fields in each bin satisfying ``field_mask``."""
-        res = np.full(nbins, np.nan, dtype=np.float32)
+        res = np.full(nbins, _INTERNAL_SENTINEL, dtype=np.float32)
         num = np.bincount(bins_mem, weights=field_mask, minlength=nbins)
         np.divide(num, bin_in_plan_counts, out=res, where=act_s)
         features[key] = res
@@ -240,21 +252,41 @@ def compute_bin_progress_features(
     )
     s_mins = np.full(nbins, np.inf, dtype=np.float32)
     np.minimum.at(s_mins, bins_mem, tiling)
-    s_mins[~act_s | np.isinf(s_mins)] = np.nan
+    s_mins[~act_s | np.isinf(s_mins)] = _INTERNAL_SENTINEL
     features["min_tiling"] = np.minimum(s_mins, 1.0)
  
     if not do_filt:
         if timestamp is not None and last_visit_timestamps is not None:
             if last_visit_timestamps.ndim == 2:
-                # Aggregate to per-field: most-recent visit across filters
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=RuntimeWarning)
                     last_visit_field = np.nanmax(last_visit_timestamps, axis=1)
             else:
                 last_visit_field = last_visit_timestamps
-            _assign_staleness(last_visit_field, in_plan[v_mask], "t_since_last_visit")
-            
+            # Restrict staleness to in-plan AND incomplete fields. Completed
+            # fields would otherwise contribute monotonically-growing values
+            # that conflate "this region is forgotten" with "this region is
+            # done." `in_plan` is already `v_tgt_field > 0`, so the AND is
+            # equivalent to `v_cur_field < v_tgt_field`.
+            incomplete = v_cur_field < v_tgt_field
+            _assign_staleness(
+                last_visit_field[v_mask],
+                in_plan & incomplete,
+                "t_since_last_visit",
+            )
         return features
+    # if not do_filt:
+    #     if timestamp is not None and last_visit_timestamps is not None:
+    #         if last_visit_timestamps.ndim == 2:
+    #             # Aggregate to per-field: most-recent visit across filters
+    #             with warnings.catch_warnings():
+    #                 warnings.simplefilter("ignore", category=RuntimeWarning)
+    #                 last_visit_field = np.nanmax(last_visit_timestamps, axis=1)
+    #         else:
+    #             last_visit_field = last_visit_timestamps
+    #         _assign_staleness(last_visit_field, in_plan[v_mask], "t_since_last_visit")
+            
+    #     return features
  
     # Per-filter family of features
     nfilters = current_counts.shape[1]
@@ -270,20 +302,29 @@ def compute_bin_progress_features(
         where=in_ff_plan,
     )
  
+    # for f, filt_name in idx2filter.items():
+    #     if timestamp is not None and last_visit_timestamps is not None:
+    #         _assign_staleness(
+    #             last_visit_timestamps[v_mask, f],
+    #             in_ff_plan[:, f],
+    #             f"t_since_last_visit_{filt_name}",
+    #         )
+            
+    incomplete_ff = v_cur_ff < v_tgt_ff   # (n_visible_fields, nfilters)
+
     for f, filt_name in idx2filter.items():
         if timestamp is not None and last_visit_timestamps is not None:
             _assign_staleness(
                 last_visit_timestamps[v_mask, f],
-                in_ff_plan[:, f],
+                in_ff_plan[:, f] & incomplete_ff[:, f],
                 f"t_since_last_visit_{filt_name}",
             )
-            
         bc_f = np.bincount(
             bins_mem, weights=in_ff_plan[:, f], minlength=nbins
         )
         act_f = bc_f > 0
  
-        unv = np.full(nbins, np.nan, dtype=np.float32)
+        unv = np.full(nbins, _INTERNAL_SENTINEL, dtype=np.float32)
         np.divide(
             np.bincount(
                 bins_mem,
@@ -294,7 +335,7 @@ def compute_bin_progress_features(
         )
         features[f"num_unvisited_fields_{filt_name}"] = unv
  
-        inc = np.full(nbins, np.nan, dtype=np.float32)
+        inc = np.full(nbins, _INTERNAL_SENTINEL, dtype=np.float32)
         np.divide(
             np.bincount(
                 bins_mem,
@@ -307,9 +348,8 @@ def compute_bin_progress_features(
  
         s_f_mins = np.full(nbins, np.inf, dtype=np.float32)
         np.minimum.at(s_f_mins, bins_mem, ff_tiling[:, f])
-        s_f_mins[~act_f | np.isinf(s_f_mins)] = np.nan
+        s_f_mins[~act_f | np.isinf(s_f_mins)] = _INTERNAL_SENTINEL
         features[f"min_tiling_{filt_name}"] = np.minimum(s_f_mins, 1.0)
-        
     return features
  
  
@@ -416,15 +456,21 @@ def validate_history_bin_features(features, do_filt, idx2filter=None):
                 f"min_tiling > 0 at idx {bad[0][0]}. "
                 f"Unv: {unv[bad][0]}, Til: {til[bad][0]}"
             )
-            
-    for bk in (_STALENESS_BASE_KEYS if not do_filt else
-        [f"{bk}_{filt_name}" for bk in _STALENESS_BASE_KEYS 
-        for filt_name in idx2filter.values()]):
+
+    # Staleness keys: should sit in [0, 1] with the OT-clock normalization.
+    # Tolerate a tiny float epsilon above 1.0 from accumulated rounding.
+    stale_keys = (
+        _STALENESS_BASE_KEYS if not do_filt else
+        [f"{bk}_{filt_name}"
+         for bk in _STALENESS_BASE_KEYS
+         for filt_name in idx2filter.values()]
+    )
+    for bk in stale_keys:
         if bk not in features:
             continue
         arr = features[bk]
         valid = ~np.isnan(arr)
-        bad = valid & ((arr < 0.0) | (arr > 1.0))
+        bad = valid & ((arr < 0.0) | (arr > 1.0 + 1e-5))
         if np.any(bad):
             b = np.where(bad)
             raise RuntimeError(
@@ -579,12 +625,11 @@ class BinFeatureEngineer:
  
         if self.has_historical:
             validate_history_bin_features(features, self.do_filt)
- 
-        # Final step: convert internal NaN sentinels to the external value.
-        # replace_invalid_with_sentinel(features, self.sentinel_val)
-        # Instead, do this at last step of normalization so that we can save the sentinel mask
-        # and use for plotting bin_features per timestamp
- 
+
+        # NOTE: internal NaN -> external sentinel conversion happens in the
+        # StateNormalizer pipeline (so the sentinel mask can be saved for
+        # downstream plotting), not here.
+
         return self._stack_and_rearrange(features, requested_features)
  
  
@@ -602,13 +647,17 @@ class BinFeatureEngineer:
             'moon_distance', 'pointing_distance', 'delta_az', 'delta_el',
             'rel_ha', 'rel_moon_distance', 't_until_set'
         ]
-        features = {k: np.empty(shape, dtype=np.float32) for k in ephemeris_keys}
+        features = {
+            k: np.full(shape, np.nan, dtype=np.float32) for k in ephemeris_keys
+        }
         if self.has_historical:
             for bk in _SURVEY_PROGRESS_BASE_KEYS + _STALENESS_BASE_KEYS:
-                features[bk] = np.empty(shape, dtype=np.float32)
+                features[bk] = np.full(shape, np.nan, dtype=np.float32)
                 if self.do_filt:
                     for filt in FILTER2IDX.keys():
-                        features[f"{bk}_{filt}"] = np.empty(shape, dtype=np.float32)
+                        features[f"{bk}_{filt}"] = np.full(
+                            shape, np.nan, dtype=np.float32
+                        )
         return features
  
  
@@ -632,6 +681,13 @@ class BinFeatureEngineer:
         Counter is incremented AFTER the helper runs at row i, so row i's
         features describe the state going into the action at row i+1 — the
         same semantics the original offline pipeline had.
+
+        OT-clock handling: ``last_visit_*_ot`` and ``timestamp`` passed to
+        ``compute_bin_progress_features`` are both in observing-time seconds,
+        sharing the clock built by ``build_train_lookups.py``. Per-row
+        conversion is ``obs_t = ot_at_sunset + (t - sunset_ts)``: inside a
+        night, OT advances at 1 s per real second from the night's sunset
+        OT anchor.
         """
         nbins = len(self.hpGrid.idx_lookup)
  
@@ -668,52 +724,70 @@ class BinFeatureEngineer:
         # invalidate a still-fresh field->bin assignment.
         cache_time = -1e9
         cache_bins, cache_vmask = None, None
- 
+
+        # Resolve the OT divisor and the OT lookups once. These are
+        # required for staleness; raise loudly if absent so a stale-feature
+        # bug never silently degrades to all-sentinel.
+        total_ot_sec = self._require_lookup_attr("total_ot_sec")
+        ot_clock_dict = self._require_lookup_attr("night2ot_clock_seconds")
+        if self.do_filt:
+            last_visit_ot_dict = self._require_lookup_attr(
+                "night2fidfilt_last_visit_ot"
+            )
+        else:
+            last_visit_ot_dict = self._require_lookup_attr(
+                "night2fid_last_visit_ot"
+            )
+
         pbar = tqdm(total=len(pt_df), desc='Computing bin features')
         i = 0  # Global row index — matches the row's slot in pre-allocated arrays.
 
-        nfields, nfilters = len(ra_arr), len(FILTER2IDX)
         for night, group in pt_df_with_filt.groupby('night', sort=False):
-            # Per-night running counter, seeded from the visit history.
+            # Per-night setup — done ONCE per night, not once per row.
+            sunset_ts, sunrise_ts = get_night_boundaries(
+                group['timestamp'], sun_el_limit=_SUN_EL_LIMIT_DEG
+            )
+            step_night_duration_sec = sunrise_ts - sunset_ts
+            ot_at_sunset = ot_clock_dict[night]  # scalar OT(sunset_n)
+
+            # Per-night running counters + last-visit OT, seeded from the
+            # full-survey history snapshot at the start of this night.
             if self.do_filt:
                 cur_s_f_vis = (
                     self.lookups.night2fidfilt_visit_hist[night]
                     .copy().astype(np.int32)
                 )
-                # NEW: seed from history if you have it, else NaN.
-                # If lookups exposes a night2fidfilt_last_visit, use it; else start
-                # from NaN — meaning "no recorded visit" → infinite staleness → sentinel.
-                last_visit_ts = (
-                    self.lookups.night2fidfilt_last_visit[night].copy().astype(np.float64)
-                    if hasattr(self.lookups, "night2fidfilt_last_visit")
-                    else np.full((nfields, nfilters), np.nan, dtype=np.float64)
+                last_visit_ot = (
+                    last_visit_ot_dict[night].copy().astype(np.float64)
                 )
                 cur_s_vis = None
-                last_visit_ts_1d = None
+                last_visit_ot_1d = None
             else:
                 cur_s_vis = (
                     self.lookups.night2fid_visit_hist[night]
                     .copy().astype(np.int32)
                 )
-                last_visit_ts_1d = (
-                    self.lookups.night2fid_last_visit[night].copy().astype(np.float64)
-                    if hasattr(self.lookups, "night2fid_last_visit")
-                    else np.full(nfields, np.nan, dtype=np.float64)
+                last_visit_ot_1d = (
+                    last_visit_ot_dict[night].copy().astype(np.float64)
                 )
                 cur_s_f_vis = None
-                last_visit_ts = None
+                last_visit_ot = None
+
             # Extract group columns as ndarrays for the inner loop.
             step_timestamps = group['timestamp'].to_numpy()
             step_pointing_ras = group['ra'].to_numpy()
             step_pointing_decs = group['dec'].to_numpy()
             step_fids = group['field_id'].to_numpy(dtype=np.int32)
             step_filts = group['_filt_idx'].to_numpy(dtype=np.int32)
-            sunset_ts, sunrise_ts = get_night_boundaries(group['timestamp'], sun_el_limit=-10) # setting to -10 for feature generation, not necessarily for action limits
-            step_night_duration_sec = sunrise_ts - sunset_ts
- 
+
             for j in range(len(group)):
                 t = step_timestamps[j]
- 
+                # Convert unix timestamp -> OT seconds for this row. OT
+                # advances at 1 s/s while inside the night; this row is
+                # inside [sunset_ts, sunrise_ts] by construction (group
+                # belongs to night `night`).
+                obs_t = ot_at_sunset + (t - sunset_ts)
+
                 # --- Ephemeris (always) ---
                 eph = compute_bin_ephemeris_features(
                     timestamp=t,
@@ -751,8 +825,9 @@ class BinFeatureEngineer:
                         target_counts=self.lookups.target_fidfilt_counts,
                         bins_per_field=bpf, v_mask=vm,
                         nbins=nbins, do_filt=True,
-                        timestamp=t,
-                        last_visit_timestamps=last_visit_ts,
+                        timestamp=obs_t,
+                        last_visit_timestamps=last_visit_ot,
+                        t_since_last_visit_divisor=total_ot_sec,
                     )
                 else:
                     hist = compute_bin_progress_features(
@@ -760,24 +835,25 @@ class BinFeatureEngineer:
                         target_counts=self.lookups.target_fid_counts,
                         bins_per_field=bpf, v_mask=vm,
                         nbins=nbins, do_filt=False,
-                        timestamp=t,
-                        last_visit_timestamps=last_visit_ts_1d,
+                        timestamp=obs_t,
+                        last_visit_timestamps=last_visit_ot_1d,
+                        t_since_last_visit_divisor=total_ot_sec,
                     )
                 for k, v in hist.items():
                     if k in features:
                         features[k][i] = v
- 
-                # --- Increment running counter for the next row's view ---
+
+                # --- Increment running counter / refresh last_visit for next row's view ---
                 obs_fid, obs_filt = step_fids[j], step_filts[j]
                 if obs_fid != ZENITH_FIELD_ID:
                     if self.do_filt:
                         if obs_filt != ZENITH_FILTER_IDX:
                             cur_s_f_vis[obs_fid, obs_filt] += 1
-                            last_visit_ts[obs_fid, obs_filt] = t  
+                            last_visit_ot[obs_fid, obs_filt] = obs_t
                     else:
                         cur_s_vis[obs_fid] += 1
-                        last_visit_ts_1d[obs_fid] = t
- 
+                        last_visit_ot_1d[obs_fid] = obs_t
+
                 i += 1
                 pbar.update(1)
  
@@ -787,7 +863,25 @@ class BinFeatureEngineer:
             f"Row loop wrote {i} rows but pt_df has {len(pt_df)}. "
             f"Did groupby reorder relative to pt_df?"
         )
- 
+
+    def _require_lookup_attr(self, name):
+        """Fetch a required attribute from ``self.lookups`` or raise loudly.
+
+        We used to fall back to all-NaN when these were missing; that
+        silently corrupted staleness for an entire training run and was
+        the cause of the recent all-zeros and all-sentinel debugging
+        rounds. Better to crash here than to silently train on garbage.
+        """
+        if not hasattr(self.lookups, name):
+            raise AttributeError(
+                f"LookupTables is missing required attribute '{name}' for "
+                f"OT-clock staleness computation. Rebuild lookups via "
+                f"`build_train_lookups.py` (or set has_historical=False / "
+                f"drop t_since_last_visit from base_features if you don't "
+                f"need staleness)."
+            )
+        return getattr(self.lookups, name)
+
     def _fill_ephemeris_only(self, features, pt_df):
         """Fast path for configs that don't request any history features."""
         timestamps = pt_df['timestamp'].to_numpy()
@@ -797,7 +891,9 @@ class BinFeatureEngineer:
             enumerate(timestamps), total=len(timestamps),
             desc='Computing bin ephemeris',
         ):
-            sunset_ts, sunrise_ts = get_night_boundaries(t, sun_el_limit=-10) # setting to -10 for feature generation, not necessarily for action limits
+            sunset_ts, sunrise_ts = get_night_boundaries(
+                t, sun_el_limit=_SUN_EL_LIMIT_DEG
+            )
             night_duration_sec = sunrise_ts - sunset_ts
             eph = compute_bin_ephemeris_features(
                 timestamp=t,

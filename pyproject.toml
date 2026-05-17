@@ -13,7 +13,7 @@ include = ["blancops*"]
 
 [project.scripts]
 workspace-init = "blancops.scripts.init:main"
-construct-train-lookups = "blancops.scripts.generate_train_lookups:main"
+build-train-lookups = "blancops.scripts.build_train_lookups:main"
 run-train = "blancops.scripts.train:main"
 run-validate = "blancops.scripts.validate:main"
 run-simulate = "blancops.scripts.predict:main"

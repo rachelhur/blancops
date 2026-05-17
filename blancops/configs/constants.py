@@ -87,17 +87,16 @@ _BIN_FEATURES = [
 ]
 
 
-# 1. Define allowed normalization strings to catch typos instantly
 _NORM_TYPES = Literal[
     'cyclical', # cos/sin - this normalization is run before all others
     'sin', # sin only
     'log',
     'fractional', # for values bound between 0 and 1 -- performs 2*(val - .5) 
     'z_score', # standard z-score normalization
-    'local_mean_z' # subtracts the mean of features at a timestamp, then divides by *global* std
+    'local_mean_z', # subtracts the mean of features at a timestamp, then divides by *global* std
+    None
     ]
 
-# 2. Define the absolute physical rules of your domain
 _ALLOWED_NORMS_PER_FEATURE = {
     # Telescope coords
     'ra': {'cyclical', 'z_score'},
@@ -151,7 +150,7 @@ _ALLOWED_NORMS_PER_FEATURE = {
     'moon_phase': {'fractional'},
     'survey_num_visits_done': {'fractional'},
     't_until_set': {'fractional'},
-    't_since_last_visit': {'fractional', 'z_score'}, 
+    't_since_last_visit': {'fractional', 'z_score', 'log', None}, 
 }
 
 _DEFAULT_NORM_MAPPING = {

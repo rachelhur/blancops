@@ -52,3 +52,12 @@ class LookupKeys(str, Enum):
     TARGET_FID2VISITS_EVAL = "target_counts_per_fid_eval.json"
     NIGHT2FID_VISIT_HIST = "night2fidvisits.pkl"
     NIGHT2FIDFILT_VISIT_HIST = "night2fidfilt_visits.pkl"
+    NIGHT2FID_LAST_VISIT_TS = "night2fid_last_visit_ts.pkl"
+    NIGHT2FIDFILT_LAST_VISIT_TS = "night2fidfilt_last_visit_ts.pkl"
+    NIGHT2FID_LAST_VISIT_OT = "night2fid_last_visit_ot.pkl"
+    NIGHT2FIDFILT_LAST_VISIT_OT = "night2fidfilt_last_visit_ot.pkl"
+    NIGHT2OT_CLOCK_SECONDS = "night2observing_time_seconds.pkl"
+    TOTAL_OT_SECONDS = "total_observing_time_seconds.txt"
+    
+        
+    
