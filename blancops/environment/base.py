@@ -561,7 +561,7 @@ class BaseBlancoEnv(gym.Env, ABC):
 
         # 3. Pointing-derived ephemeris (az/el/ha/airmass + sky brightness).
         new_features.update(
-            compute_global_pointing_features(timestamp=timestamp, ra=ra, dec=dec)
+            compute_global_pointing_features(timestamp=timestamp, ra=ra, dec=dec, moon_radec=(new_features['moon_ra'], new_features['moon_dec']))
         )
 
         # 4. Filter features. The live env has three cases (zenith / WAIT or
