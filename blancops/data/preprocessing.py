@@ -76,8 +76,7 @@ def drop_rows_in_DECam_data(df, objects_to_remove=None, specific_years=None, spe
     
 
     # Some fields are mis-labelled - add '(outlier)' to these object names so that they are treated as separate fields
-    df = _relabel_mislabelled_objects(df)
-    df = _remove_outliers(df)
+    df = _remove_object_outliers(df)
     
     # Remove specific nights according to object name
     # df = remove_specific_objects(objects_to_remove=objects_to_remove, df=df)
@@ -90,52 +89,42 @@ def drop_rows_in_DECam_data(df, objects_to_remove=None, specific_years=None, spe
     df.sort_values(by='timestamp').reset_index(drop=True, inplace=True)
     return df
 
-def _remove_outliers(df):
-    """Removes objects that have (outlier) in its object name"""
-    df = df[~df['object'].astype(str).str.contains('(outlier)', regex=False, na=False)]
-    return df
+# def _remove_outliers(df):
+#     """Removes objects that have (outlier) in its object name"""
+#     df = df[~df['object'].astype(str).str.contains('(outlier)', regex=False, na=False)]
+#     return df
 
-def _relabel_mislabelled_objects(df):
-    """Renames object columns with 'object_name (outlier)' if they are outside of a certain cutoff from the median RA/Dec.
+def _remove_object_outliers(df, cutoff_dist=3.5) -> pd.DataFrame:
+    """Remove rows if they are outside of a certain cutoff from the object's median RA/Dec.
 
     Args
     ----
     df (pd.DataFrame): The dataframe with object names and RA/Dec positions.
+    cutoff_dist (float): The cutoff distance in degrees.
 
     Returns
     -------
-    df_relabelled (pd.DataFrame): The dataframe with relabelled objects.
+    cleaned_df (pd.DataFrame): The cleaned dataframe with relabelled objects removed.
     """
-    object_radec_df = df[['object', 'ra', 'dec']]
-    object_radec_groups = object_radec_df.groupby('object')
-    df_relabelled = df.copy(deep=True)
-
-    outlier_indices = []
-    for _, g in object_radec_groups:
-        cutoff_deg = 3
-        median_ra = g.ra.median()
-        delta_ra = g.ra - median_ra
-        delta_ra_shifted = np.remainder(delta_ra + 180, 360) - 180
-        mask_outlier_ra = np.abs(delta_ra_shifted) > cutoff_deg
-
+    indices_to_drop = []
+    for obj_name, g in df.groupby('object'):
+        median_ra = _get_object_median_ra(g.ra)
         median_dec = g.dec.median()
-        delta_dec = g.dec - median_dec
-        delta_dec_shifted = np.remainder(delta_dec + 180, 360) - 180
-        mask_outlier_dec = np.abs(delta_dec_shifted) > cutoff_deg
 
-        mask_outlier = mask_outlier_ra | mask_outlier_dec
+        # Calculate true on-sky distance from the robust center
+        distances = _get_haversine_dist(median_ra, median_dec, g.ra.values, g.dec.values)
+        
+        # Mask and re-label
+        mask_outlier = distances > cutoff_dist
 
         if np.count_nonzero(mask_outlier) > 0:
-            indices = g.index[mask_outlier].values
-            outlier_indices.extend(indices)
-
-    df_relabelled.loc[outlier_indices, 'object'] = [f'{obj_name} (outlier)' for obj_name in df.loc[outlier_indices, 'object'].values]
-    return df_relabelled
+            outlier_indices = g.index[mask_outlier].values
+            indices_to_drop.extend(outlier_indices)
+    cleaned_df = df.drop(index=indices_to_drop)
+    return cleaned_df
 
 def _keep_dates(df, specific_years=None, specific_months=None, specific_days=None, specific_filters=None):
     """Filters dataframe for selected years, months, days, and filters"""
-    # Add column which indicates observing night (noon to noon)
-    # Get observations for specific years, days, filters, etc.
     if specific_years is not None and specific_years is not []:
         df = df[df['night'].dt.year.isin(specific_years)]
         assert not df.empty, f"Years {specific_years} do not exist in dataset"
@@ -151,3 +140,27 @@ def _keep_dates(df, specific_years=None, specific_months=None, specific_days=Non
     assert not df.empty, "No observations found for the specified year/month/day/filter selections."
     
     return df
+
+
+def _get_object_median_ra(dither_ras):
+    ra_rad = np.radians(dither_ras)
+    
+    mean_x = np.mean(np.cos(ra_rad))
+    mean_y = np.mean(np.sin(ra_rad))
+    
+    anchor_ra = np.degrees(np.arctan2(mean_y, mean_x)) % 360
+    shifted_ra = (dither_ras - anchor_ra + 180) % 360 - 180
+    
+    return (np.median(shifted_ra) + anchor_ra) % 360
+
+def _get_haversine_dist(ra_center, dec_center, ra_array, dec_array):
+    """Calculates great-circle distance between a center point and an array of points."""
+    ra1, dec1 = np.radians(ra_center), np.radians(dec_center)
+    ra2, dec2 = np.radians(ra_array), np.radians(dec_array)
+    
+    d_ra = ra2 - ra1
+    d_dec = dec2 - dec1
+    
+    a = np.sin(d_dec / 2.0)**2 + np.cos(dec1) * np.cos(dec2) * np.sin(d_ra / 2.0)**2
+    a = np.clip(a, 0.0, 1.0)
+    return np.degrees(2.0 * np.arcsin(np.sqrt(a)))
