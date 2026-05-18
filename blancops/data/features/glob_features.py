@@ -46,6 +46,8 @@ from blancops.configs.constants import (
 )
 
 import logging
+
+from blancops.math.geometry import angular_separation
 logger = logging.getLogger(__name__)
 
 
@@ -82,7 +84,7 @@ def compute_global_time_only_features(*, timestamp) -> dict:
     return features
 
 
-def compute_global_pointing_features(*, timestamp, ra, dec) -> dict:
+def compute_global_pointing_features(timestamp, ra, dec, moon_radec) -> dict:
     """Pointing-dependent global ephemeris features.
 
     Returns a dict with: ``az``, ``el`` (clipped to ``[0, π/2]``), ``ha``,
@@ -109,6 +111,7 @@ def compute_global_pointing_features(*, timestamp, ra, dec) -> dict:
         ra=ra, dec=dec, time=timestamp
     )
     features['airmass'] = 1.0 / np.cos(np.pi / 2 - el)
+    features['moon_distance'] = calc_distance_to_moon(moon_radec, (ra, dec))
 
     for filt in FILTER2IDX.keys():
         features[f"sky_brightness_{filt}"] = estimate_sky_brightness(
@@ -194,6 +197,7 @@ class GlobalFeatureEngineer:
         return (df
             .pipe(self._add_zenith_rows)
             .pipe(self._add_time_dependent_features)
+            .pipe(self._add_moon_distance)
             .pipe(self._map_bins_and_fields)
             .pipe(self._add_current_filter)
             .pipe(self._add_sky_brightness)
@@ -232,6 +236,17 @@ class GlobalFeatureEngineer:
             _, df['lst_hours'] = calc_lst(df['datetime'].values)
 
         df['t_night'] = df.groupby('night')['timestamp'].transform(normalize_times)
+        return df
+    
+    def _add_moon_distance(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Angular separation between pointing and Moon. Live env computes
+        this per-step in compute_global_pointing_features; offline does it
+        vectorized here using the moon_ra/moon_dec columns populated by
+        _add_time_dependent_features."""
+        df['moon_distance'] = calc_distance_to_moon(
+            np.array([df['moon_ra'].values, df['moon_dec'].values]),
+            np.array([df['ra'].values, df['dec'].values]),
+        )
         return df
 
     def _map_bins_and_fields(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -528,7 +543,7 @@ def calc_twilight(ts, event_type='set', horizon='-14', buffer_in_seconds=10):
         dt_utc += timedelta(seconds=buffer_in_seconds)
     return dt_utc.timestamp()
 
-def calculate_sun_rise_and_set_times(df):
+def calc_sun_rise_and_set_times(df):
     rise_times = df.groupby('night').apply(calc_twilight, event_type='rise').values
     set_times = df.groupby('night').apply(calc_twilight, event_type='set').values
     return rise_times, set_times
@@ -539,6 +554,9 @@ def calc_sun_and_moon_positions(time):
     moon_radec = ephemerides.get_source_ra_dec('moon', time=time)
     moon_azel = ephemerides.equatorial_to_topographic(ra=moon_radec[0], dec=moon_radec[1], time=time)
     return sun_radec, sun_azel, moon_radec, moon_azel
+
+def calc_distance_to_moon(moon_radec, pointing_radec):
+    return angular_separation(moon_radec, pointing_radec)
 
 def calc_moon_phase(time):
     observer = ephemerides.blanco_observer(time=time)
@@ -594,7 +612,7 @@ def get_zenith_features(original_df):
 
 def _backfill_zenith_states(df):
     """Back fills zenith state for relevant features"""
-    df['fwhm'] = df.groupby('night')['fwhm'].bfill()
+    # df['fwhm'] = df.groupby('night')['fwhm'].bfill()
     # df['night_idx'] = df.groupby('night')['night_idx'].bfill()
     # df['t_survey'] = df.groupby('night')['t_survey'].bfill()
     # for f in FILTER2IDX.keys():
@@ -629,7 +647,7 @@ def calc_inst_teff_rate(df, next_state_idxs):
 
 
 def calculate_sun_rise_and_set_azel(df):
-    rise_times, set_times = calculate_sun_rise_and_set_times(df)
+    rise_times, set_times = calc_sun_rise_and_set_times(df)
     rise_azels = np.empty(shape=(len(set_times), 2))
     set_azels = np.empty(shape=(len(set_times), 2))
 
