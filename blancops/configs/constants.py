@@ -6,6 +6,10 @@ from typing import Dict, List, Literal
 
 import numpy as np
 
+"""
+Directories and Paths
+"""
+
 def get_workspace_dir() -> Path:
     """Determines the active workspace. Priority: (1) environment variable (2) pointer file (saved after running model-init) (3) default=`~/.blancops`
     """
@@ -35,6 +39,10 @@ TRAIN_DATA_DIR = PATHS["TRAIN_DIR"]
 TRAIN_DATA_PATH = TRAIN_DATA_DIR / "decam-exposures-20251211.fits"
 
 
+"""
+Feature names
+"""
+
 _CYCLICAL_FEATURE_NAMES = ["ra", "az", "ha", "lst"]
 _FILTER_DEP_FEATURE_NAMES = [
      # global features
@@ -58,7 +66,7 @@ _GLOBAL_FEATURES = [
     "dec",  # redundant with el, airmass
     "sun_ra", "sun_dec", "sun_az", "sun_el", 
     "moon_ra", "moon_dec", "moon_az", "moon_el",
-    #TODO: moon_distance
+    "moon_distance",
     # "num_unvisited_fields",
     # "num_incomplete_fields",
     # "min_tiling",
