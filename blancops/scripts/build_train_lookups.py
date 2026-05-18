@@ -8,7 +8,7 @@ from blancops.math import units
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 from blancops.configs.constants import FILTER2IDX
 from blancops.data.lookup_tables import LookupTables
-from blancops.data.preprocessing import drop_rows_in_DECam_data, preprocess_historic_data
+from blancops.data.preprocessing import drop_rows, preprocess_historic_data
 import matplotlib.pyplot as plt
 import warnings
 import logging
@@ -24,22 +24,21 @@ from blancops.io.logger_utils import setup_logger_old
 _VALID_TEFF_THRESHOLD = 0.3
 
 
-def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
+def build_DES_lookups(fits_path=None, outdir=None):
     fits_path = Path(fits_path or TRAIN_DATA_PATH).resolve()
     outdir = Path(outdir or TRAIN_DATA_DIR).resolve()
     
     df = preprocess_historic_data(fits_path=fits_path)
-    df = drop_rows_in_DECam_data(df)
+    df = drop_rows(df)
     if len(df) == 0: # Fixed the logical bug here: len(df) == 0 means no obs found
         logger.warning("No observations found for the specified year/month/day/filter selections.")
         raise ValueError
-    df = df.sort_values(by='timestamp').reset_index(drop=True)
     
     # field_id is 0..N-1 contiguous by construction (pd.factorize).
     df['field_id'] = pd.factorize(df['object'])[0]
     df["filt_idx"] = df["filter"].map(FILTER2IDX)
 
-    num_fields = int(df["field_id"].max()) + 1
+    num_fields = df["field_id"].nunique()
     nfilters = len(FILTER2IDX)
     
     
@@ -80,10 +79,7 @@ def save_DES_bin_and_field_mappings(fits_path=None, outdir=None):
     )
     logger.info(" [+] Constructed Target Counts Lookup")
 
-    # fidfilt_exptime: most-common exptime per (field, filter). Computed
-    # over the FULL df (not teff-filtered) since exptime is a configured
-    # parameter, not an outcome. (field, filter) pairs not in the survey get 0; the
-    # action mask never lets the agent land on those.
+    # fidfilt_exptime: most-common exptime per (field, filter).
     fidfilt_exptime = (
         df.pivot_table(
             index="field_id", columns="filt_idx", values="exptime",
@@ -257,7 +253,7 @@ def main():
     logger = setup_logger_old(save_dir=None)
     args.outdir.mkdir(parents=True, exist_ok=True)
     logger.info("Starting lookup generation...")
-    lookups = save_DES_bin_and_field_mappings(fits_path=args.fits_path, outdir=args.outdir)
+    lookups = build_DES_lookups(fits_path=args.fits_path, outdir=args.outdir)
     
     save = args.save_plots
     
