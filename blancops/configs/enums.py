@@ -58,8 +58,8 @@ class LookupKeys(str, Enum):
     NIGHT2FIDFILT_LAST_VISIT_OT = "night2fidfilt_last_visit_ot.pkl"
     NIGHT2OT_CLOCK_SECONDS = "night2observing_time_seconds.pkl"
     TOTAL_OT_SECONDS = "total_observing_time_seconds.txt"
-    NIGHT2IDX = "surveynight2idx.pkl"
-    TOTAL_NIGHTS = "total_nights_in_survey.txt"
+    # NIGHT2IDX = "surveynight2idx.pkl"
+    # TOTAL_NIGHTS = "total_nights_in_survey.txt"
     
         
     

@@ -61,15 +61,13 @@ class LookupTables:
     night2fidfilt_last_visit_ot: Optional[dict] = None
     night2ot_clock_seconds: Optional[dict] = None
     total_ot_sec: Optional[float] = None
-    night2idx: Optional[dict] = None
-    total_nights: Optional[int] = None
-    
  
     # Derived marginals — populated in __post_init__, never set by callers.
     target_fid_counts: np.ndarray = field(init=False, default=None, repr=False)
     target_filt_counts: np.ndarray = field(init=False, default=None, repr=False)
+    night2idx: Optional[dict] = None
+    total_nights: Optional[int] = None
 
-    
     # ------------------------------------------------------------------
     # I/O
     # ------------------------------------------------------------------
@@ -122,13 +120,12 @@ class LookupTables:
                 night2fidfilt_visit_hist = pickle.load(f)
             with open(get_path(LookupKeys.NIGHT2OT_CLOCK_SECONDS), "rb") as f:
                 night2ot_clock_seconds = pickle.load(f)
-                print(night2ot_clock_seconds)
             with open(get_path(LookupKeys.TOTAL_OT_SECONDS), "r") as f:
                 total_ot_sec = np.float64(f.read())
-            with open(get_path(LookupKeys.NIGHT2IDX), "rb") as f:
-                night2idx = pickle.load(f)
-            with open(get_path(LookupKeys.TOTAL_NIGHTS), "r") as f:
-                total_nights = int(f.read())
+            # with open(get_path(LookupKeys.NIGHT2IDX), "rb") as f:
+            #     night2idx = pickle.load(f)
+            # with open(get_path(LookupKeys.TOTAL_NIGHTS), "r") as f:
+            #     total_nights = int(f.read())
             
             # Last-visit timestamps
             fid_lv_path = get_path(LookupKeys.NIGHT2FID_LAST_VISIT_TS)
@@ -186,8 +183,6 @@ class LookupTables:
             night2fidfilt_last_visit_ot=night2fidfilt_last_visit_ot,
             night2ot_clock_seconds=night2ot_clock_seconds,
             total_ot_sec=total_ot_sec,
-            night2idx=night2idx,
-            total_nights=total_nights
         )
  
     def write_to_disk(self, outdir: Optional[Path] = None) -> None:
@@ -237,10 +232,10 @@ class LookupTables:
                 f.write(f"{self.total_ot_sec}")
                 
         # NIGHT INDICES
-        with open(outdir / LookupKeys.NIGHT2IDX.value, "wb") as f:
-            pickle.dump(self.night2idx, f)
-        with open(outdir / LookupKeys.TOTAL_NIGHTS.value, "w") as f:
-            f.write(f"{self.total_nights}")
+        # with open(outdir / LookupKeys.NIGHT2IDX.value, "wb") as f:
+        #     pickle.dump(self.night2idx, f)
+        # with open(outdir / LookupKeys.TOTAL_NIGHTS.value, "w") as f:
+        #     f.write(f"{self.total_nights}")
                 
     # ------------------------------------------------------------------
     # Composition
@@ -413,7 +408,7 @@ class LookupTables:
  
         if write_to_disk:
             lookups.write_to_disk(Path(outdir))
- 
+        raise NotImplementedError
         return lookups
 
 
@@ -481,7 +476,13 @@ class LookupTables:
         object.__setattr__(
             self, "target_filt_counts", self.target_fidfilt_counts.sum(axis=0)
         )
-
+        object.__setattr__(
+            self, "night2idx", {night: i for i, night in enumerate(self.night2fidfilt_visit_hist.keys())}
+        )
+        object.__setattr__(
+            self, "total_nights", len(self.night2idx)
+        )
+        
     def _validate_history_shapes(self, nfields, nfilters):
         """Per-night snapshot dicts must have matching keys and the
         expected per-field / per-(field, filter) shapes. Treats the
