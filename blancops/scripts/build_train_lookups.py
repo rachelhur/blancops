@@ -8,7 +8,7 @@ from blancops.math import units
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 from blancops.configs.constants import FILTER2IDX
 from blancops.data.lookup_tables import LookupTables
-from blancops.data.preprocessing import drop_rows, preprocess_historic_data
+from blancops.data.preprocessing import remove_undesired_dates_and_objects, preprocess_historic_data
 import matplotlib.pyplot as plt
 import warnings
 import logging
@@ -29,7 +29,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
     outdir = Path(outdir or TRAIN_DATA_DIR).resolve()
     
     df = preprocess_historic_data(fits_path=fits_path)
-    df = drop_rows(df)
+    df = remove_undesired_dates_and_objects(df)
     if len(df) == 0: # Fixed the logical bug here: len(df) == 0 means no obs found
         logger.warning("No observations found for the specified year/month/day/filter selections.")
         raise ValueError
@@ -115,7 +115,6 @@ def build_DES_lookups(fits_path=None, outdir=None):
     night2fid_last_visit_ot = {}
     night2fidfilt_last_visit_ot = {}
     night2ot_clock_seconds = {}     # night -> OT(sunset_n)
-    night2idx = {}
 
     cum_ot = 0.0
         
@@ -123,7 +122,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
         sunset_ts, sunrise_ts = get_night_boundaries(night, sun_el_limit=-10)
         night2ot_clock_seconds[night] = cum_ot
         night_dur = sunrise_ts - sunset_ts
-        night2idx[night] = i
+        # night2idx[night] = i
 
         # Snapshot start-of-night state BEFORE adding this night's
         # contributions. Matches existing visit_hist semantics so
@@ -197,6 +196,8 @@ def build_DES_lookups(fits_path=None, outdir=None):
                 )
 
         cum_ot += night_dur
+        
+    night2idx = pd.factorize(df["night"])[0]
     total_nights = len(night2idx)
     total_observing_seconds = cum_ot
 

@@ -14,7 +14,7 @@ from blancops.configs.enums import RewardStructure
 from blancops.ephemerides import ephemerides
 from blancops.math import geometry
 
-from blancops.data.preprocessing import drop_rows_in_DECam_data
+from blancops.data.preprocessing import remove_undesired_dates_and_objects
 from blancops.configs.constants import _CYCLICAL_FEATURE_NAMES, _NUM_FILTERS, FILTER2IDX, ZENITH_FILTER
 
 from blancops.data.features.glob_features import GlobalFeatureEngineer, calc_inst_teff_rate
@@ -77,12 +77,12 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.lookups = lookups
 
         # Raw Data Filtering
-        df = drop_rows_in_DECam_data(
+        df = remove_undesired_dates_and_objects(
             df,
-            specific_years=cfg.data.years if years is None else years, 
-            specific_months=cfg.data.months if months is None else months, 
-            specific_days=cfg.data.days if days is None else days,
-            specific_filters=cfg.data.filters if filters is None else filters,
+            years_keep=cfg.data.years if years is None else years, 
+            months_keep=cfg.data.months if months is None else months, 
+            days_keep=cfg.data.days if days is None else days,
+            filters_keep=cfg.data.filters if filters is None else filters,
         )
         
         # Feature Engineering Pipeline

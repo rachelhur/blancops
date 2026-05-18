@@ -41,8 +41,8 @@ def preprocess_historic_data(fits_path: str | Path | None = None, df=None, sel=N
 
     timestamps = (df['datetime'] - pd.Timestamp("1970-01-01", tz='utc')) // pd.Timedelta("1s")
     df['timestamp'] = timestamps
-    df = df.sort_values(by='timestamp').reset_index(drop=True)
     df = _add_essential_cols(df)
+    df = df.sort_values(by='timestamp').reset_index(drop=True)
     return df
 
 def _convert_df_to_radians(df: pd.DataFrame, key_list: list = []):
@@ -67,13 +67,12 @@ def _add_essential_cols(df):
     #     df[f'urgency_{f}'] = urgency
     return df
     
-def drop_rows_in_DECam_data(df, objects_to_remove=None, specific_years=None, specific_months=None, specific_days=None, specific_filters=None):
-    """Drops nights (1) in year 1970, and (2) with specific objects (ie, SN or GW followup which are observed for long stretches of time)"""
+def remove_undesired_dates_and_objects(df, objects_to_remove=None, years_keep=None, months_keep=None, days_keep=None, filters_keep=None):
+    """Drops nights (1) not within the years, months, and days specified, and (2) with specific objects (ie, SN or GW followup which are observed for long stretches of time)"""
     if objects_to_remove is None:
         objects_to_remove = ["guide", "DES vvds","J0","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "(outlier)"]
 
-    df = _keep_dates(df, specific_years, specific_months, specific_days, specific_filters)
-    
+    df = _keep_dates(df, years_keep, months_keep, days_keep, filters_keep)
 
     # Some fields are mis-labelled - add '(outlier)' to these object names so that they are treated as separate fields
     df = _remove_object_outliers(df)
