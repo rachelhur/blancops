@@ -297,11 +297,8 @@ class OfflineDataset(torch.utils.data.Dataset):
         return states, bin_states, actions, rewards, dones, action_masks, num_transitions
 
     def _construct_dones(self, num_transitions, next_state_idxs, current_state_idxs):
-        dones = np.zeros(num_transitions, dtype=bool)
-        for i in range(num_transitions):
-            if next_state_idxs[i] not in current_state_idxs:
-                dones[i] = True
-        dones[-1] = True # Failsafe
+        dones = ~np.isin(next_state_idxs, current_state_idxs)
+        dones[-1] = True  # Failsafe
         return dones
 
     def _construct_states(self, df, bin_states, include_bin_features, state_idxs):
@@ -497,32 +494,3 @@ class OfflineDataset(torch.utils.data.Dataset):
             drop_last=False, num_workers=num_workers, pin_memory=pin_memory,
         )
         return train_loader, val_loader
-
-def _validate_field_lookup_df(field_lookup_df):
-    required_columns = ['field_id', 'exptime', 'ra', 'dec', 'n_visits', 'filter'] # 'dithers','object', 'priorities'
-    missing_cols = [col for col in required_columns if col not in field_lookup_df.columns]
-    
-    if missing_cols:
-        error_msg = f"field_lookup is missing required columns: {missing_cols}"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-
-def save_field_lookup(field_lookup_df, outdir):
-    outdir = Path(outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    
-    _validate_field_lookup_df(field_lookup_df)
-    
-    outpath = outdir / "field_lookup.json"
-    field_lookup_df.to_json(outpath, indent=2, orient='columns')
-    logger.info(f"Successfully saved field lookup to {outpath}")
-
-def load_field_lookup_df(filepath):
-    filepath = Path(filepath)
-    if not filepath.exists():
-        raise FileNotFoundError(f"Cannot load field lookup. File not found: {filepath}")
-
-    field_lookup_df = pd.read_json(filepath)
-    _validate_field_lookup_df(field_lookup_df)
-    return field_lookup_df
-
