@@ -254,10 +254,8 @@ class StateNormalizer:
             state[..., m['rel']] = state[..., m['rel']] / std
 
         if self.fix_nans:
-            state[backend.isnan(state)] = self.sentinel_value
             nan_mask = backend.isnan(state)
             state[nan_mask] = self.sentinel_value
-            assert backend.isnan(state).sum() == 0, f"State contains nans"
 
         return state, nan_mask
 
