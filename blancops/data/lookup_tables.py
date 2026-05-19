@@ -383,7 +383,7 @@ class LookupTables:
                 values="count", aggfunc="sum",
             )
             .reindex(index=fields.index, columns=range(nfilters), fill_value=0)
-            .to_numpy(dtype=np.int32)
+            .to_numpy(dtype=np.int64)
         )
         fidfilt_exptime = (
             df.pivot_table(
@@ -391,7 +391,7 @@ class LookupTables:
                 values="exptime", aggfunc="first",
             )
             .reindex(index=fields.index, columns=range(nfilters), fill_value=0)
-            .to_numpy(dtype=np.float32)
+            .to_numpy(dtype=np.int64)
         )
  
         resolved_dir = (
@@ -420,11 +420,11 @@ class LookupTables:
         # Coerce arrays to canonical dtype/layout
         object.__setattr__(
             self, "target_fidfilt_counts",
-            np.ascontiguousarray(self.target_fidfilt_counts, dtype=np.int32),
+            np.ascontiguousarray(self.target_fidfilt_counts, dtype=np.int64),
         )
         object.__setattr__(
             self, "fidfilt_exptime",
-            np.ascontiguousarray(self.fidfilt_exptime, dtype=np.float32),
+            np.ascontiguousarray(self.fidfilt_exptime, dtype=np.float64),
         )
  
         # Validate fields index is 0..N-1 contiguous (required so that

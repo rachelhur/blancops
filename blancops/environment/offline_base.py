@@ -59,6 +59,7 @@ class OfflineBlancoEnvBase(BaseBlancoEnv):
     def _begin_episode(self) -> None:
         self._night_idx = -1
         self._start_new_night()
+        print(f"OfflineBlancoEnvBase._begin_episode(): Night 0 self._ot_at_sunset = {self._ot_at_sunset}")
  
     def _advance_after_action(self, action: dict) -> None:
         bin_num = int(action["bin"])
@@ -75,8 +76,8 @@ class OfflineBlancoEnvBase(BaseBlancoEnv):
             self._ts += self._get_exposure_time(field_id=self._field_id)
         else:
             last_field_id = self._field_id
-            exptime = self._get_exposure_time(field_id=field_id, filter_idx=filter_idx)
-            slew_time = self._get_slew_time(last_field_id, field_id)
+            exptime = float(self._get_exposure_time(field_id=field_id, filter_idx=filter_idx))
+            slew_time = float(self._get_slew_time(last_field_id, field_id))
             self._ts += exptime + slew_time
             
             # _record_visit() lives on BaseBlancoEnv, and translates the action's filter_idx
@@ -115,6 +116,7 @@ class OfflineBlancoEnvBase(BaseBlancoEnv):
         self._sunset_ts = cfg["sunset_ts"]
         self._sunrise_ts = cfg["sunrise_ts"]
         self._night_end_ts = cfg["end_ts"]
+        self._ot_at_sunset = cfg["ot_at_sunset"]
  
         self._apply_state_snapshot(
             self._build_night_start_snapshot(self._night_idx)
@@ -123,5 +125,6 @@ class OfflineBlancoEnvBase(BaseBlancoEnv):
         logger.info(
             f"Night {self._night_idx+1}/{self.max_nights}: "
             f"start_ts={self._ts}, sunset={self._sunset_ts}, "
-            f"sunrise={self._sunrise_ts}, end={self._night_end_ts}"
+            f"sunrise={self._sunrise_ts}, end={self._night_end_ts}, "
+            f"ot_at_sunset={self._ot_at_sunset}"
         )

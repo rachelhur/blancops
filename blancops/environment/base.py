@@ -40,6 +40,7 @@ from blancops.data.features.glob_features import (
     compute_global_time_only_features,
     compute_global_pointing_features,
     calc_urgency,
+    compute_global_tracker_features,
 )
 from blancops.data.features.normalizations import StateNormalizer, apply_cyclical_features, build_normalizer_kwargs, normalize_timestamp, setup_feature_names
 from blancops.environment.survey_tracker import SurveyProgressTracker
@@ -65,7 +66,8 @@ class StateSnapshot:
     bin_num: int = ZENITH_BIN_NUM
     filter_idx: int = ZENITH_FILTER_IDX
     counts_cur : Optional[np.ndarray] = None # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
-    last_visit_ts_cur: Optional[np.ndarray] = None    # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
+    last_visit_ot_cur: Optional[np.ndarray] = None    # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
+    # last_visit_ot_cur: Optional[np.ndarray] = None    # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
     
 
 
@@ -83,10 +85,13 @@ class StateSnapshot:
 # Features not listed here are assumed to be unconditionally computable.
 
 _FILTER_NAMES = list(FILTER2IDX.keys())
- 
+
+
 _FEATURE_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
     "fwhm": [("hook", "_get_fwhm")],
     "t_survey": [("hook", "_get_t_survey")],
+    # Works in both 1D and 2D tracker modes — only attr check.
+    "global_mean_tiling": [("attr", "_survey_progress_tracker")],
     **{
         f"survey_progress_{f}": [
             ("attr", "_survey_progress_tracker"),
@@ -103,7 +108,15 @@ _FEATURE_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
         ]
         for f in _FILTER_NAMES
     },
+    **{
+        f"global_mean_tiling_{f}": [
+            ("attr", "_survey_progress_tracker"),
+            ("flag", "do_filt"),
+        ]
+        for f in _FILTER_NAMES
+    },
 }
+
 
 class BaseBlancoEnv(gym.Env, ABC):
     """Abstract base for all Blanco environments.
@@ -197,7 +210,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         # Survey progress tracker - built once at construction so that concrete subclasses can validate it
         target_counts = self.lookups.target_fidfilt_counts if self.do_filt else self.lookups.target_fid_counts
         self._survey_progress_tracker = SurveyProgressTracker(target_counts=target_counts)
-        self._last_visit_ts = np.full(
+        self._last_visit_ot = np.full(
             self._survey_progress_tracker.raw_counts.shape,
             np.nan, dtype=np.float64,
         )
@@ -222,6 +235,7 @@ class BaseBlancoEnv(gym.Env, ABC):
     # -----------------------------------------------------------------------
  
     def reset(self, seed=None, options=None):
+        logger.debug(f"Reset environment {self.__class__.__name__} with seed {seed}")
         super().reset(seed=seed)
  
         # Zero out running counts by default. _begin_episode() may overwrite
@@ -338,15 +352,15 @@ class BaseBlancoEnv(gym.Env, ABC):
                 f"match tracker shape {tracker_shape}"
             )
             self._survey_progress_tracker.set_counts(snap.counts_cur)
-        if snap.last_visit_ts_cur is not None:
-            expected_shape = self._last_visit_ts.shape
-            assert snap.last_visit_ts_cur.shape == expected_shape, (
-                f"snapshot last_visit_ts_cur shape {snap.last_visit_ts_cur.shape} "
+        if snap.last_visit_ot_cur is not None:
+            expected_shape = self._last_visit_ot.shape
+            assert snap.last_visit_ot_cur.shape == expected_shape, (
+                f"snapshot last_visit_ts_cur shape {snap.last_visit_ot_cur.shape} "
                 f"does not match {expected_shape}"
             )
-            self._last_visit_ts[:] = snap.last_visit_ts_cur
+            self._last_visit_ot[:] = snap.last_visit_ot_cur
         
- 
+    
     def _record_visit(self, field_id: int, filter_idx: int = None) -> None:
         """Bookkeeping after a successful observation.
  
@@ -356,14 +370,15 @@ class BaseBlancoEnv(gym.Env, ABC):
         concrete subclass for every non-wait action.
         """
         self._survey_progress_tracker.increment(
-            field_id = field_id, 
-            filter_idx = filter_idx if self.do_filt else None
-            )
-
+            field_id=field_id,
+            filter_idx=filter_idx if self.do_filt else None,
+        )
+        ot_now = float(self._ot_at_sunset + (self._ts - self._sunset_ts))
         if self.do_filt:
-            self._last_visit_ts[field_id, filter_idx] = self._ts
+            self._last_visit_ot[field_id, filter_idx] = ot_now
         else:
-            self._last_visit_ts[field_id] = self._ts
+            self._last_visit_ot[field_id] = ot_now
+        
     # -----------------------------------------------------------------------
     # Concrete helpers for setting action mask constraints
     # -----------------------------------------------------------------------
@@ -401,7 +416,6 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._update_action_masks()
         return self.get_info()
 
-    
     def compute_action_mask(self) -> np.ndarray:
         """Recompute action mask under current constraints. Use after set_constraints."""
         return self._update_action_masks()
@@ -467,7 +481,7 @@ class BaseBlancoEnv(gym.Env, ABC):
     def _get_slew_time(self, last_fid, current_fid, overhead=30.0):
         """Calculates time to move telescope between fields."""
         if last_fid == ZENITH_FIELD_ID:
-            blanco = ephemerides.blanco_observer(time=self._ts)
+            blanco = ephemerides.blanco_observer(time=float(self._ts))
             last_pos = np.array(blanco.radec_of('0', '90'))
         else:
             last_pos = self._ra_arr[last_fid], self._dec_arr[last_fid]
@@ -510,7 +524,7 @@ class BaseBlancoEnv(gym.Env, ABC):
             float: The calculated reward value.
         '''
         if getattr(self, "_reward_func", None) is None:
-            return 1
+            return 1.0
         return self._reward_func(last_field, next_field)    
     
     def _calculate_global_features(self) -> list:
@@ -592,28 +606,57 @@ class BaseBlancoEnv(gym.Env, ABC):
         if t_survey is not None:
             new_features["t_survey"] = t_survey
 
-        # 6. Tracker-derived per-filter features.
+        # 6. Tracker-derived features. The dispatcher in glob_features.py decides
+        # which families to compute based on what's in self.global_feature_names;
+        # we just merge the result. Adding a new per-filter family does not
+        # require any change here.
         tracker = self._survey_progress_tracker
-        if tracker._is_field_filter:
-            survey_night_idx = self._get_survey_night_idx()
-            survey_nights_total = self._get_survey_nights_total()
-            for filt, idx in FILTER2IDX.items():
-                p_name = f"survey_progress_{filt}"
-                u_name = f"urgency_{filt}"
-                if p_name in self.global_feature_names:
-                    new_features[p_name] = tracker.get_filter_progress(idx)
-                if u_name in self.global_feature_names:
-                    visits = int(tracker.raw_counts[:, idx].sum())
-                    target = int(tracker.target_counts[:, idx].sum())
-                    if target == 0:
-                        new_features[u_name] = 0
-                    else:
-                        new_features[u_name] = calc_urgency(
-                            filter_counts_arr=visits,
-                            filter_counts_max=target,
-                            survey_night_indices=survey_night_idx,
-                            survey_nights_max=survey_nights_total,
-                        )
+        ctx = {
+            "tracker": tracker,
+            "idx2filter": self.idx2filter,
+            # Eagerly resolve the hooks the urgency family needs. Cheap, and
+            # keeps `compute_global_tracker_features` free of env coupling.
+            # These will be None for envs that don't override the hooks, but
+            # the urgency family won't be invoked unless an urgency_* feature
+            # is requested, and _validate_feature_config has already enforced
+            # that those envs DO override the hooks.
+            "survey_night_idx": (
+                self._get_survey_night_idx() if tracker._is_field_filter else None
+            ),
+            "survey_nights_total": (
+                self._get_survey_nights_total() if tracker._is_field_filter else None
+            ),
+        }
+        new_features.update(
+            compute_global_tracker_features(
+                requested_names=self.global_feature_names,
+                tracker=tracker,
+                ctx=ctx,
+            )
+        )
+
+        
+        # tracker = self._survey_progress_tracker
+        # if tracker._is_field_filter:
+        #     survey_night_idx = self._get_survey_night_idx()
+        #     survey_nights_total = self._get_survey_nights_total()
+        #     for filt, idx in FILTER2IDX.items():
+        #         p_name = f"survey_progress_{filt}"
+        #         u_name = f"urgency_{filt}"
+        #         if p_name in self.global_feature_names:
+        #             new_features[p_name] = tracker.get_filter_progress(idx)
+        #         if u_name in self.global_feature_names:
+        #             visits = int(tracker.raw_counts[:, idx].sum())
+        #             target = int(tracker.target_counts[:, idx].sum())
+        #             if target == 0:
+        #                 new_features[u_name] = 0
+        #             else:
+        #                 new_features[u_name] = calc_urgency(
+        #                     filter_counts_arr=visits,
+        #                     filter_counts_max=target,
+        #                     survey_night_indices=survey_night_idx,
+        #                     survey_nights_max=survey_nights_total,
+        #                 )
                     # print(u_name, new_features[u_name])
 
         # 7. t_night from cached night boundaries.
@@ -696,6 +739,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         if self._has_historical_features:
             bins_per_field, v_mask = self._compute_bin_assignments(timestamp)
             current_counts, target_counts = self._tracker_counts_for_history(tracker)
+            ot_now = self._ot_at_sunset + (self._ts - self._sunset_ts)
             features.update(
                 compute_bin_progress_features(
                     current_counts=current_counts,
@@ -705,8 +749,9 @@ class BaseBlancoEnv(gym.Env, ABC):
                     nbins=self.nbins,
                     do_filt=self.do_filt,
                     idx2filter=self.idx2filter,
-                    timestamp=timestamp,
-                    last_visit_timestamps=self._last_visit_ts
+                    timestamp=ot_now,
+                    last_visit_timestamps=self._last_visit_ot,
+                    t_since_last_visit_divisor=self.lookups.total_ot_sec
                 )
             )
         # for key in self.bin_feature_names:
@@ -844,11 +889,6 @@ class BaseBlancoEnv(gym.Env, ABC):
         
         from datetime import datetime, timezone
         ts_dt = datetime.fromtimestamp(self._ts, tz=timezone.utc)
-        # logger.info(
-        #     f'_ts={self._ts:.1f} ({ts_dt.isoformat()}), '
-        #     f'sunset={self._sunset_ts:.1f}, sunrise={self._sunrise_ts:.1f}, '
-        #     f'night_end={self._night_end_ts:.1f}'
-        # )
 
         sun_radec = ephemerides.get_source_ra_dec('sun', time=self._ts)
         _, sun_el = ephemerides.equatorial_to_topographic(sun_radec[0], sun_radec[1], time=self._ts)
@@ -963,11 +1003,6 @@ class BaseBlancoEnv(gym.Env, ABC):
             )
  
     def _is_hook_overridden(self, hook_name: str) -> bool:
-        base_fn = BaseBlancoEnv.__dict__.get(hook_name)
-        if base_fn is None:
-            return True
-        actual_fn = getattr(type(self), hook_name, None)
-        return actual_fn is not base_fn
         base_fn = BaseBlancoEnv.__dict__.get(hook_name)
         if base_fn is None:
             return True

@@ -40,7 +40,7 @@ from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.configs.constants import (
-    BLANCO_LON, ZENITH_BIN_NUM, ZENITH_FIELD_ID, ZENITH_WAVELENGTH,
+    BLANCO_LON, IDX2FILTER, ZENITH_BIN_NUM, ZENITH_FIELD_ID, ZENITH_WAVELENGTH,
     FILTER2WAVE, FILTERWAVENORM, FILTER2IDX, ZENITH_FILTER,
     ZENITH_AZ, ZENITH_EL, ZENITH_AIRMASS, ZENITH_ZD, ZENITH_HA, ZENITH_OBJECT
 )
@@ -175,6 +175,120 @@ def compute_global_mean_tiling_features(running_counts, target_counts) -> dict:
 
     return features
 
+
+def compute_global_survey_progress_features(tracker, idx2filter=None) -> dict:
+    """Per-filter fractional progress, summed across fields.
+
+    Returns {'survey_progress_{filt}': float} for every filter in `idx2filter`.
+    Requires a field-filter (2D) tracker. Returns an empty dict if the tracker
+    is field-only — callers requesting these features in 1D mode should be
+    caught by `_validate_feature_config` upstream.
+    """
+    if idx2filter is None:
+        idx2filter = IDX2FILTER
+    if not tracker._is_field_filter:
+        return {}
+    return {
+        f"survey_progress_{filt}": tracker.get_filter_progress(fidx)
+        for fidx, filt in idx2filter.items()
+    }
+
+
+def compute_global_urgency_features(
+    tracker, survey_night_idx, survey_nights_total, idx2filter=None,
+) -> dict:
+    """Per-filter urgency = remaining-progress / remaining-time.
+
+    Mirrors the inline computation in the previous env loop. Returns
+    {'urgency_{filt}': float} for every filter; 0.0 for filters with
+    target == 0 (matches the prior live-env behavior).
+    """
+    if idx2filter is None:
+        idx2filter = IDX2FILTER
+    if not tracker._is_field_filter:
+        return {}
+
+    out = {}
+    raw = tracker.raw_counts
+    tgt = tracker.target_counts
+    for fidx, filt in idx2filter.items():
+        target = int(tgt[:, fidx].sum())
+        if target == 0:
+            out[f"urgency_{filt}"] = 0.0
+            continue
+        visits = int(raw[:, fidx].sum())
+        out[f"urgency_{filt}"] = calc_urgency(
+            filter_counts_arr=visits,
+            filter_counts_max=target,
+            survey_night_indices=survey_night_idx,
+            survey_nights_max=survey_nights_total,
+        )
+    return out
+
+# Registry of per-filter / tracker-derived global feature families.
+# To add a new family:
+#   1. Write `compute_global_<thing>_features(...)` above.
+#   2. Add an entry here with the requested-name prefix and a small lambda
+#      that pulls its inputs out of `ctx`.
+# Nothing in base.py needs to change.
+_GLOBAL_TRACKER_FAMILIES = [
+    {
+        "prefix": "survey_progress",
+        "needs_tracker_2d": True,
+        "fn": lambda ctx: compute_global_survey_progress_features(
+            tracker=ctx["tracker"], idx2filter=ctx["idx2filter"],
+        ),
+    },
+    {
+        "prefix": "urgency",
+        "needs_tracker_2d": True,
+        "fn": lambda ctx: compute_global_urgency_features(
+            tracker=ctx["tracker"],
+            survey_night_idx=ctx["survey_night_idx"],
+            survey_nights_total=ctx["survey_nights_total"],
+            idx2filter=ctx["idx2filter"],
+        ),
+    },
+    {
+        "prefix": "global_mean_tiling",
+        "needs_tracker_2d": False,  # works for 1D too
+        "fn": lambda ctx: compute_global_mean_tiling_features(
+            running_counts=ctx["tracker"].raw_counts,
+            target_counts=ctx["tracker"].target_counts,
+        ),
+    },
+]
+
+
+def compute_global_tracker_features(requested_names, tracker, ctx, force_all=False) -> dict:
+    """Drive every tracker-derived feature family.
+
+    For each family in `_GLOBAL_TRACKER_FAMILIES`, check whether any
+    requested feature name starts with the family's prefix; if so, call
+    the family's compute function with `ctx` and merge the result.
+
+    Skips families that need a 2D tracker when `tracker._is_field_filter`
+    is False, so 1D configs don't blow up requesting context they can't
+    populate.
+
+    `ctx` is a dict carrying everything any family might need:
+    `tracker`, `idx2filter`, and lazily-evaluated hooks like
+    `survey_night_idx` / `survey_nights_total`. Pass them eagerly from
+    the env; this function never calls back into env hooks.
+    """
+    requested_set = set(requested_names)
+    out = {}
+    for fam in _GLOBAL_TRACKER_FAMILIES:
+        wanted = force_all or any(
+            n == fam["prefix"] or n.startswith(f"{fam['prefix']}_")
+            for n in requested_names
+        )
+        if not wanted:
+            continue
+        if fam["needs_tracker_2d"] and not tracker._is_field_filter:
+            continue
+        out.update(fam["fn"](ctx))
+    return out
 # ============================================================================
 # GlobalFeatureEngineer — offline batch pipeline.
 # ============================================================================

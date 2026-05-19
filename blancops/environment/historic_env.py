@@ -85,6 +85,7 @@ class HistoricBlancoEnv(OfflineBlancoEnvBase):
         last_row = night_df.iloc[-1]
 
         sunset_ts, sunrise_ts = get_night_boundaries(first_row["night"], self.sun_el_limit)
+        # self._ot_at_sunset: float | None = None,
 
         # Full-survey night index from lookups, not from a preprocessing
         # column. The preprocessing `night_idx` (if present) is subset-local
@@ -102,15 +103,24 @@ class HistoricBlancoEnv(OfflineBlancoEnvBase):
         filter_idx = int(first_row["filter_idx"])
         bin_num = int(first_row["bin"])
 
+        night2ot = self.lookups.night2ot_clock_seconds
+        if night2ot is None:
+            raise ValueError(
+                "HistoricBlancoEnv requires lookups.night2ot_clock_seconds for "
+                "OT-clock staleness; rebuild lookups via build_train_lookups.py."
+            )
+
         return {
-            "start_ts": first_row["timestamp"],
-            "end_ts": last_row["timestamp"],
-            "sunset_ts": sunset_ts,
+            "start_ts":   first_row["timestamp"],
+            "end_ts":     last_row["timestamp"],
+            "sunset_ts":  sunset_ts,
             "sunrise_ts": sunrise_ts,
-            "field_id": field_id,
+            "ot_at_sunset": int(night2ot[first_row["night"]]),
+            "field_id":   field_id,
             "filter_idx": filter_idx,
-            "bin_num": bin_num
+            "bin_num":    bin_num,
         }
+
  
     def _build_night_start_snapshot(self, night_idx: int) -> StateSnapshot:
         night_id = self._night_keys[night_idx]
@@ -119,18 +129,29 @@ class HistoricBlancoEnv(OfflineBlancoEnvBase):
         if self._night_start_bin_states is not None and self.include_bin_features:
             self._bin_state = self._night_start_bin_states[night_idx]
 
-        history_lookup = (
+        counts_lookup = (
             self.lookups.night2fidfilt_visit_hist
             if self.do_filt
             else self.lookups.night2fid_visit_hist
         )
+        last_visit_ot_lookup = (
+            self.lookups.night2fidfilt_last_visit_ot
+            if self.do_filt
+            else self.lookups.night2fid_last_visit_ot
+        )
+        if last_visit_ot_lookup is None:
+            raise ValueError(
+                "HistoricBlancoEnv requires night2{fid,fidfilt}_last_visit_ot in "
+                "lookups for OT-clock staleness; rebuild lookups."
+            )
 
         return StateSnapshot(
             timestamp=night_cfg["start_ts"],
             field_id=night_cfg["field_id"],
             bin_num=night_cfg["bin_num"],
             filter_idx=night_cfg["filter_idx"],
-            counts_cur=history_lookup[night_id].copy(),
+            counts_cur=counts_lookup[night_id].copy(),
+            last_visit_ot_cur=last_visit_ot_lookup[night_id].copy().astype(np.float64),
         )
 
     # -----------------------------------------------------------------------

@@ -147,18 +147,23 @@ def compute_bin_progress_features(
     The caller is responsible for converting NaN -> external sentinel via
     ``replace_nan_with_sentinel`` at the end of the pipeline.
  
-    Args:
-        current_counts: ``(nfields,)`` for non-filter or ``(nfields, nfilters)``
+    Args
+    ====
+    current_counts: ``(nfields,)`` for non-filter or ``(nfields, nfilters)``
             for filter mode — current survey-wide visit counts.
-        target_counts: same shape as ``current_counts`` — survey targets.
-        bins_per_field: ``(nfields,)`` int — bin index of each field at this
-            time. May contain ``ZENITH_BIN_NUM`` for invalid mappings.
-        v_mask: ``(nfields,)`` bool — fields to include (above-horizon AND
-            in a valid bin).
-        nbins: total number of bins on the hpGrid.
-        do_filt: True iff filter is part of the action space; controls whether
-            per-filter outputs are produced.
-        idx2filter: filter idx -> name mapping. Defaults to ``IDX2FILTER``.
+    target_counts: same shape as ``current_counts`` — survey targets.
+    bins_per_field: ``(nfields,)`` int — bin index of each field at this
+        time. May contain ``ZENITH_BIN_NUM`` for invalid mappings.
+    v_mask: ``(nfields,)`` bool — fields to include (above-horizon AND
+        in a valid bin).
+    nbins: total number of bins on the hpGrid.
+    do_filt: True iff filter is part of the action space; controls whether
+        per-filter outputs are produced.
+    idx2filter: filter idx -> name mapping. Defaults to ``IDX2FILTER``.
+    timestamp:
+    last_visit_timestamps:
+    t_since_last_visit_divsor: 
+        
  
     Returns:
         dict with ``num_unvisited_fields``,
@@ -275,18 +280,6 @@ def compute_bin_progress_features(
                 "t_since_last_visit",
             )
         return features
-    # if not do_filt:
-    #     if timestamp is not None and last_visit_timestamps is not None:
-    #         if last_visit_timestamps.ndim == 2:
-    #             # Aggregate to per-field: most-recent visit across filters
-    #             with warnings.catch_warnings():
-    #                 warnings.simplefilter("ignore", category=RuntimeWarning)
-    #                 last_visit_field = np.nanmax(last_visit_timestamps, axis=1)
-    #         else:
-    #             last_visit_field = last_visit_timestamps
-    #         _assign_staleness(last_visit_field, in_plan[v_mask], "t_since_last_visit")
-            
-    #     return features
  
     # Per-filter family of features
     nfilters = current_counts.shape[1]
@@ -302,14 +295,6 @@ def compute_bin_progress_features(
         where=in_ff_plan,
     )
  
-    # for f, filt_name in idx2filter.items():
-    #     if timestamp is not None and last_visit_timestamps is not None:
-    #         _assign_staleness(
-    #             last_visit_timestamps[v_mask, f],
-    #             in_ff_plan[:, f],
-    #             f"t_since_last_visit_{filt_name}",
-    #         )
-            
     incomplete_ff = v_cur_ff < v_tgt_ff   # (n_visible_fields, nfilters)
 
     for f, filt_name in idx2filter.items():
