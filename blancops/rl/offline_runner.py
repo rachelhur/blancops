@@ -66,9 +66,13 @@ class OfflineRunner:
         np.savez_compressed(path, **arr_dict)
         return path
     
-    def _update_current_night_dict(self, current_night_dict, obs, info, field_id, bin_idx, filter_idx, reward):
-        current_night_dict['glob_observations'].append(obs['global_state'])
-        current_night_dict['bin_observations'].append(obs['bin_state'])
+    def _update_current_night_dict(self, current_night_dict, obs, info,
+                                field_id, bin_idx, filter_idx, reward):
+        glob = self._restore_nans(obs['global_state'], info.get('glob_nan_mask'))
+        binf = self._restore_nans(obs['bin_state'],    info.get('bin_nan_mask'))
+
+        current_night_dict['glob_observations'].append(glob)
+        current_night_dict['bin_observations'].append(binf)
         current_night_dict['rewards'].append(reward)
         current_night_dict['timestamp'].append(info.get('timestamp'))
         current_night_dict['field_id'].append(field_id)
@@ -76,17 +80,29 @@ class OfflineRunner:
         current_night_dict['filter_idx'].append(filter_idx)
 
     def _log_zenith_state(self, obs, info):
-        new_night_dict = {
-            'glob_observations': [obs['global_state']],
-            'bin_observations': [obs['bin_state']],
-            'rewards': [0], # Re-initialize starting reward to 0
-            'timestamp': [info.get('timestamp')],
-            'field_id': [ZENITH_FIELD_ID],     # Reset to Zenith
-            'bin': [ZENITH_BIN_NUM],           # Reset to Zenith
-            'filter_idx': [ZENITH_FILTER_IDX]  # Reset to Zenith
+        return {
+            'glob_observations': [self._restore_nans(obs['global_state'], info.get('glob_nan_mask'))],
+            'bin_observations':  [self._restore_nans(obs['bin_state'],    info.get('bin_nan_mask'))],
+            'rewards':    [0],
+            'timestamp':  [info.get('timestamp')],
+            'field_id':   [ZENITH_FIELD_ID],
+            'bin':        [ZENITH_BIN_NUM],
+            'filter_idx': [ZENITH_FILTER_IDX],
         }
-        return new_night_dict
-    
+
+    @staticmethod
+    def _restore_nans(arr, mask):
+        """Return a copy of arr with sentinel positions (per mask) set to NaN.
+
+        Defensive copy: arr is shared with the env's internal state, so in-place
+        mutation would corrupt the next step's obs.
+        """
+        if arr is None or mask is None or not mask.any():
+            return arr.copy() if arr is not None else arr
+        out = arr.astype(np.float32, copy=True)
+        out[mask] = np.nan
+        return out
+
     def run(self, env):
         self.policy.eval()
         episode_rewards = []

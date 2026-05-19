@@ -206,6 +206,9 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._field_bins_radec_v_mask: np.ndarray | None = None
         self._bins_membership_arr: list[np.ndarray] | None = None
         self._active_bins_s: np.ndarray | None = None
+        
+        self._last_glob_nan_mas: np.ndarray | None = None
+        self._last_bin_nan_mask: np.ndarray | None = None
 
         # Survey progress tracker - built once at construction so that concrete subclasses can validate it
         target_counts = self.lookups.target_fidfilt_counts if self.do_filt else self.lookups.target_fid_counts
@@ -426,24 +429,27 @@ class BaseBlancoEnv(gym.Env, ABC):
     def get_obs(self) -> dict:
         """Normalizes and returns the current state"""
         global_state = np.array(self._global_state, dtype=np.float32)
-        global_state_normed, _ = self.global_normalizer.transform(
+        global_state_normed, glob_nan_mask = self.global_normalizer.transform(
             global_state,
             self._z_score_stats['global_features'],
             self._rel_norm_stats['global_features']
         )
         if self.include_bin_features:
             bin_state_arr = np.array(self._bin_state, dtype=np.float32)
-            bin_state_normed, _ = self.bin_normalizer.transform(
+            bin_state_normed, bin_nan_mask = self.bin_normalizer.transform(
                 bin_state_arr,
                 self._z_score_stats['bin_features'],
                 self._rel_norm_stats['bin_features']
             )
         else:
             bin_state_normed = np.array([], dtype=np.float32)
+            glob_nan_mask = None
 
         self._global_state = global_state_normed
         self._bin_state = bin_state_normed
-        
+        self._last_glob_nan_mask = glob_nan_mask    # stash for get_info
+        self._last_bin_nan_mask  = bin_nan_mask
+    
         return {"global_state": self._global_state, "bin_state": self._bin_state}
     
     def get_info(self) -> dict:
@@ -465,6 +471,8 @@ class BaseBlancoEnv(gym.Env, ABC):
             'night_idx': int(self._night_idx),
             'bin': int(self._bin_num),
             'field_id': int(self._field_id),
+            'glob_nan_mask': self._last_glob_nan_mask,
+            'bin_nan_mask':  self._last_bin_nan_mask,
         }
         return info_dict
     

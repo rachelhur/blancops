@@ -253,10 +253,10 @@ class StateNormalizer:
             _, std = self._extract_stats_arrays(rel_stats_dict, self.active_features['rel'], backend, state)
             state[..., m['rel']] = state[..., m['rel']] / std
 
+        nan_mask = backend.isnan(state) if self.fix_nans else None
         if self.fix_nans:
-            nan_mask = backend.isnan(state)
             state[nan_mask] = self.sentinel_value
-
+            assert backend.isnan(state).sum() == 0, "State contains nans"
         return state, nan_mask
 
     def _apply_stateless_norms(self, state, backend, m):
@@ -303,6 +303,240 @@ class StateNormalizer:
             )
         return np.array(means, dtype=np.float32), np.array(stds, dtype=np.float32)
     
+    def inverse_transform(self, state, z_stats_dict=None, rel_stats_dict=None, nan_mask=None):
+        """
+        Reverses fit_transform / transform.
+
+        Args:
+            state: Normalized state (modified in place).
+            z_stats_dict: Stats from forward z-score. Required iff any 'z' features are active.
+            rel_stats_dict: Stats from forward rel norm. Required iff any 'rel' features are active.
+            nan_mask: Optional boolean mask of where sentinels were written in the forward pass.
+                    If provided (and self.fix_nans), those positions are restored to NaN before
+                    any inverse arithmetic runs.
+
+        Returns:
+            state: Denormalized state.
+
+        Notes:
+            - sin inverse is lossy: arcsin only recovers angles in [-pi/2, pi/2].
+            - Cyclical (cos, sin) expansion is NOT undone here.
+            - Assumes each feature appears in at most one norm-type mask.
+        """
+        is_torch, backend, m = self._get_backend(state)
+
+        # 1. Restore NaNs FIRST so sentinels aren't fed into exp/multiply/etc.
+        if self.fix_nans and nan_mask is not None:
+            if is_torch and not torch.is_tensor(nan_mask):
+                nan_mask = torch.tensor(nan_mask, dtype=torch.bool, device=state.device)
+            state[nan_mask] = float('nan')
+
+        # 2. Undo stateful norms (reverse of forward order: forward was z then rel)
+        if self.do_rel and m['rel'].sum() > 0:
+            if rel_stats_dict is None:
+                raise ValueError("rel_stats_dict is required to invert rel normalization.")
+            _, std = self._extract_stats_arrays(rel_stats_dict, self.active_features['rel'], backend, state)
+            state[..., m['rel']] = state[..., m['rel']] * std
+
+        if self.do_z and m['z'].sum() > 0:
+            if z_stats_dict is None:
+                raise ValueError("z_stats_dict is required to invert z-score normalization.")
+            mean, std = self._extract_stats_arrays(z_stats_dict, self.active_features['z'], backend, state)
+            state[..., m['z']] = state[..., m['z']] * std + mean
+
+        # 3. Undo stateless norms (masks are disjoint per feature, so within-step order doesn't matter)
+        self._inverse_stateless_norms(state, backend, m, is_torch)
+
+        return state
+
+    def _inverse_stateless_norms(self, state, backend, m, is_torch):
+        if self.do_frac and m['frac'].sum() > 0:
+            state[..., m['frac']] = state[..., m['frac']] / 2 + 0.5
+        if self.do_log and m['log'].sum() > 0:
+            state[..., m['log']] = backend.exp(state[..., m['log']]) - 1e-9
+        if self.do_sin and m['sin'].sum() > 0:
+            # Clamp to [-1, 1] to absorb numerical drift, then arcsin.
+            if is_torch:
+                state[..., m['sin']] = torch.arcsin(torch.clamp(state[..., m['sin']], min=-1.0, max=1.0))
+            else:
+                state[..., m['sin']] = np.arcsin(np.clip(state[..., m['sin']], -1.0, 1.0))
+        
+    def inverse_transform_df(self, df, feature_names=None,
+                            z_stats_dict=None, rel_stats_dict=None):
+        """
+        Inverse-normalize columns of a DataFrame in place.
+
+        Args:
+            df: DataFrame containing normalized columns.
+            feature_names: Iterable restricting which columns are inverted.
+                If None, every active feature whose name matches a column in
+                df will be inverted. Pass the explicit list when df also
+                holds raw-unit columns that must NOT be touched.
+            z_stats_dict, rel_stats_dict: forward-pass stats. Required iff
+                any z/rel-active feature is in the inversion set.
+
+        Caveats:
+            - sin inverse is lossy (arcsin only recovers [-pi/2, pi/2]).
+            - NaN sentinels in the input are NOT recovered as NaN; they
+            propagate as ordinary numbers through the inverse. If the
+            runner ever saves a nan_mask per column, plumb it in and set
+            those cells to NaN before any arithmetic.
+            - Cyclical (cos, sin) expansion is not undone here.
+            - Assumes each feature appears in at most one norm-type list.
+        """
+        if feature_names is None:
+            target = None  # match anything
+        else:
+            target = set(feature_names)
+
+        def _want(feat):
+            return feat in df.columns and (target is None or feat in target)
+
+        # Reverse forward order: stateful first (rel, then z), then stateless.
+        if self.do_rel:
+            if rel_stats_dict is None and any(_want(f) for f in self.active_features['rel']):
+                raise ValueError("rel_stats_dict required to invert rel-normalized features.")
+            for feat in self.active_features['rel']:
+                if _want(feat):
+                    if feat not in rel_stats_dict:
+                        raise KeyError(f"rel_stats_dict missing '{feat}'")
+                    df[feat] = df[feat].to_numpy() * rel_stats_dict[feat]['std']
+
+        if self.do_z:
+            if z_stats_dict is None and any(_want(f) for f in self.active_features['z']):
+                raise ValueError("z_stats_dict required to invert z-normalized features.")
+            for feat in self.active_features['z']:
+                if _want(feat):
+                    if feat not in z_stats_dict:
+                        raise KeyError(f"z_stats_dict missing '{feat}'")
+                    s = z_stats_dict[feat]['std']
+                    m = z_stats_dict[feat]['mean']
+                    df[feat] = df[feat].to_numpy() * s + m
+
+        if self.do_frac:
+            for feat in self.active_features['frac']:
+                if _want(feat):
+                    df[feat] = df[feat].to_numpy() / 2 + 0.5
+
+        if self.do_log:
+            for feat in self.active_features['log']:
+                if _want(feat):
+                    df[feat] = np.exp(df[feat].to_numpy()) - 1e-9
+
+        if self.do_sin:
+            for feat in self.active_features['sin']:
+                if _want(feat):
+                    df[feat] = np.arcsin(np.clip(df[feat].to_numpy(), -1.0, 1.0))
+        
+        return df
+
+    def inverse_transform_df(self, df, feature_names=None,
+                            z_stats_dict=None, rel_stats_dict=None, drop_cyclical_components=False):
+        """
+        Inverse-normalize columns of a DataFrame in place.
+
+        Args:
+            df: DataFrame containing normalized columns.
+            feature_names: Iterable restricting which columns are inverted.
+                If None, every active feature whose name matches a column in
+                df will be inverted. Pass the explicit list when df also
+                holds raw-unit columns that must NOT be touched.
+            z_stats_dict, rel_stats_dict: forward-pass stats. Required iff
+                any z/rel-active feature is in the inversion set.
+
+        Caveats:
+            - sin inverse is lossy (arcsin only recovers [-pi/2, pi/2]).
+            - NaN sentinels in the input are NOT recovered as NaN; they
+            propagate as ordinary numbers through the inverse. If the
+            runner ever saves a nan_mask per column, plumb it in and set
+            those cells to NaN before any arithmetic.
+            - Cyclical (cos, sin) expansion is not undone here.
+            - Assumes each feature appears in at most one norm-type list.
+        """
+        if feature_names is None:
+            target = None  # match anything
+        else:
+            target = set(feature_names)
+
+        def _want(feat):
+            return feat in df.columns and (target is None or feat in target)
+
+        # Reverse forward order: stateful first (rel, then z), then stateless.
+        if self.do_rel:
+            if rel_stats_dict is None and any(_want(f) for f in self.active_features['rel']):
+                raise ValueError("rel_stats_dict required to invert rel-normalized features.")
+            for feat in self.active_features['rel']:
+                if _want(feat):
+                    if feat not in rel_stats_dict:
+                        raise KeyError(f"rel_stats_dict missing '{feat}'")
+                    df[feat] = df[feat].to_numpy() * rel_stats_dict[feat]['std']
+
+        if self.do_z:
+            if z_stats_dict is None and any(_want(f) for f in self.active_features['z']):
+                raise ValueError("z_stats_dict required to invert z-normalized features.")
+            for feat in self.active_features['z']:
+                if _want(feat):
+                    if feat not in z_stats_dict:
+                        raise KeyError(f"z_stats_dict missing '{feat}'")
+                    s = z_stats_dict[feat]['std']
+                    m = z_stats_dict[feat]['mean']
+                    df[feat] = df[feat].to_numpy() * s + m
+
+        if self.do_frac:
+            for feat in self.active_features['frac']:
+                if _want(feat):
+                    df[feat] = df[feat].to_numpy() / 2 + 0.5
+
+        if self.do_log:
+            for feat in self.active_features['log']:
+                if _want(feat):
+                    df[feat] = np.exp(df[feat].to_numpy()) - 1e-9
+
+        if self.do_sin:
+            for feat in self.active_features['sin']:
+                if _want(feat):
+                    df[feat] = np.arcsin(np.clip(df[feat].to_numpy(), -1.0, 1.0))
+
+        if self.do_cyclical_norm and self.cyclical_feature_names:
+            df = inverse_cyclical_norm(
+                df=df, target=target, cyclical_feature_names=self.cyclical_feature_names,
+                drop_cyclical_components=drop_cyclical_components)
+
+        return df
+    
+def inverse_cyclical_norm(df, cyclical_feature_names, *,
+                          target=None,
+                          drop_cyclical_components=False,
+                          wrap_to_positive=frozenset({'az', 'ra', 'lst'})):
+    cyclical_wrap_to_positive = {'az', 'ra', 'lst'}
+
+    for cyc_base in cyclical_feature_names:
+        for col in list(df.columns):
+            if not col.endswith('_cos'):
+                continue
+            prefix = col[:-len('_cos')]
+            # Match: prefix == cyc_base (e.g. 'lst') OR prefix endswith '_<cyc_base>' (e.g. 'sun_ra').
+            if not (prefix == cyc_base or prefix.endswith(f"_{cyc_base}")):
+                continue
+            sin_col = f"{prefix}_sin"
+            if sin_col not in df.columns:
+                continue
+            if target is not None and col not in target and sin_col not in target:
+                continue
+            # Don't clobber a fresh-computed angle column already in df
+            # (e.g. bin_ra was set by _get_bin_coords before this loop runs).
+            if prefix in df.columns:
+                continue
+
+            angle = np.arctan2(df[sin_col].to_numpy(), df[col].to_numpy())
+            if cyc_base in cyclical_wrap_to_positive:
+                angle = np.mod(angle, 2 * np.pi)
+            df[prefix] = angle
+
+            if drop_cyclical_components:
+                df.drop(columns=[col, sin_col], inplace=True)
+            
+    return df
 
 def normalize_timestamp(timestamp, sunset_timestamp, sunrise_timestamp):
     return (timestamp - sunset_timestamp) / (sunrise_timestamp - sunset_timestamp)
