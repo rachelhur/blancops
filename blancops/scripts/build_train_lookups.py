@@ -57,7 +57,7 @@ def main():
     # --------------------------------------  
     if save:
         _FIGSIZE = (6,6)
-        _ra = (lookups.fields.ra.values + np.pi) % 2 * np.pi - np.pi
+        _ra = (lookups.fields.ra.values + np.pi) % (2 * np.pi) - np.pi
         _dec = lookups.fields.dec.values
         
         # --------------------------------------  
