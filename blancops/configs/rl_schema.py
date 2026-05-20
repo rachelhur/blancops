@@ -9,7 +9,6 @@ from blancops.configs.enums import *
 from blancops.configs.constants import _DEFAULT_NORM_MAPPING, _FILTER_DEP_FEATURE_NAMES, TRAIN_DATA_PATH, _BIN_FEATURES
 from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, _NORM_TYPES
-from blancops.rl.registry import _ACTIVATION_REGISTRY
 
 class ActionConstraints(BaseModel): 
     sun_el_limit: float = -10
@@ -191,6 +190,8 @@ class BaseAlgConfig(BaseModel):
      
     @model_validator(mode='after')
     def validate_activation(self) -> "BaseAlgConfig":
+        # Import here to avoid circular import
+        from blancops.rl.registry import _ACTIVATION_REGISTRY
         valid_activations = _ACTIVATION_REGISTRY.keys()
         if self.activation not in valid_activations:
             raise ValueError(f"activation must be one of {valid_activations}, got {self.activation}")
