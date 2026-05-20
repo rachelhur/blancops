@@ -9,9 +9,9 @@ import time
 
 from blancops.rl.trainer import Trainer
 # from blancops.rl.algorithms.builder import build_algorithm
-from blancops.utils.sys_utils import get_device, seed_everything
-from blancops.io.logger_utils import setup_logger
-from blancops.data.preprocessing import preprocess_train_df 
+from blancops.utils.sys_utils import get_system_device, seed_everything
+from blancops.io.logger_utils import configure_logger, setup_logger_old
+from blancops.data.preprocessing import preprocess_historic_data 
 from blancops.data.dataset import OfflineDataset
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 from blancops.rl.registry import build_algorithm, build_network
@@ -69,17 +69,25 @@ def main():
     # ---------------------- #
 
     # --- SET UP LOGGER --- #
-    logger = setup_logger(save_dir=outdir / "logs", logging_filename='train.log')
+    # logger = setup_logger_old(save_dir=outdir / "logs", logging_filename='train.log')
+    logger = configure_logger(
+        level=args.logging_level,
+        log_to_stdout=True,
+        log_to_file=True,
+        outdir=outdir / "logs",
+        filename="train.log",
+        use_tqdm=True
+    )
     # ---------------------- #
 
     # --- SEED AND GET DEVICE --- #
     seed_everything(cfg.train.seed)
-    device = get_device()
+    device = get_system_device()
     # ---------------------- #
 
     # --- LOAD DATA AND CONSTRUCT DATASET --- #
-    df = preprocess_train_df(TRAIN_DATA_PATH)
-    train_lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, is_historic=True)
+    df = preprocess_historic_data(TRAIN_DATA_PATH)
+    train_lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, include_historic=True)
     train_dataset = OfflineDataset(
         mode='train',
         df=df,
@@ -90,7 +98,7 @@ def main():
     logger.info(f"Train dataset has {train_dataset.n_nights} nights and {train_dataset.num_transitions} transitions")
     # ---------------------- #
 
-    #  --- BASIC PLOTTING --- #
+    #  --- DEFAULT PLOTS --- #
     plot_bin_membership(train_dataset, outdir / "figures")
     plot_global_feature_distributions(train_dataset, outdir / "figures")
     plot_bin_feature_distributions(train_dataset, outdir / "figures")

@@ -1,238 +1,18 @@
 import argparse
 import numpy as np
-import pandas as pd
 from pathlib import Path
-from blancops.data.features.glob_features import get_night_boundaries
+from blancops.data.preprocessing import build_DES_lookups
 from blancops.math import units
 
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 from blancops.configs.constants import FILTER2IDX
-from blancops.data.lookup_tables import LookupTables
-from blancops.data.preprocessing import remove_undesired_dates_and_objects, preprocess_historic_data
 import matplotlib.pyplot as plt
 import warnings
 import logging
 logger = logging.getLogger(__name__)
 
-from blancops.io.logger_utils import setup_logger_old
+from blancops.io.logger_utils import configure_logger
 
-# Quality threshold for an observation to count as a "real" visit.
-# Lives here because the same threshold gates both target-completion
-# (target_fidfilt_counts) and visit history (visit_hist and last_visit
-# dicts) — they must agree, otherwise a field could be "complete" but
-# never appear to have been visited.
-_VALID_TEFF_THRESHOLD = 0.3
-
-
-def build_DES_lookups(fits_path=None, outdir=None):
-    fits_path = Path(fits_path or TRAIN_DATA_PATH).resolve()
-    outdir = Path(outdir or TRAIN_DATA_DIR).resolve()
-    
-    df = preprocess_historic_data(fits_path=fits_path)
-    df = remove_undesired_dates_and_objects(df)
-    if len(df) == 0: # Fixed the logical bug here: len(df) == 0 means no obs found
-        logger.warning("No observations found for the specified year/month/day/filter selections.")
-        raise ValueError
-    
-    # field_id is 0..N-1 contiguous by construction (pd.factorize).
-    df['field_id'] = pd.factorize(df['object'])[0]
-    df["filt_idx"] = df["filter"].map(FILTER2IDX)
-
-    num_fields = df["field_id"].nunique()
-    nfilters = len(FILTER2IDX)
-    
-    
-    # Quality threshold — only targets and per-night history derive
-    # from this set, so completion checks and seeded state agree.
-    valid_df = df[df["teff"] > _VALID_TEFF_THRESHOLD].copy()
-    if len(valid_df) == 0:
-        raise ValueError(
-            f"No observations with teff > {_VALID_TEFF_THRESHOLD} in "
-            f"{fits_path}; check input data quality."
-        )
-    
-    # ---------- Per-field DataFrame ----------
-    # One row per field_id. Aggregate over the FULL df (not teff-
-    # filtered) so even fields with no valid observations still
-    # appear; they'll have a target row of zeros and be excluded from
-    # masks. Since field_id was factorized from `object`, all rows in
-    # a group share the same name (taking iloc[0] is unambiguous).
-    fields_rows = []
-    for field_id, g in df.groupby("field_id"):
-        fields_rows.append({
-            "field_id": int(field_id),
-            "object": g["object"].iloc[0],
-            "ra": float(g["ra"].mean()),
-            "dec": float(g["dec"].mean()),
-        })
-    fields = pd.DataFrame(fields_rows).set_index("field_id").sort_index()
-    fields.index.name = "field_id"
-    logger.info(" [+] Constructed Fields Lookup")
-
-    # ---------- Per-(field, filter) matrices ----------
-    # target_fidfilt_counts: total VALID observations per (field, filter).
-    target_fidfilt_counts = np.zeros((num_fields, nfilters), dtype=np.int32)
-    np.add.at(
-        target_fidfilt_counts,
-        (valid_df["field_id"].values, valid_df["filt_idx"].values),
-        1,
-    )
-    logger.info(" [+] Constructed Target Counts Lookup")
-
-    # fidfilt_exptime: most-common exptime per (field, filter).
-    fidfilt_exptime = (
-        df.pivot_table(
-            index="field_id", columns="filt_idx", values="exptime",
-            aggfunc=lambda x: x.mode().iloc[0] if not x.mode().empty else 0,
-        )
-        .reindex(index=range(num_fields), columns=range(nfilters), fill_value=0)
-        .to_numpy(dtype=np.float32)
-    )
-    logger.info(" [+] Constructed Exposure Time Lookup")
-
-
-    # ---------- Per-night visit history & last-visit timestamps ----------
-    # Running counts and most-recent-visit timestamps, snapshotted at the
-    # START of each night. Iterate over ALL nights in df (not just nights
-    # with valid observations) so every observed night has a seedable
-    # state, but only VALID observations contribute to the running totals
-    # — keeping history consistent with the target-completion semantics.
-    #
-    # last_visit uses NaN as "no recorded visit yet"; we update with
-    # `np.fmax` so existing recorded values win over NaN as new
-    # observations come in. (np.maximum would propagate NaN.)
-    field_running = np.zeros(num_fields, dtype=np.int32)
-    fidfilt_running = np.zeros((num_fields, nfilters), dtype=np.int32)
-    field_last_visit_ts = np.full(num_fields, np.nan, dtype=np.float64)
-    fidfilt_last_visit_ts = np.full((num_fields, nfilters), np.nan, dtype=np.float64)
-    field_last_visit_ot = np.full(num_fields, np.nan, dtype=np.float64)
-    fidfilt_last_visit_ot = np.full((num_fields, nfilters), np.nan, dtype=np.float64)
-
-    night2fid_visit_hist = {}
-    night2fidfilt_visit_hist = {}
-    night2fid_last_visit_ts = {}
-    night2fidfilt_last_visit_ts = {}
-    night2fid_last_visit_ot = {}
-    night2fidfilt_last_visit_ot = {}
-    night2ot_clock_seconds = {}     # night -> OT(sunset_n)
-
-    cum_ot = 0.0
-        
-    for i, (night, night_df) in enumerate(df.groupby("night")):
-        sunset_ts, sunrise_ts = get_night_boundaries(night, sun_el_limit=-10)
-        night2ot_clock_seconds[night] = cum_ot
-        night_dur = sunrise_ts - sunset_ts
-        # night2idx[night] = i
-
-        # Snapshot start-of-night state BEFORE adding this night's
-        # contributions. Matches existing visit_hist semantics so
-        # downstream consumers can pair (visit_hist[n], last_visit[n])
-        # safely.
-        night2fid_visit_hist[night] = field_running.copy()
-        night2fidfilt_visit_hist[night] = fidfilt_running.copy()
-        night2fid_last_visit_ts[night] = field_last_visit_ts.copy()
-        night2fidfilt_last_visit_ts[night] = fidfilt_last_visit_ts.copy()
-        night2fid_last_visit_ot[night] = field_last_visit_ot.copy()
-        night2fidfilt_last_visit_ot[night] = fidfilt_last_visit_ot.copy()
-
- 
-        valid_night = night_df[night_df["teff"] > _VALID_TEFF_THRESHOLD]
-        if len(valid_night):
-            # Visit counts
-            field_running += np.bincount(
-                valid_night["field_id"].values, minlength=num_fields
-            )
-            np.add.at(
-                fidfilt_running,
-                (valid_night["field_id"].values, valid_night["filt_idx"].values),
-                1,
-            )
-
-            # Last-visit timestamps: per (field) and per (field, filter),
-            # we want the MAXIMUM timestamp across this night's valid
-            # observations for that key.
-            #
-            # Per-field: groupby max is O(n log n) but n is small per
-            # night; cleaner than np.maximum.at + temp array.
-            fid_max = valid_night.groupby("field_id")["timestamp"].max()
-            fid_ids = fid_max.index.to_numpy()
-            fid_ts = fid_max.to_numpy(dtype=np.float64)
-            # np.fmax: NaN-aware max — incoming value wins over existing NaN.
-            field_last_visit_ts[fid_ids] = np.fmax(
-                field_last_visit_ts[fid_ids], fid_ts
-            )
- 
-            # Per (field, filter): same idea, 2-D index.
-            ff_max = valid_night.groupby(["field_id", "filt_idx"])["timestamp"].max()
-            if len(ff_max):
-                ff_keys = np.array(ff_max.index.tolist(), dtype=np.int64)
-                ff_ts = ff_max.to_numpy(dtype=np.float64)
-                rows, cols = ff_keys[:, 0], ff_keys[:, 1]
-                fidfilt_last_visit_ts[rows, cols] = np.fmax(
-                    fidfilt_last_visit_ts[rows, cols], ff_ts
-                )
-                
-            # Last-visit time: in unit of observing time seconds
-            #       is per (field) and per (field, filter),
-            valid_night = valid_night.assign(
-                ot=cum_ot + (valid_night["timestamp"] - sunset_ts)
-            )
-            fid_max = valid_night.groupby("field_id")["ot"].max()
-            fid_ids = fid_max.index.to_numpy()
-            fid_ot = fid_max.to_numpy(dtype=np.float64)
-            # np.fmax: NaN-aware max — incoming value wins over existing NaN.
-            field_last_visit_ot[fid_ids] = np.fmax(
-                field_last_visit_ot[fid_ids], fid_ot
-            )
- 
-            # Per (field, filter): same idea, 2-D index.
-            ff_max = valid_night.groupby(["field_id", "filt_idx"])["ot"].max()
-            if len(ff_max):
-                ff_keys = np.array(ff_max.index.tolist(), dtype=np.int64)
-                ff_ot = ff_max.to_numpy(dtype=np.float64)
-                rows, cols = ff_keys[:, 0], ff_keys[:, 1]
-                fidfilt_last_visit_ot[rows, cols] = np.fmax(
-                    fidfilt_last_visit_ot[rows, cols], ff_ot
-                )
-
-        cum_ot += night_dur
-        
-    night2idx = pd.factorize(df["night"])[0]
-    total_nights = len(night2idx)
-    total_observing_seconds = cum_ot
-
-    logger.info(" [+] Constructed start-of-night 'Snapshots' Lookup (required for history-based feature construction) ")
-
-    # ---------- Construct LookupTable and save to disk ----------
-    lookups = LookupTables(
-        fields=fields,
-        target_fidfilt_counts=target_fidfilt_counts,
-        fidfilt_exptime=fidfilt_exptime,
-        dir=outdir,
-        night2fid_visit_hist=night2fid_visit_hist,
-        night2fidfilt_visit_hist=night2fidfilt_visit_hist,
-        night2fid_last_visit_ts=night2fid_last_visit_ts,
-        night2fidfilt_last_visit_ts=night2fidfilt_last_visit_ts,
-        night2fid_last_visit_ot=night2fid_last_visit_ot,
-        night2fidfilt_last_visit_ot=night2fidfilt_last_visit_ot,
-        night2ot_clock_seconds=night2ot_clock_seconds,
-        total_ot_sec=total_observing_seconds,
-        night2idx=night2idx,
-        total_nights=total_nights
-    )
-    lookups.write_to_disk(outdir)
-    logger.info(f" [+] Successfully generated all lookup tables in {outdir}")
-    
-    # --------- Validate constructed/saved == loaded lookup ----------- #
-    # loaded_lookups = LookupTables.load_from_dir(outdir, is_historic=True)
-    # print(f"Saved lookups: {lookups}")
-    # print(f"Loaded lookups: {loaded_lookups}")
-    # if not lookups_loaded == lookups:
-    #     logger.fatal(" [!!!] Mismatch between saved and loaded versions of LookupTable.")
-            
-    
-    return lookups
- 
 def main():
     parser = argparse.ArgumentParser(
         description="Generate train-data lookup tables from raw DECam observations."
@@ -251,13 +31,26 @@ def main():
     )
     args = parser.parse_args()
  
-    logger = setup_logger_old(save_dir=None)
+ 
+    # --------------------------------------  
+    # SETUP LOGGER
+    # --------------------------------------  
+    
+    logger = configure_logger(
+        level="info",
+        log_to_stdout=True,
+        log_to_file=False
+    )
+    
     args.outdir.mkdir(parents=True, exist_ok=True)
-    logger.info("Starting lookup generation...")
+    logger.info("Starting DES lookup table generation...")
+    
+    # --------------------------------------  
+    # BUILD LOOKUPS
+    # --------------------------------------
     lookups = build_DES_lookups(fits_path=args.fits_path, outdir=args.outdir)
     
     save = args.save_plots
-    
     
     # --------------------------------------  
     # PLOTTING
@@ -406,5 +199,6 @@ def main():
         if save:
             fig.tight_layout()
             fig.savefig(args.outdir / "median_time_since_last_visit_incomplete.png")
+            
 if __name__ == "__main__":
     main()

@@ -51,15 +51,19 @@ def main():
     logger = configure_logger(
         level=args.logging_level,
         log_to_stdout=True,
-        log_to_file=False,
+        log_to_file=True,
+        outdir=cfg.outdir,
+        filename='validation.log',
         use_tqdm=True
     )
     
     # ------------------------------
     # Build and run evaluators
     # ------------------------------
-    
+    logger.info("Building evaluators...")
     s_eval, m_eval = build_evaluators(cfg, device=device)
+    
+    logger.info("Running evaluators...")
     s_eval.run(); m_eval.run(overwrite=args.force_overwrite)
     
     # ------------------------------
