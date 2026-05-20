@@ -30,7 +30,6 @@ from blancops.rl.policies.bc_policies import (
     BCPseudoAutoregressivePolicy,
 )
 
-
 # --------------------------------------------------------------------------- #
 # Registries
 # --------------------------------------------------------------------------- #
@@ -48,7 +47,7 @@ ALGORITHM_REGISTRY = {
     Algorithm.DQN: DDQN,
     Algorithm.DDQN: DDQN,
     Algorithm.CQL: CQL,
-    Algorithm.CQL: IQL,
+    Algorithm.IQL: IQL,
 }
 
 NETWORK_REGISTRY = {
@@ -68,7 +67,6 @@ _ACTIVATION_REGISTRY = {
 }
 
 _Q_VALUE_ALGORITHMS = {Algorithm.DQN, Algorithm.DDQN, Algorithm.CQL}
-
 
 
 # --------------------------------------------------------------------------- #
@@ -101,7 +99,6 @@ def _maybe_load_pretrained(net: nn.Module, cfg: ExperimentConfig, device: torch.
     if path:
         net.load_state_dict(torch.load(path, map_location=device))
         logger.info(f"Loaded pretrained model from {path}")
-        
 
 
 # --------------------------------------------------------------------------- #
@@ -153,16 +150,15 @@ def build_network(cfg: ExperimentConfig) -> nn.Module:
     raise NotImplementedError(f"Network {cfg.model.network} has no builder branch.")
 
 
-
 # --------------------------------------------------------------------------- #
 # BC policy/strategy construction
 # --------------------------------------------------------------------------- #
+
 def _build_q_adapter(cfg, net):
     if is_autoregressive(cfg.model.network):
         return QAutoregressivePolicy(net, cfg.data.num_filters)
     return QFlatPolicy(net)
 
-    
 def _build_bc_policy(cfg: ExperimentConfig, core_net: nn.Module):
     # Filter-only action space short-circuits all strategy logic.
     if cfg.data.action_space == 'filter':
@@ -317,9 +313,10 @@ def build_algorithm(cfg: ExperimentConfig, device: torch.device):
                 device=device,
             )
 
-
-    
     if cfg.model.algorithm == Algorithm.IQL:
-        raise NotImplementedError
+        logger.info(f"Loading IQL algorithm with expectile={cfg.model.expectile}, awr_beta={cfg.model.awr_beta}, awr_clip={cfg.model.awr_clip}")
+        # IQL-specific implementation would go here
+        # For now, we'll raise an error since it's not implemented
+        raise NotImplementedError("IQL algorithm is not yet implemented")
 
     raise ValueError(f"Algorithm {cfg.model.algorithm} has no construction branch.")
