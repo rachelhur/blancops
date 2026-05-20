@@ -1,11 +1,11 @@
 """Base class for all Blanco telescope environments.
- 
+  
 Owns shared physics, feature calculation, action/observation spaces, and the
 gym contract. Subclasses customize behavior through a small set of abstract
 lifecycle hooks (`_begin_episode`, `_advance_after_action`,
 `_episode_terminated`) plus optional feature-context hooks
 (`_get_t_survey`, `_get_fwhm`, etc.) that default to returning None.
- 
+
 Time and per-night state arrive through `StateSnapshot` objects; the same
 primitive is used by `OfflineBlancoEnv._start_new_night` (per-night init)
 and by `OnlineBlancoEnv.sync_telemetry` (mid-episode hardware sync).
@@ -51,7 +51,6 @@ from blancops.configs.constants import *
 logger = logging.getLogger(__name__)
 
 
-
 # ---------------------------------------------------------------------------
 # State Snapshot holds a point-in-time snapshot of the env's mutable state
 # ---------------------------------------------------------------------------
@@ -67,8 +66,6 @@ class StateSnapshot:
     filter_idx: int = ZENITH_FILTER_IDX
     counts_cur : Optional[np.ndarray] = None # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
     last_visit_ot_cur: Optional[np.ndarray] = None    # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
-    # last_visit_ot_cur: Optional[np.ndarray] = None    # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
-    
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +117,7 @@ _FEATURE_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
 
 class BaseBlancoEnv(gym.Env, ABC):
     """Abstract base for all Blanco environments.
- 
+  
     Owns physics (airmass / slew), feature calculation, action masks,
     observation/action spaces, normalization, and the gym `step` / `reset`
     contract. Subclasses fill in the lifecycle hooks declared below.
@@ -160,7 +157,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         self.global_normalizer = StateNormalizer(state_feature_names=self.global_feature_names, **norm_kwargs)
         self.bin_normalizer = StateNormalizer(state_feature_names=self.bin_feature_names, **norm_kwargs)
         self.do_cyclical_norm = self.global_normalizer.do_cyclical_norm or self.bin_normalizer.do_cyclical_norm
-                
+                 
         self._has_historical_features = any(
             feat_substr in bf 
             for feat_substr in (_SURVEY_PROGRESS_BASE_KEYS + _STALENESS_BASE_KEYS)
@@ -199,7 +196,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._action_mask: np.ndarray | None = None
         self._is_new_night: bool = False
         self._valid_fields_per_bin: dict | None = None
-                
+                 
         # Coordinate-system-specific caches (RA/Dec mode only). Populated
         # lazily by _compute_bin_assignments on first use.
         self._field_bins_radec: np.ndarray | None = None
@@ -236,11 +233,11 @@ class BaseBlancoEnv(gym.Env, ABC):
     # Gym contract — template methods. The shape of step/reset is fixed
     # here; subclasses customize via the abstract hooks below.
     # -----------------------------------------------------------------------
- 
+  
     def reset(self, seed=None, options=None):
         logger.debug(f"Reset environment {self.__class__.__name__} with seed {seed}")
         super().reset(seed=seed)
- 
+  
         # Zero out running counts by default. _begin_episode() may overwrite
         # via a StateSnapshot (Historic loads recorded visits; Online keeps
         # whatever the snapshot from telemetry contains).
@@ -249,18 +246,18 @@ class BaseBlancoEnv(gym.Env, ABC):
         # Subclass-defined episode start: load night 0, sync telemetry, etc.
         self._begin_episode()
         self._is_new_night = True
- 
+  
         self._update_action_masks()
         self._global_state = self._calculate_global_features()
         if self.include_bin_features:
             self._bin_state = self._calculate_bin_features()
- 
+  
         return self.get_obs(), self.get_info()
 
     def step(self, action: dict):
         assert self.action_space.contains(action), f"Invalid action {action}"
         last_field_id = np.int32(self._field_id)
- 
+  
         # Subclass-defined: advance time, update visit counters, possibly roll
         # into a new night (offline) or fast-forward on WAIT (online).
         self._advance_after_action(action)
@@ -269,11 +266,11 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._global_state = self._calculate_global_features()
         if self.include_bin_features:
             self._bin_state = self._calculate_bin_features()
- 
+  
         reward = self._get_rewards(last_field_id, self._field_id)
         terminated = self._episode_terminated()
         truncated = False
- 
+  
         return self.get_obs(), reward, terminated, truncated, self.get_info()
 
     # -----------------------------------------------------------------------
@@ -283,24 +280,24 @@ class BaseBlancoEnv(gym.Env, ABC):
     @abstractmethod
     def _begin_episode(self) -> None:
         """Set up state for the start of an episode.
- 
+  
         Offline subclasses load night 0; the live subclass syncs telemetry.
         Implementations must populate `_ts`, `_sunset_ts`, `_sunrise_ts`,
         `_night_end_ts`, and the pointing trio (`_field_id`, `_bin_num`,
         `_filter_idx`) — typically by building a `StateSnapshot` and calling
         `_apply_state_snapshot`.
         """
- 
+
     @abstractmethod
     def _advance_after_action(self, action: dict) -> None:
         """Mutate `_ts`, pointing, and visit counters from an action.
- 
+  
         Offline subclasses simulate by adding `exptime + slew_time`. The
         live subclass reads the wall clock or telemetry, and may also
         handle `WAIT_SIGNAL` fast-forwarding.
         """
         pass
- 
+
     @abstractmethod
     def _episode_terminated(self) -> bool:
         """Whether the current episode has ended."""
@@ -311,34 +308,34 @@ class BaseBlancoEnv(gym.Env, ABC):
     # only the ones they actually populate. `_calculate_global_features`
     # adds the corresponding feature only when the hook returns non-None.
     # -----------------------------------------------------------------------
- 
+  
     def _get_t_survey(self) -> Optional[float]:
         """Time-since-survey-start in units of days (discrete), or None if not provided."""
         return None
- 
+
     def _get_fwhm(self, timestamp: float) -> Optional[float]:
         """Seeing FWHM at the given timestamp, or None."""
         return None
- 
+
     def _get_raw_survey_progress(self) -> Optional[np.ndarray]:
         """Per-filter survey-wide visit counts (mutable), or None."""
         return None
- 
+
     def _get_survey_nights_total(self) -> Optional[int]:
         """Total scheduled survey nights."""
         return None
- 
+
     def _get_survey_night_idx(self) -> Optional[int]:
         """Current night index within the wider survey, if known."""
         return None
- 
+
     # -----------------------------------------------------------------------
     # Shared primitive — used by both telemetry sync and per-night init
     # -----------------------------------------------------------------------
- 
+  
     def _apply_state_snapshot(self, snap: StateSnapshot) -> None:
         """Mutate internal state from a `StateSnapshot`.
- 
+  
         Counters are only overwritten when the snapshot provides them, so
         e.g. `OnlineBlancoEnv.sync_telemetry` can update pointing without
         clobbering the running visit history.
@@ -363,10 +360,9 @@ class BaseBlancoEnv(gym.Env, ABC):
             )
             self._last_visit_ot[:] = snap.last_visit_ot_cur
         
-    
     def _record_visit(self, field_id: int, filter_idx: int = None) -> None:
         """Bookkeeping after a successful observation.
- 
+  
         Single source of truth for visit accumulation: keeps
         `_s_visits_cur`, `_s_filter_visits_cur`, and the survey-progress
         tracker in sync. Called by `_advance_after_action` in each
@@ -385,7 +381,7 @@ class BaseBlancoEnv(gym.Env, ABC):
     # -----------------------------------------------------------------------
     # Concrete helpers for setting action mask constraints
     # -----------------------------------------------------------------------
-
+  
     def set_constraints(
         self,
         *,
@@ -394,18 +390,18 @@ class BaseBlancoEnv(gym.Env, ABC):
     ) -> dict:
         """Update mask-gating constraints, refresh the action mask,
         and return a fresh info dict.
- 
+  
         Use before running a chunk of exposures so the agent's first
         choice in the chunk reads the correctly-gated mask:
- 
+  
             info = env.set_constraints(airmass_limit=2.5, sun_el_limit=-15.0)
             for _ in range(chunk_size):
                 action = agent.choose_action(obs, info)
                 obs, reward, terminated, truncated, info = env.step(action)
- 
+  
         When sun_el currently exceeds sun_el_limit, the returned mask
         is all-False, forcing the agent to pick WAIT_SIGNAL.
- 
+  
         Note: in offline envs, twilight boundaries (`_sunset_ts`,
         `_sunrise_ts`) are computed once at night start. Calling this
         mid-night updates the mask but not the rollover schedule;
@@ -444,7 +440,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         else:
             bin_state_normed = np.array([], dtype=np.float32)
             glob_nan_mask = None
-
+ 
         self._global_state = global_state_normed
         self._bin_state = bin_state_normed
         self._last_glob_nan_mask = glob_nan_mask    # stash for get_info
@@ -455,7 +451,7 @@ class BaseBlancoEnv(gym.Env, ABC):
     def get_info(self) -> dict:
         """
         Compute auxiliary information for debugging and constrained action spaces.
-
+ 
         Returns
         -------
             dict: A dictionary containing the current action mask.
@@ -476,7 +472,6 @@ class BaseBlancoEnv(gym.Env, ABC):
         }
         return info_dict
     
-
     def _get_airmass(self, elevation_rad):
         """
         Calculates airmass using the simple plane-parallel approximation:
@@ -485,7 +480,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         # Ensure elevation is valid for airmass calculation
         el = np.clip(elevation_rad, 1e-5, np.pi/2)
         return 1.0 / np.sin(el)
-
+ 
     def _get_slew_time(self, last_fid, current_fid, overhead=30.0):
         """Calculates time to move telescope between fields."""
         if last_fid == ZENITH_FIELD_ID:
@@ -500,7 +495,7 @@ class BaseBlancoEnv(gym.Env, ABC):
     
     def _get_exposure_time(self, field_id=None, filter_idx=None):
         """Per-(field, filter) exposure time from the lookups matrix.
- 
+  
         Returns 0.0 for negative `field_id` (sentinel — no real
         observation, so no time consumed) and the 90.0 s default when
         `filter_idx` is None (e.g. when an offline env advances the
@@ -514,19 +509,18 @@ class BaseBlancoEnv(gym.Env, ABC):
         return float(
             self.lookups.fidfilt_exptime[int(field_id), int(filter_idx)]
         )
-
     
     def _get_rewards(self, last_field, next_field):
         '''
         Calculates the reward for a single state transition.
-
+ 
         Uses self._reward_func() if available, otherwise returns 1.
-
+ 
         Args
         ----
             last_field (int): Field ID before taking the action.
             next_field (int): Field ID after taking the action.
-
+ 
         Returns
         -------
             float: The calculated reward value.
@@ -537,10 +531,10 @@ class BaseBlancoEnv(gym.Env, ABC):
     
     def _calculate_global_features(self) -> list:
         """Compute the global feature vector for the current state.
-
+ 
         Thin orchestration over the shared helpers in
         ``blancops.data.features.glob_features``:
-
+ 
           1. Time-only ephemeris via ``compute_global_time_only_features``
              (LST, Sun/Moon positions and phase). LST is needed before
              resolving the pointing in the zenith branch, so this runs first.
@@ -558,16 +552,16 @@ class BaseBlancoEnv(gym.Env, ABC):
           8. Cyclical norms via ``apply_cyclical_global_features``.
           9. Stack into a list in ``self.global_feature_names`` order;
              raise on any NaN.
-
+ 
         With ``_validate_feature_config`` having run at construction,
         hooks/tracker/flags are guaranteed available for every feature in
         ``self.global_feature_names``.
         """
         timestamp = self._ts
-
+ 
         # 1. Time-only ephemeris (gives us LST so we can resolve zenith pointing).
         new_features = compute_global_time_only_features(timestamp=timestamp)
-
+ 
         # 2. Resolve pointing RA/Dec. Preserves the original env's zenith branch
         #    (`lst, blanco.lon`) — see the migration notes; this disagrees with
         #    `blanco.radec_of('0','90')` used elsewhere and is worth a separate
@@ -580,7 +574,7 @@ class BaseBlancoEnv(gym.Env, ABC):
             dec = self._dec_arr[self._field_id]
         new_features['ra'] = ra
         new_features['dec'] = dec
-
+ 
         # 3. Pointing-derived ephemeris (az/el/ha/airmass + sky brightness).
         new_features.update(
             compute_global_pointing_features(timestamp=timestamp, ra=ra, dec=dec, moon_radec=(new_features['moon_ra'], new_features['moon_dec']))
