@@ -68,23 +68,38 @@ class EvaluationPlotter:
     # ------------------------------------------------------------------
 
     def plot_2dhist(self, feature_x, feature_y, expert_x, expert_y, agent_x, agent_y,
-                    norm=None, bins=25, return_plt_objects=False):
+                    norm=None, bins=25, return_plt_objects=False, density=True):
         if norm is None:
             norm = mcolors.LogNorm()
+        if density==False:
+            cbar_label = 'Counts'
+        else:
+            cbar_label = 'Density'
         expert_x = _wrap_if_ra(feature_x, expert_x)
         expert_y = _wrap_if_ra(feature_y, expert_y)
         agent_x  = _wrap_if_ra(feature_x, agent_x)
         agent_y  = _wrap_if_ra(feature_y, agent_y)
+        
+        x_min = min(np.min(expert_x), np.min(agent_x))
+        x_max = max(np.max(expert_x), np.max(agent_x))
+        y_min = min(np.min(expert_y), np.min(agent_y))
+        y_max = max(np.max(expert_y), np.max(agent_y))
+        
+                
+        x_edges = np.linspace(x_min, x_max, bins + 1)
+        y_edges = np.linspace(y_min, y_max, bins + 1)
+        
+        bins=[x_edges, y_edges]
 
         fig, axs = plt.subplots(1, 2, figsize=(14, 5), sharex=True, sharey=True)
         exp_counts, _, _, im1 = axs[0].hist2d(expert_x, expert_y, bins=bins,
-                                              cmap=self.style.expert_cmap, norm=norm)
-        fig.colorbar(im1, ax=axs[0], location='right', label='Counts')
+                                              cmap=self.style.expert_cmap, norm=norm, density=density)
+        fig.colorbar(im1, ax=axs[0], location='right', label=cbar_label)
         axs[0].set(xlabel=feature_x, ylabel=feature_y, title='Expert')
 
         ag_counts, _, _, im2 = axs[1].hist2d(agent_x, agent_y, bins=bins,
-                                             cmap=self.style.agent_cmap, norm=norm)
-        fig.colorbar(im2, ax=axs[1], location='right', label='Counts')
+                                             cmap=self.style.agent_cmap, norm=norm, density=density)
+        fig.colorbar(im2, ax=axs[1], location='right', label=cbar_label)
         axs[1].set(xlabel=feature_x, ylabel=feature_y, title='Agent')
 
         if return_plt_objects:
@@ -258,7 +273,7 @@ class EvaluationPlotter:
         ax.legend(loc='lower right', fontsize=14)
         return ax
 
-    def plot_filter_histograms(self, feature_name, expert_feature_arr, expert_filters,
+    def plot_hist_comparison_per_filter(self, feature_name, expert_feature_arr, expert_filters,
                                agent_filters, agent_feature_arr=None, density=True,
                                alpha=0.2, bins=20):
         if agent_feature_arr is None:

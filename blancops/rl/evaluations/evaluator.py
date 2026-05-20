@@ -84,7 +84,6 @@ def build_evaluators(
         z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, mode='test',
     )
     
-
     # Agent + runner
     factory = AgentFactory(base_model_dir=outdir)
     agent, cfg, _ = factory.build_agent(
@@ -202,7 +201,7 @@ class Evaluator(ABC):
             nside=self.data.hpGrid.nside,
         )
 
-    def plot_hist_comparison(self, feature_name, density=False, bins=20, use_weights=False, ax=None):
+    def plot_hist_comparison(self, feature_name, density=True, bins=20, use_weights=False, ax=None):
         return self.plotter.plot_hist_comparison(
             feature_name,
             expert_arr=self.data.expert_df[feature_name],
@@ -227,7 +226,7 @@ class Evaluator(ABC):
             bins=bins,
         )
         
-    def plot_2dhist_per_filter(self, feature_x, feature_y, bins=25):
+    def plot_2dhist_per_filter(self, feature_x, feature_y, bins=25, density=True):
         for filt in FILTER2IDX.keys():
             exp_f_mask = self.data.expert_df['filter'].values == filt
             agent_f_mask = self.data.agent_df['filter'].values == filt
@@ -237,7 +236,8 @@ class Evaluator(ABC):
                 expert_x=self.data.expert_df[feature_x][exp_f_mask],
                 expert_y=self.data.expert_df[feature_y][exp_f_mask],
                 agent_x=self.data.agent_df[feature_x][agent_f_mask],
-                agent_y=self.data.agent_df[feature_y][agent_f_mask]
+                agent_y=self.data.agent_df[feature_y][agent_f_mask],
+                density=density
             )
             plt.suptitle(f'{filt}-band', fontsize=16)
             
@@ -312,7 +312,7 @@ class SingleStepEvaluator(Evaluator):
         )
 
     def plot_residual(self, feature_y, feature_x=None, plot_type='hist', bins=20, alpha=0.2,
-                      density=False, ax=None):
+                      density=True, ax=None):
         return self.plotter.plot_residual(
             feature_y,
             self.data.expert_df[feature_y], self.data.agent_df[feature_y],
@@ -340,7 +340,7 @@ class SingleStepEvaluator(Evaluator):
         )
 
     def plot_hist_comparison_per_filter(self, feature_name, bins=20):
-        return self.plotter.plot_filter_histograms(
+        return self.plotter.plot_hist_comparison_per_filter(
             feature_name,
             expert_feature_arr=self.data.expert_df[feature_name].values,
             expert_filters=self.data.expert_df['filter'].values,
@@ -595,8 +595,8 @@ class MultiStepEvaluator(Evaluator):
             agent_alpha=agent_alpha, color_mapping=color_mapping, s=s, ax=ax,
         )
 
-    def plot_filter_histograms(self, feature_name, bins=20):
-        return self.plotter.plot_filter_histograms(
+    def plot_hist_comparison_per_filter(self, feature_name, bins=20):
+        return self.plotter.plot_hist_comparison_per_filter(
             feature_name,
             expert_feature_arr=self.data.expert_df[feature_name].values,
             agent_feature_arr=self.data.agent_df[feature_name].values,
@@ -605,7 +605,7 @@ class MultiStepEvaluator(Evaluator):
             bins=bins,
         )
 
-    def plot_hist_comparison(self, feature_name, density=False, bins=20, use_weights=False, ax=None):
+    def plot_hist_comparison(self, feature_name, density=True, bins=20, use_weights=False, ax=None):
         # MS expert_df has gaps masked via expert_valid_mask.
         expert_arr = self.data.expert_df[feature_name][self.data.expert_valid_mask]
         return self.plotter.plot_hist_comparison(
