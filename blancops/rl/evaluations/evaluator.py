@@ -13,12 +13,15 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Tuple, Union
 
+from matplotlib.patches import Patch
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 from einops import rearrange
 import logging
+
+from blancops.math import units
 logger = logging.getLogger(__name__)
 
 from blancops.configs.constants import (
@@ -188,6 +191,38 @@ class Evaluator(ABC):
         ax.set_xticks(xs)
         ax.set_xticklabels(names, rotation=45)
         return ax
+    
+    def _get_scalar_metrics_from_df(self, df):
+        metrics = {}
+        
+        # AIRMASS
+        metrics['airmass'] = {}
+        metrics['airmass']['mean'] = df['airmass'].mean()
+        metrics['airmass']['p10'] = df['airmass'].quantile(0.10)
+        metrics['airmass']['p90'] = df['airmass'].quantile(0.90)
+        
+        # HA
+        metrics['ha'] = {}
+        metrics['abs_ha'] = {}
+        
+        metrics['ha']['mean'] = df['ha'].mean() / units.deg
+        metrics['ha']['p10'] = df['ha'].quantile(0.10) / units.deg
+        metrics['ha']['p90'] = df['ha'].quantile(0.90) / units.deg
+        
+        metrics['abs_ha']['mean'] = df['ha'].abs().mean() / units.deg
+        metrics['abs_ha']['p10'] = df['ha'].abs().quantile(0.10) / units.deg
+        metrics['abs_ha']['p90'] = df['ha'].abs().quantile(0.90) / units.deg
+        
+        # SLEW DIST
+        metrics['slew_dist'] = {}
+        metrics['slew_dist']['mean'] = df['slew_dist'].mean()
+        metrics['slew_dist']['p10'] = df['slew_dist'].quantile(0.10)
+        metrics['slew_dist']['p90'] = df['slew_dist'].quantile(0.90)
+        
+        # FILTER SWITCHES
+        metrics['filter_switch_percentage'] = sum(df['filter_idx'].values[:-1] != df['filter_idx'].values[1:]) / len(df)
+
+        return metrics
 
     # ---- Common plot pass-throughs ----------------------------------
 
@@ -240,8 +275,74 @@ class Evaluator(ABC):
                 density=density
             )
             plt.suptitle(f'{filt}-band', fontsize=16)
-            
 
+    # ---- Plotter independent plots ----------------------------------
+ 
+    def plot_scalar_metrics(self):
+        expert_metrics = self._get_scalar_metrics_from_df(self.data.expert_df)
+        agent_metrics = self._get_scalar_metrics_from_df(self.data.agent_df)
+        
+        metrics_keys = list(expert_metrics.keys())
+        num_metrics = len(metrics_keys)
+        
+        fig, axs = plt.subplots(num_metrics, 1, figsize=(8, 2 * num_metrics), sharex=False)
+
+        exp_y = 1
+        ag_y = 2
+        
+        for i, metric in enumerate(metrics_keys):
+            ax = axs[i]
+            if not isinstance(expert_metrics[metric], dict):
+                exp_val = expert_metrics[metric]
+                ag_val = agent_metrics[metric]
+                
+                # Plot just the dots
+                ax.plot(exp_val, exp_y, 'o', color=self.plotter.style.expert_color, markersize=8)
+                ax.plot(ag_val, ag_y, 'o', color=self.plotter.style.agent_color, markersize=8)
+                
+                # Add padding for scalar values so they don't sit on the plot edges
+                x_min_all = min(exp_val, ag_val)
+                x_max_all = max(exp_val, ag_val)
+                
+                # Ensure there is visible padding even if the expert and agent values are identical
+                spread = x_max_all - x_min_all
+                padding = spread * 0.2 if spread > 0 else max(x_min_all * 0.1, 1.0)
+                ax.set_xlim(x_min_all - padding, x_max_all + padding)
+                
+            else:
+                # Extract Expert Data
+                exp_mean = expert_metrics[metric]['mean']
+                exp_p10 = expert_metrics[metric]['p10']
+                exp_p90 = expert_metrics[metric]['p90']
+                
+                # Extract Agent Data
+                ag_mean = agent_metrics[metric]['mean']
+                ag_p10 = agent_metrics[metric]['p10']
+                ag_p90 = agent_metrics[metric]['p90']
+                
+                # Plot Expert (y=1)
+                ax.hlines(y=exp_y, xmin=exp_p10, xmax=exp_p90, color=self.plotter.style.expert_color, linewidth=2)
+                ax.plot(exp_mean, exp_y, 'o', color=self.plotter.style.expert_color, markersize=8, label='Expert' if i==0 else "")
+                
+                # Plot Agent (y=2)
+                ax.hlines(y=ag_y, xmin=ag_p10, xmax=ag_p90, color=self.plotter.style.agent_color, linewidth=2)
+                ax.plot(ag_mean, ag_y, 'o', color=self.plotter.style.agent_color, markersize=8, label='Agent' if i==0 else "")
+
+                # Add a little padding to the x-axis so dots don't hit the edges
+                x_min_all = min(exp_p10, ag_p10)
+                x_max_all = max(exp_p90, ag_p90)
+                padding = (x_max_all - x_min_all) * 0.1
+                ax.set_xlim(x_min_all - padding, x_max_all + padding)
+
+            # Formatting
+            ax.set_yticks([0, ag_y, exp_y, 3])
+            ax.set_yticklabels([None, 'Agent', 'Expert', None])
+            ax.set_title(metric, fontsize=14, loc='left')
+            ax.grid(True, alpha=0.3)
+            
+        fig.legend(loc='upper right', bbox_to_anchor=(0.95, 0.95))
+        plt.tight_layout()
+        return fig, axs
 
 # ----------------------------------------------------------------------
 # Single-step

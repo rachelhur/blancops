@@ -322,8 +322,8 @@ class EvaluationPlotter:
             agent_label = None
             handles = FILTER_PATCHES
 
-        sns.kdeplot(x=expert_x, y=expert_y, thresh=0, levels=15,
-                    cmap=self.style.expert_cmap, alpha=1, label='expert', fill=False,
+        sns.kdeplot(x=expert_x, y=expert_y, thresh=0, levels=10,
+                    cmap=self.style.expert_cmap, alpha=.5, label='expert', fill=False,
                     norm=mcolors.CenteredNorm(), ax=ax)
         ax.scatter(agent_x, agent_y, marker='*', c=color_mapping, label=agent_label,
                    alpha=agent_alpha, s=s)
