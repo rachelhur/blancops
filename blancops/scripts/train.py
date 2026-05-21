@@ -16,7 +16,7 @@ from blancops.data.dataset import OfflineDataset
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 from blancops.rl.registry import build_algorithm
 from blancops.configs.rl_schema import ExperimentConfig, load_and_validate, resolve_and_save
-from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, WORKSPACE
+from blancops.configs.constants import DES_DATA_DIR, DES_FITS_PATH, WORKSPACE
 
 import argparse
 import logging
@@ -89,7 +89,7 @@ def main():
     start_date = pd.Timestamp(cfg.data.start_date) if cfg.data.start_date is not None else None
     end_date = pd.Timestamp(cfg.data.end_date) if cfg.data.end_date is not None else None
     df = load_and_process_historic_data(
-        fits_path=TRAIN_DATA_PATH,
+        fits_path=DES_FITS_PATH,
         start_date=start_date,
         end_date=end_date,
         valid_years=cfg.data.years,
@@ -97,7 +97,7 @@ def main():
         valid_days=cfg.data.days,
         valid_filters=cfg.data.filters,
     )
-    train_lookups = TrainLookupTables.load_from_dir(TRAIN_DATA_DIR)
+    train_lookups = TrainLookupTables.load_from_dir(DES_DATA_DIR)
     train_dataset = OfflineDataset(
         mode='train',
         df=df,

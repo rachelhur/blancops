@@ -4,7 +4,7 @@ from pathlib import Path
 from blancops.data.preprocessing import build_DES_lookups
 from blancops.math import units
 
-from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
+from blancops.configs.constants import DES_DATA_DIR, DES_FITS_PATH
 from blancops.configs.constants import FILTER2IDX
 import matplotlib.pyplot as plt
 import warnings
@@ -18,11 +18,11 @@ def main():
         description="Generate train-data lookup tables from raw DECam observations."
     )
     parser.add_argument(
-        "--fits_path", type=Path, default=TRAIN_DATA_PATH,
+        "--fits_path", type=Path, default=DES_FITS_PATH,
         help="Path to the raw DECam exposures FITS file",
     )
     parser.add_argument(
-        "--outdir", type=Path, default=TRAIN_DATA_DIR,
+        "-o", "--out_parent_dir", type=Path, default=DES_DATA_DIR,
         help="Directory to save the generated lookup tables",
     )
     parser.add_argument(
@@ -42,14 +42,20 @@ def main():
         log_to_file=False
     )
     
-    args.outdir.mkdir(parents=True, exist_ok=True)
+    # --------------------------------------  
+    # SETUP OUTDIR
+    # --------------------------------------  
+    out_parent_dir = Path(args.out_parent_dir)
+    lookups_outdir = out_parent_dir / "lookups"
+    figures_outdir = out_parent_dir / "figures"
+    lookups_outdir.mkdir(parents=True, exist_ok=True)
+    figures_outdir.mkdir(parents=True, exist_ok=True)
     logger.info("Starting DES lookup table generation...")
     
     # --------------------------------------  
     # BUILD LOOKUPS
     # --------------------------------------
-    lookups = build_DES_lookups(fits_path=args.fits_path, outdir=args.outdir)
-    
+    lookups = build_DES_lookups(fits_path=args.fits_path, outdir=lookups_outdir)
     save = args.save_plots
     
     # --------------------------------------  
@@ -68,7 +74,7 @@ def main():
         ax.set_xlabel('ra (deg)')
         ax.set_ylabel('dec (deg)')
         if save:
-            fig.savefig(args.outdir / "field_radecs.png")
+            fig.savefig(figures_outdir / "field_radecs.png")
             
         # Plot target counts
         fig, ax = plt.subplots(figsize=_FIGSIZE)
@@ -77,7 +83,7 @@ def main():
         ax.set_xlabel('Field id')
         ax.set_ylabel('Counts')
         if save:
-            fig.savefig(args.outdir / "target_counts_per_field_filter.png")
+            fig.savefig(figures_outdir / "target_counts_per_field_filter.png")
         
         # --------------------------------------  
         # Average Accumulated Visits over bins vs night
@@ -99,7 +105,7 @@ def main():
         ax.set_ylabel("Visits")
         ax.legend()
         if save:
-            fig.savefig(args.outdir / "average_visits_over_time.png")
+            fig.savefig(figures_outdir / "average_visits_over_time.png")
         
         # --------------------------------------  
         # Average Time Since Last Visit over bins vs night FOR INCOMPLETE FIELDS ONLY
@@ -136,7 +142,7 @@ def main():
         ax.legend()
         if save:
             fig.tight_layout()
-            fig.savefig(args.outdir / "average_time_since_last_visit_incomplete.png")
+            fig.savefig(figures_outdir / "average_time_since_last_visit_incomplete.png")
 
         
         # --------------------------------------  
@@ -198,7 +204,7 @@ def main():
         
         if save:
             fig.tight_layout()
-            fig.savefig(args.outdir / "median_time_since_last_visit_incomplete.png")
+            fig.savefig(figures_outdir / "median_time_since_last_visit_incomplete.png")
             
 if __name__ == "__main__":
     main()

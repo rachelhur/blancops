@@ -39,7 +39,7 @@ from blancops.configs.constants import *
  
 import logging
 
-from blancops.surveys.des_consts import _DES_SUN_EL_LIMIT
+from blancops.survey.des_consts import _DES_SUN_EL_LIMIT
 logger = logging.getLogger(__name__)
  
  
@@ -216,7 +216,7 @@ def compute_bin_progress_features(
     act_s = bin_in_plan_counts > 0
  
     def _assign_staleness(last_visit_per_field, in_plan_mask, key):
-        """Per-bin staleness = freshest in-plan field's age, OT-normalized.
+        """Per-bin staleness = freshest in-plan field's age, OT-normalized if provided.
 
         Single division: the OT delta is divided by the total OT span
         once, inside the ``np.where``. The reduction (``np.minimum.at``)
@@ -460,7 +460,7 @@ def validate_history_bin_features(features, do_filt, idx2filter=None):
         arr = features[bk]
         valid = ~np.isnan(arr)
         # bad = valid & ((arr < 0.0) | (arr > 1.0 + 1e-5))
-        bad = valid & ((arr < 0.0)
+        bad = valid & (arr < 0.0)
         if np.any(bad):
             b = np.where(bad)
             raise RuntimeError(

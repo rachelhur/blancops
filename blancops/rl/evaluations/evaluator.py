@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 from blancops.configs.constants import (
     FILTER2IDX,
-    TRAIN_DATA_DIR,
-    TRAIN_DATA_PATH,
+    DES_DATA_DIR,
+    DES_FITS_PATH,
     _NUM_FILTERS,
 )
 from blancops.configs.rl_schema import ActionConstraints, load_and_validate

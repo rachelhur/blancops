@@ -30,13 +30,14 @@ WORKSPACE = get_workspace_dir()
 
 PATHS = {
     "TRAIN_DIR": Path(WORKSPACE / "data" / "train"),
+    "DES_DATA_DIR": Path(WORKSPACE / "data" / "train" / "des"),
     "HEALPIX_GRID": Path(WORKSPACE / "data" / "test_suite" / "healpix-grid"),
     "MAGIC_SPRING": Path(WORKSPACE / "data" / "test_suite" / "magic-spring"),
     "SAMPLE_110825": Path(WORKSPACE / "data" / "test_suite" / "sample-110825")
 }
 
-TRAIN_DATA_DIR = PATHS["TRAIN_DIR"]
-TRAIN_DATA_PATH = TRAIN_DATA_DIR / "decam-exposures-20251211.fits"
+DES_DATA_DIR = PATHS["DES_DATA_DIR"]
+DES_FITS_PATH = DES_DATA_DIR / "fits" / "decam-exposures-20251211.fits"
 
 
 """
@@ -156,7 +157,7 @@ _ALLOWED_NORMS_PER_FEATURE = {
     'rel_num_incomplete_fields': {'local_mean_z'},
     'rel_min_tiling': {'local_mean_z'},
     'rel_mean_tiling': {'local_mean_z'},
-    'rel_t_since_last_visit': {'local_mean_z'}, 
+    'rel_t_since_last_visit': {'local_mean_z', 'log'}, 
     'rel_moon_distance': {'local_mean_z'},
     'rel_ha': {'local_mean_z'},
     

@@ -12,7 +12,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from blancops.configs.constants import FILTER2IDX, IDX2FILTER, TRAIN_DATA_DIR
+from blancops.configs.constants import FILTER2IDX, IDX2FILTER, DES_DATA_DIR
 from blancops.data.dataset import OfflineDataset
 from blancops.data.features.normalizations import StateNormalizer, inverse_cyclical_norm
 from blancops.data.lookup_tables import LookupTables

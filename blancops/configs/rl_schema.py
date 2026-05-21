@@ -6,10 +6,10 @@ from typing import Any, List, Union, Literal, Dict
 import numpy as np
 from typing import Optional
 from blancops.configs.enums import *
-from blancops.configs.constants import _DEFAULT_NORM_MAPPING, _FILTER_DEP_FEATURE_NAMES, TRAIN_DATA_PATH, _BIN_FEATURES
+from blancops.configs.constants import _DEFAULT_NORM_MAPPING, _FILTER_DEP_FEATURE_NAMES, DES_FITS_PATH, _BIN_FEATURES
 from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, _NORM_TYPES
-from blancops.surveys.des_consts import _DES_SUN_EL_LIMIT
+from blancops.survey.des_consts import _DES_SUN_EL_LIMIT
 
 class ActionConstraints(BaseModel): 
     sun_el_limit: float = _DES_SUN_EL_LIMIT
@@ -72,7 +72,7 @@ class NormalizationConfig(BaseModel):
 
 class BaseDataConfig(BaseModel):
     name: str = 'des-data-v0'
-    path: str = str(TRAIN_DATA_PATH)
+    path: str = str(DES_FITS_PATH)
     # cache_in_memory: bool = False
     
     # Data configuration

@@ -10,21 +10,20 @@ import re
 from blancops.data.features.glob_features import get_night_boundaries
 from blancops.math import units
 
-from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
+from blancops.configs.constants import DES_DATA_DIR, DES_FITS_PATH
 from blancops.configs.constants import FILTER2IDX
-from blancops.data.lookup_tables import LookupTables, TrainLookupTables
-from blancops.io.fits_io import fits_to_df, preprocess_fits
+from blancops.data.lookup_tables import TrainLookupTables
+from blancops.io.fits_io import preprocess_fits
 from blancops.math import units
 
 import logging
 
-from blancops.surveys.des_consts import _DES_SUN_EL_LIMIT
+from blancops.survey.des_consts import _VALID_TEFF_THRESHOLD, _DES_SUN_EL_LIMIT
 logger = logging.getLogger(__name__)
 
 from blancops.configs.constants import FILTER2IDX
-from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
+from blancops.configs.constants import DES_DATA_DIR, DES_FITS_PATH
 
-_VALID_TEFF_THRESHOLD = 0.3
 _OP_MAP = {
     '=': operator.eq,
     '==': operator.eq,
@@ -232,8 +231,8 @@ def _get_haversine_dist(ra_center, dec_center, ra_array, dec_array):
     return np.degrees(2.0 * np.arcsin(np.sqrt(a)))
 
 def build_DES_lookups(fits_path=None, outdir=None):
-    fits_path = Path(fits_path or TRAIN_DATA_PATH).resolve()
-    outdir = Path(outdir or TRAIN_DATA_DIR).resolve()
+    fits_path = Path(fits_path or DES_FITS_PATH).resolve()
+    outdir = Path(outdir or DES_DATA_DIR).resolve()
     
     df = load_and_process_historic_data(fits_path=fits_path)
     if len(df) == 0: # Fixed the logical bug here: len(df) == 0 means no obs found
