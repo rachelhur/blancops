@@ -97,7 +97,7 @@ def main():
         valid_days=cfg.data.days,
         valid_filters=cfg.data.filters,
     )
-    train_lookups = TrainLookupTables.load_from_dir(DES_DATA_DIR)
+    train_lookups = TrainLookupTables.load_from_dir(DES_DATA_DIR / "lookups")
     train_dataset = OfflineDataset(
         mode='train',
         df=df,
