@@ -17,11 +17,12 @@ from blancops.live_scheduler.orchestrator import SchedulerOrchestrator
 from blancops.math import units
 from blancops.ephemerides import time_utils
 
+# Use logging module -> stdout and/or file out instead of lieu statements
+from blancops.io.logger_utils import setup_logger_old
 
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "configs" / "live_scheduler_default.yaml"
 )
-
 
 def load_yaml_defaults(config_path):
     """Load scheduler defaults from a YAML config file."""
@@ -267,9 +268,12 @@ def main():
         args.start_sun_elevation_deg = args.start_sun_elevation_deg * units.deg
     if args.stop_sun_elevation_deg is not None:
         args.stop_sun_elevation_deg = args.stop_sun_elevation_deg * units.deg
-
+        
+    # Setup logger. The format arg determines how message is formatted. For example, with the format below, a message will be printed like:
+    # 2026-05-01 13:40:05 - INFO - Initializing blancops Live Scheduler...".
+    logger = setup_logger_old(save_dir=args.output_directory, parent_module=__name__, logging_filename='run_live_scheduler.log', logging_level='info', format="%(asctime)s - %(levelname)s - [%(name)s] %(message)s")
     # initialize requested telescope client
-    print("Initializing blancops Live Scheduler...")
+    logger.info("Initializing blancops Live Scheduler...")
     if args.client_mode.lower() == "mock":
         client = MockTelescopeClient(exposure_duration=args.mock_exposure_duration)
     else:
@@ -326,10 +330,10 @@ def main():
 
     # Big Red Stop Button: handle graceful shutdown on Ctrl+C keyboard interrupt
     except KeyboardInterrupt:
-        print("\n\n" + "!" * 88)
-        print("EMERGENCY STOP TRIGGERED (Ctrl+C)")
-        print("Halting all scheduler loops.")
-        print("!" * 88)
+        logger.warning("\n\n" + "!" * 88)
+        logger.warning("EMERGENCY STOP TRIGGERED (Ctrl+C)")
+        logger.warning("Halting all scheduler loops.")
+        logger.warning("!" * 88)
         client.close()  # ensure any open connections are closed on exit
         sys.exit(0)
 

@@ -61,7 +61,6 @@ _GLOBAL_FEATURES = [
     "ha", 
     "el",
     "ra",
-    "dec",
     "az",
     "airmass", 
     "dec",  # redundant with el, airmass

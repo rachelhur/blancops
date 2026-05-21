@@ -17,6 +17,8 @@ from blancops.environment.base import BaseBlancoEnv, StateSnapshot
 from blancops.configs.constants import WAIT_SIGNAL
  
 import logging
+
+from blancops.ephemerides.time_utils import unix_to_datetime
 logger = logging.getLogger(__name__)
  
 class BaseBlancoOfflineEnv(BaseBlancoEnv):
@@ -127,9 +129,15 @@ class BaseBlancoOfflineEnv(BaseBlancoEnv):
             self._build_night_start_snapshot(self._night_idx)
         )
  
-        logger.info(
-            f"Night {self._night_idx+1}/{self.max_nights}: "
-            f"start_ts={self._ts}, sunset={self._sunset_ts}, "
-            f"sunrise={self._sunrise_ts}, end={self._night_end_ts}, "
-            f"ot_at_sunset={self._ot_at_sunset}"
-        )
+        logger.info(f"Night {self._night_idx+1}/{self.max_nights}")
+        logger.info(f"start={unix_to_datetime(self._ts)}, end={unix_to_datetime(self._night_end_ts)}")
+        logger.info(f"sunset={unix_to_datetime(self._sunset_ts)}, sunrise={unix_to_datetime(self._sunrise_ts)}")
+        logger.info(f"ot_at_sunset={unix_to_datetime(self._ot_at_sunset)}")
+
+
+        # logger.info(
+        #     f"Night {self._night_idx+1}/{self.max_nights}: "
+        #     f"start={self._ts}, end={self._night_end_ts},"
+        #     f"sunset={self._sunset_ts}, sunrise={self._sunrise_ts}"
+        #     f"ot_at_sunset={self._ot_at_sunset}"
+        # )
