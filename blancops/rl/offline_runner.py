@@ -17,7 +17,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 class OfflineRunner:
     def __init__(self, agent, policy, cfg, lookups, num_episodes=1, 
-                 outdir=None, save_SISPI=False, SISPI_fn="survey_schedule", schedule_chunk_size=None,
+                 outdir=None, save_SISPI=False, SISPI_fn="survey_schedule",
                  low_memory_mode=True,
                  ):
         self.agent = agent
@@ -34,10 +34,6 @@ class OfflineRunner:
         # a manifest of paths instead of the data itself. Bounds peak
         # rollout RAM to a single night's worth of (nbins, nfeats) data.
         self.low_memory_mode = low_memory_mode
-        if (schedule_chunk_size is None) or (schedule_chunk_size <= 0):
-            self.schedule_chunk_size = 1e5
-        else:
-            self.schedule_chunk_size = schedule_chunk_size
         self.schedules = {}
         
         if not os.path.exists(self.outdir):
