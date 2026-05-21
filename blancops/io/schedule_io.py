@@ -11,9 +11,16 @@ from pathlib import Path
 
 from blancops.configs.constants import *
 import logging
+
 logger = logging.getLogger(__name__)
 
-SCHEDULE_KEYS = ['agent_timestamp', 'agent_field_id', 'agent_bin_id', 'agent_filter']
+SCHEDULE_KEYS = {
+    "timestamp": 'agent_timestamp',
+    'field_id': 'agent_field_id', 
+    'bin_id': 'agent_bin_id', 
+    'filter': 'agent_filter',
+    'filter_idx': 'agent_filter_idx'
+}
 import pandas as pd
 
 
@@ -36,23 +43,31 @@ _EMPTY_SISPI_DICT = OrderedDict([
 ])
 
 
-def write_SISPI_from_schedule(schedule_df, out_fn, save_dir, field_lookup, filter_override_val='CaHK', proposer='Cerny', program='magic-spring', dt_series=None,
-                              propid='2026A-563105', exptime=720):
-    # schedule_df = pd.read_csv(schedule_path)
+def write_SISPI_from_df(schedule_df, out_fn, save_dir, lookups, filter_override_val='CaHK', proposer='Cerny', program='magic-spring', dt_series=None,
+                              propid='test', use_date_prefix=True):
     obs_night_str = dt_series.dt.strftime('%Y-%m-%d').values[0]
-    outpath = save_dir / f"{obs_night_str}_{out_fn}"
+    outpath = save_dir / (f"{obs_night_str}_{out_fn}" if use_date_prefix else out_fn)
 
-    ordered_field_ids = schedule_df['agent_field_id'].values
+    ordered_field_ids = schedule_df[SCHEDULE_KEYS['field_id']].values
 
     input_dict = {}
-    input_dict['object'] = [str(field_lookup['object'].values[fid]) for fid in ordered_field_ids]
-    input_dict['RA'] = [round(float(field_lookup['ra'].values[fid] / units.deg), 5) for fid in ordered_field_ids]
-    input_dict['dec'] = [round(float(field_lookup['dec'].values[fid] / units.deg), 5) for fid in ordered_field_ids]
-    input_dict['filter'] = filter_override_val if filter_override_val is not None else schedule_df['filter'].to_list()
+    input_dict['object'] = [str(lookups.fields['object'].values[fid]) for fid in ordered_field_ids]
+    input_dict['RA'] = [round(float(lookups.fields['ra'].values[fid] / units.deg), 5) for fid in ordered_field_ids]
+    input_dict['dec'] = [round(float(lookups.fields['dec'].values[fid] / units.deg), 5) for fid in ordered_field_ids]
+    if filter_override_val is not None:
+        input_dict['filter'] = filter_override_val
+    else:
+        filter_col = 'filter' if 'filter' in schedule_df.columns else SCHEDULE_KEYS['filter']
+        input_dict['filter'] = schedule_df[filter_col].to_list()
+    filter_val = input_dict['filter']
+    if isinstance(filter_val, list):
+        filter_indices = np.array([FILTER2IDX[f] for f in filter_val])
+    else:
+        filter_indices = np.full(len(ordered_field_ids), FILTER2IDX[filter_val])
+    input_dict['expTime'] = lookups.fidfilt_exptime[ordered_field_ids, filter_indices].astype(int).tolist()
     input_dict['program'] = program
     input_dict['proposer'] = proposer
     input_dict['count'] = 1
-    input_dict['expTime'] = exptime
     input_dict['expType'] = "object"
     input_dict['wait'] = "False"
     input_dict['propid'] = propid
@@ -106,26 +121,27 @@ def save_survey_schedule(eval_metrics, save_dir, field_lookup, multinight_movie=
         for k, list_of_arrays in collected_metrics.items():
             # np.concatenate joins the arrays end-to-end
             if k == 'bin':
-                key = 'agent_bin_id'
+                key = SCHEDULE_KEYS['bin_id']
             elif k == 'field_id':
-                key = 'agent_field_id'
+                key = SCHEDULE_KEYS['field_id']
             elif k == 'filter_idx':
-                key = 'agent_filter'
+                key = SCHEDULE_KEYS['filter']
             elif k == 'timestamp':
-                key = 'agent_timestamp'
+                key = SCHEDULE_KEYS['timestamp']
 
             full_schedule[key] = np.concatenate(list_of_arrays)
 
         # Filter out zenith and wait states
-        sel_valid_obs = full_schedule['agent_bin_id'] != ZENITH_BIN_NUM
-        sel_valid_obs &= full_schedule['agent_bin_id'] != WAIT_SIGNAL
+        sel_valid_obs = full_schedule[SCHEDULE_KEYS['bin_id']] != ZENITH_BIN_NUM
+        sel_valid_obs &= full_schedule[SCHEDULE_KEYS['bin_id']] != WAIT_SIGNAL
         for k, v in full_schedule.items():
             full_schedule[k] = v[sel_valid_obs]
 
         # Save schedule
         df = pd.DataFrame(data={k: pd.Series(v) for k, v in full_schedule.items()})
-        df['agent_filter'] = df['agent_filter'].map(IDX2FILTER)
+        df[SCHEDULE_KEYS['filter']] = df[SCHEDULE_KEYS['filter']].map(IDX2FILTER)
         df.to_csv(schedule_path, index=False)
+        
     if save_SISPI:
         for night_key, night_dict in eval_metrics.items():
             if 'night' not in night_key:
@@ -143,32 +159,32 @@ def save_survey_schedule(eval_metrics, save_dir, field_lookup, multinight_movie=
             for k, list_of_arrays in collected_metrics.items():
                 # np.concatenate joins the arrays end-to-end
                 if k == 'bin':
-                    key = 'agent_bin_id'
+                    key = SCHEDULE_KEYS['bin_id']
                 elif k == 'field_id':
-                    key = 'agent_field_id'
+                    key = SCHEDULE_KEYS['field_id']
                 elif k == 'filter_idx':
-                    key = 'agent_filter'
+                    key = SCHEDULE_KEYS['filter']
                 elif k == 'timestamp':
-                    key = 'agent_timestamp'
+                    key = SCHEDULE_KEYS['timestamp']
 
                 schedule[key] = np.concatenate(list_of_arrays)
 
             # Filter out zenith and wait states
-            sel_valid_obs = schedule['agent_bin_id'] != ZENITH_BIN_NUM
-            sel_valid_obs &= schedule['agent_bin_id'] != WAIT_SIGNAL
+            sel_valid_obs = schedule[SCHEDULE_KEYS['bin_id']] != ZENITH_BIN_NUM
+            sel_valid_obs &= schedule[SCHEDULE_KEYS['bin_id']] != WAIT_SIGNAL
             assert all(sel_valid_obs == valid_mask)
             for k, v in schedule.items():
                 schedule[k] = v[sel_valid_obs]
 
             # Save schedule
-            dt_series = pd.Series(pd.to_datetime(schedule['agent_timestamp'], utc=True, unit='s') - pd.Timedelta(12, "h"))
+            dt_series = pd.Series(pd.to_datetime(schedule[SCHEDULE_KEYS['timestamp']], utc=True, unit='s') - pd.Timedelta(12, "h"))
             if len(dt_series) < 1:
                 continue
             obs_night_str = dt_series.dt.strftime('%Y-%m-%d').values[0]
 
             schedule_path = Path(save_dir) / f"survey_schedule_{obs_night_str}.csv"
             df = pd.DataFrame(data={k: pd.Series(v) for k, v in schedule.items()})
-            df['agent_filter'] = df['agent_filter'].map(IDX2FILTER)
+            df[SCHEDULE_KEYS['filter']] = df[SCHEDULE_KEYS['filter']].map(IDX2FILTER)
             df.to_csv(schedule_path, index=False)
-            write_SISPI_from_schedule(df, SISPI_fn, save_dir, field_lookup=field_lookup, filter_override_val='N395', dt_series=dt_series)
+            write_SISPI_from_df(df, SISPI_fn, save_dir, lookups=field_lookup, dt_series=dt_series)
     return full_schedule
