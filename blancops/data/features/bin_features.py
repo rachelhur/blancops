@@ -38,6 +38,8 @@ from blancops.ephemerides import ephemerides
 from blancops.configs.constants import *
  
 import logging
+
+from blancops.surveys.des_consts import _DES_SUN_EL_LIMIT
 logger = logging.getLogger(__name__)
  
  
@@ -53,14 +55,12 @@ _SURVEY_PROGRESS_BASE_KEYS = [
 _STALENESS_BASE_KEYS = ['t_since_last_visit']
 _INTERNAL_SENTINEL = np.nan
 
-# Sun-elevation horizon (degrees) used to define night boundaries for
-# feature computation. MUST match the value used in `build_train_lookups.py`
-# when constructing `night2ot_clock_seconds` — otherwise the OT clock here
-# and the OT clock baked into the lookups will disagree, and staleness math
-# will be off by the per-night delta in night duration. Hard-coded in both
-# places by design for now; promote to a shared constant if you find
-# yourself changing it.
-_SUN_EL_LIMIT_DEG = -10
+# Sun-elevation horizon (degrees) is used to define night duration in seconds
+# Currently defined to match the value used in 
+# `data/preprocessing `build_DES_lookups()` so that night2ot_clock_seconds 
+# is consistent. This param is used by features:
+# `t_until_set` and *can* be used by `t_since_last_visit` (not advised).
+_SUN_EL_LIMIT_DEG = _DES_SUN_EL_LIMIT
 
  
 # ============================================================================
@@ -176,6 +176,9 @@ def compute_bin_progress_features(
     ``max(night_total, target)`` once per night; the new behavior keeps the
     normalization "what you see is what you get" from the agent's perspective.
     """
+    if t_since_last_visit_divisor is None:
+        t_since_last_visit_divisor = 1
+            
     if idx2filter is None:
         idx2filter = IDX2FILTER
  
@@ -229,6 +232,7 @@ def compute_bin_progress_features(
         )
         res = np.full(nbins, np.inf, dtype=np.float32)
         np.minimum.at(res, bins_mem, age_v)
+        # np.clip(res, 0.0, 1.0, out=res)
         res[~act_s | np.isinf(res)] = _INTERNAL_SENTINEL
         features[key] = res
 
@@ -455,7 +459,8 @@ def validate_history_bin_features(features, do_filt, idx2filter=None):
             continue
         arr = features[bk]
         valid = ~np.isnan(arr)
-        bad = valid & ((arr < 0.0) | (arr > 1.0 + 1e-5))
+        # bad = valid & ((arr < 0.0) | (arr > 1.0 + 1e-5))
+        bad = valid & ((arr < 0.0)
         if np.any(bad):
             b = np.where(bad)
             raise RuntimeError(
@@ -713,7 +718,7 @@ class BinFeatureEngineer:
         # Resolve the OT divisor and the OT lookups once. These are
         # required for staleness; raise loudly if absent so a stale-feature
         # bug never silently degrades to all-sentinel.
-        total_ot_sec = self._require_lookup_attr("total_ot_sec")
+        # total_ot_sec = self._require_lookup_attr("total_ot_sec")
         ot_clock_dict = self._require_lookup_attr("night2ot_clock_seconds")
         if self.do_filt:
             last_visit_ot_dict = self._require_lookup_attr(
@@ -812,7 +817,7 @@ class BinFeatureEngineer:
                         nbins=nbins, do_filt=True,
                         timestamp=obs_t,
                         last_visit_timestamps=last_visit_ot,
-                        t_since_last_visit_divisor=total_ot_sec,
+                        t_since_last_visit_divisor=None,#total_ot_sec,
                     )
                 else:
                     hist = compute_bin_progress_features(
@@ -822,7 +827,7 @@ class BinFeatureEngineer:
                         nbins=nbins, do_filt=False,
                         timestamp=obs_t,
                         last_visit_timestamps=last_visit_ot_1d,
-                        t_since_last_visit_divisor=total_ot_sec,
+                        t_since_last_visit_divisor=None,#total_ot_sec,
                     )
                 for k, v in hist.items():
                     if k in features:

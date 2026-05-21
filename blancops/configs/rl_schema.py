@@ -9,9 +9,10 @@ from blancops.configs.enums import *
 from blancops.configs.constants import _DEFAULT_NORM_MAPPING, _FILTER_DEP_FEATURE_NAMES, TRAIN_DATA_PATH, _BIN_FEATURES
 from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, _NORM_TYPES
+from blancops.surveys.des_consts import _DES_SUN_EL_LIMIT
 
 class ActionConstraints(BaseModel): 
-    sun_el_limit: float = -10
+    sun_el_limit: float = _DES_SUN_EL_LIMIT
     airmass_limit: float = 3.0
     
     @field_validator('sun_el_limit')
@@ -127,6 +128,8 @@ class BaseDataConfig(BaseModel):
         return self
 
 class TrainDataConfig(BaseDataConfig):
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     years: List[int] = [2013, 2014, 2015, 2016, 2017, 2018, 2019] # full set of data
     months: List[int] = [i+1 for i in range(12)]
     days: List[int] = [i+1 for i in range(31)]

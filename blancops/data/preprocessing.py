@@ -1,3 +1,4 @@
+import operator
 from pathlib import Path
 
 import pandas as pd
@@ -12,46 +13,93 @@ from blancops.math import units
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 from blancops.configs.constants import FILTER2IDX
 from blancops.data.lookup_tables import LookupTables, TrainLookupTables
-from blancops.io.fits_io import fits_to_df
+from blancops.io.fits_io import fits_to_df, preprocess_fits
 from blancops.math import units
 
 import logging
+
+from blancops.surveys.des_consts import _DES_SUN_EL_LIMIT
 logger = logging.getLogger(__name__)
 
 from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 
 _VALID_TEFF_THRESHOLD = 0.3
+_OP_MAP = {
+    '=': operator.eq,
+    '==': operator.eq,
+    '>': operator.gt,
+    '<': operator.lt,
+    '>=': operator.ge,
+    '<=': operator.le,
+    '!=': operator.ne
+}
 
-def preprocess_historic_data(fits_path: str | Path | None = None, df=None, sel=None) -> pd.DataFrame:
-    """Loads data from fits file, performs hard coded cuts, adds universally required columns, and converts to degrees and utc timestamp
+_DES_SELECTION_CRITERIA = \
+    {'propid': ('2012B-0001', '=='), 
+     'exptime': (90, '=='),
+     'datetime': (pd.Timestamp("2000-01-01", tz="UTC"), '>='),
+     'teff': (np.nan, '!=')
+     }
+_DES_UNWANTED_OBJECTS = ["guide", "DES vvds","J0","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "(outlier)"]
+
+def load_and_process_historic_data(
+    fits_path: str | Path | None = None, 
+    df: pd.DataFrame | None = None,
+    start_date: str | pd.Timestamp | None = None, 
+    end_date: str | pd.Timestamp | None = None, 
+    valid_years=None, 
+    valid_months=None, 
+    valid_days=None, 
+    valid_filters=None,
+    selections=_DES_SELECTION_CRITERIA,
+    objects_to_remove=_DES_UNWANTED_OBJECTS, 
+    outlier_cutoff_dist=3.5
+    ) -> pd.DataFrame:
+    """Loads data from fits file, applies selection criteria, and processes into a clean DataFrame ready for lookup construction and feature engineering.
     
     Args:
     =====
-    fits_path: str | Path
+    fits_path (str | Path): str | Path
         Path to fits file
-    sel: 
-        NOT YET IMPLEMENTED. Will be selection criteria for the dataframe
+    df (pd.DataFrame | None): pd.DataFrame | None
+        DataFrame to process
+    selections (dict): dict
+        Selection criteria for the dataframe. Currently only supports equal, greater than, less than.
     """
-    df = fits_to_df(fits_path)
-    
-    if sel is None:
-        sel = (df['propid'] == '2012B-0001') & (df['exptime'] > 40) & (df['exptime'] < 100) & (~np.isnan(df['teff']))
-    # sel &= df['exptime'] == 90 # use only 90s exposures
-    df = df[sel].copy()
-    df['datetime'] = pd.to_datetime(df['datetime'], utc=True)
-    df['night'] = (df['datetime'] - pd.Timedelta(hours=12)).dt.normalize()
-    df['night'] = df['night'] + (timedelta(days=1) - pd.Timedelta(seconds=1))
-    df = df[df['datetime'].dt.year > 2010] # There are some 1970 rows even after selecting propid
-    
-    df = _convert_df_to_radians(df)
+    if df is None:
+        df = preprocess_fits(fits_path)
 
-    timestamps = (df['datetime'] - pd.Timestamp("1970-01-01", tz='utc')) // pd.Timedelta("1s")
-    df['timestamp'] = timestamps
-    df = _add_essential_cols(df)
-    df = df.sort_values(by='timestamp').reset_index(drop=True)
+    df = df\
+        .pipe(_apply_selection_criteria, selections=selections) \
+        .pipe(_convert_df_to_radians) \
+        .pipe(_add_essential_cols) \
+        .pipe(_filter_observing_timeframe, start_date=start_date, end_date=end_date, valid_years=valid_years, valid_months=valid_months, valid_days=valid_days, valid_filters=valid_filters) \
+        .pipe(_remove_object_outliers, cutoff_dist=outlier_cutoff_dist) \
+        .pipe(_remove_unwanted_objects, objects_to_remove=objects_to_remove)
+    df.sort_values(by='timestamp').reset_index(drop=True, inplace=True)
+    
     return df
 
+def _apply_selection_criteria(df, selections: dict):
+    sel_mask = np.ones(len(df), dtype=bool)
+    
+    for crit_key, crit_val in selections.items():
+        if isinstance(crit_val, tuple) and len(crit_val) == 2:
+            val, op_str = crit_val
+        else:
+            val = crit_val
+            op_str = '=='  # Default to equality if no operator is provided
+            
+        try:
+            op_func = _OP_MAP[op_str]
+        except KeyError:
+            raise ValueError(f"Operator '{op_str}' is not supported. Use one of {list(_OP_MAP.keys())}")
+            
+        sel_mask &= op_func(df[crit_key], val)
+    df = df[sel_mask].copy()
+    return df
+    
 def _convert_df_to_radians(df: pd.DataFrame, key_list: list = []):
     key_list += ['ra', 'dec', 'az', 'zd', 'ha']
     key_list = list(set(key_list))
@@ -60,45 +108,16 @@ def _convert_df_to_radians(df: pd.DataFrame, key_list: list = []):
 
 def _add_essential_cols(df):
     df['el'] = np.pi/2 - df['zd'].values
-    # df['night_idx'] = pd.factorize(df['night'])[0]
-    # df['t_survey'] = calc_t_survey(df['night_idx'].values, df['night_idx'].max() + 1)
-    
-    # # df['t_survey'] = df['night_idx']/(df['night_idx'].max() + 1) # normalize to [0, 1]
-    
-    # for f in FILTER2IDX.keys():
-    #     condition = (df['filter'] == f) & (df['teff'] >= 0.3)
-    #     filter_counts_arr = condition.cumsum()
-    #     urgency = calc_urgency(filter_counts_arr, filter_counts_arr.max(), df['night_idx'].values, df['night_idx'].max() + 1)
-    #     df[f'raw_survey_progress_{f}'] = filter_counts_arr
-    #     df[f'survey_progress_{f}'] = filter_counts_arr / filter_counts_arr.max()
-    #     df[f'urgency_{f}'] = urgency
     return df
     
-def remove_undesired_dates_and_objects(df, objects_to_remove=None, years_keep=None, months_keep=None, days_keep=None, filters_keep=None):
-    """Drops nights (1) not within the years, months, and days specified, and (2) with specific objects (ie, SN or GW followup which are observed for long stretches of time)"""
-    if objects_to_remove is None:
-        objects_to_remove = ["guide", "DES vvds","J0","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "(outlier)"]
-
-    df = _keep_dates(df, years_keep, months_keep, days_keep, filters_keep)
-
-    # Some fields are mis-labelled - add '(outlier)' to these object names so that they are treated as separate fields
-    df = _remove_object_outliers(df)
-    
-    # Remove specific nights according to object name
-    # df = remove_specific_objects(objects_to_remove=objects_to_remove, df=df)
+def _remove_unwanted_objects(df, objects_to_remove=_DES_UNWANTED_OBJECTS):
+    """Removes objects that have specific substrings in their object name"""    
     pattern = '|'.join(re.escape(obj) for obj in objects_to_remove)
     mask = ~df['object'].str.contains(pattern, case=False, na=False, regex=True) & (df['object'] != '')
     
     # Filter the DataFrame
     df = df[mask]
-
-    df.sort_values(by='timestamp').reset_index(drop=True, inplace=True)
     return df
-
-# def _remove_outliers(df):
-#     """Removes objects that have (outlier) in its object name"""
-#     df = df[~df['object'].astype(str).str.contains('(outlier)', regex=False, na=False)]
-#     return df
 
 def _remove_object_outliers(df, cutoff_dist=3.5) -> pd.DataFrame:
     """Remove rows if they are outside of a certain cutoff from the object's median RA/Dec.
@@ -129,23 +148,64 @@ def _remove_object_outliers(df, cutoff_dist=3.5) -> pd.DataFrame:
     cleaned_df = df.drop(index=indices_to_drop)
     return cleaned_df
 
-def _keep_dates(df, specific_years=None, specific_months=None, specific_days=None, specific_filters=None):
-    """Filters dataframe for selected years, months, days, and filters"""
-    if specific_years:
-        df = df[df['night'].dt.year.isin(specific_years)]
-        assert not df.empty, f"Years {specific_years} do not exist in dataset"
-    if specific_months:
-        df = df[df['night'].dt.month.isin(specific_months)]
-        assert not df.empty, f"Months {specific_months} do not exist in years {specific_years}"
-    if specific_days:
-        df = df[df['night'].dt.day.isin(specific_days)]
-        assert not df.empty, f"Days {specific_days} do not exist in months {specific_months}, and years {specific_years}"
-    if specific_filters:
-        df = df[df['filter'].isin(specific_filters)]
-        assert not df.empty, f"Filters {specific_filters} do not exist in days {specific_days}, months {specific_months}, and years {specific_years}"
-    assert not df.empty, "No observations found for the specified year/month/day/filter selections."
-    
-    return df
+def _filter_observing_timeframe(
+    df: pd.DataFrame, 
+    start_date: str | pd.Timestamp | None = None, 
+    end_date: str | pd.Timestamp | None = None, 
+    valid_years: list | int | None = None, 
+    valid_months: list | int | None = None, 
+    valid_days: list | int | None = None, 
+    valid_filters: list | str | None = None
+) -> pd.DataFrame:
+    """
+    Filters dataframe by a continuous date range and/or discrete allowed intervals.
+    """
+    # Helper to safely handle scalars or lists
+    def _to_list(val):
+        if val is None:
+            return None
+        return [val] if isinstance(val, (int, str)) else list(val)
+
+    mask = pd.Series(True, index=df.index)
+    night_dt = pd.to_datetime(df['night'])
+
+    # 1. Continuous Range Bounds
+    if start_date is not None:
+        mask &= night_dt >= pd.to_datetime(start_date)
+        if not mask.any():
+            raise ValueError(f"No data found after start_date: {start_date}")
+            
+    if end_date is not None:
+        mask &= night_dt <= pd.to_datetime(end_date)
+        if not mask.any():
+            raise ValueError(f"No data found before end_date: {end_date} (within prior cuts)")
+
+    # 2. Discrete Interval Inclusions
+    valid_years = _to_list(valid_years)
+    if valid_years:
+        mask &= night_dt.dt.year.isin(valid_years)
+        if not mask.any():
+            raise ValueError(f"No data matches years: {valid_years} (within prior cuts)")
+
+    valid_months = _to_list(valid_months)
+    if valid_months:
+        mask &= night_dt.dt.month.isin(valid_months)
+        if not mask.any():
+            raise ValueError(f"No data matches months: {valid_months} (within prior cuts)")
+
+    valid_days = _to_list(valid_days)
+    if valid_days:
+        mask &= night_dt.dt.day.isin(valid_days)
+        if not mask.any():
+            raise ValueError(f"No data matches days: {valid_days} (within prior cuts)")
+
+    valid_filters = _to_list(valid_filters)
+    if valid_filters:
+        mask &= df['filter'].isin(valid_filters)
+        if not mask.any():
+            raise ValueError(f"No data matches filters: {valid_filters} (within prior cuts)")
+
+    return df[mask].copy()
 
 
 def _get_object_median_ra(dither_ras):
@@ -175,16 +235,18 @@ def build_DES_lookups(fits_path=None, outdir=None):
     fits_path = Path(fits_path or TRAIN_DATA_PATH).resolve()
     outdir = Path(outdir or TRAIN_DATA_DIR).resolve()
     
-    df = preprocess_historic_data(fits_path=fits_path)
-    df = remove_undesired_dates_and_objects(df)
+    df = load_and_process_historic_data(fits_path=fits_path)
     if len(df) == 0: # Fixed the logical bug here: len(df) == 0 means no obs found
         logger.warning("No observations found for the specified year/month/day/filter selections.")
         raise ValueError
     
+    # df['field_id'] = pd.factorize(df['object'])[0]
+    
+    object2idx = {obj_name: idx for idx, obj_name in enumerate(sorted(df['object'].unique()))}
     # field_id is 0..N-1 contiguous by construction (pd.factorize).
-    df['field_id'] = pd.factorize(df['object'])[0]
+    df['field_id'] = df['object'].map(object2idx)
     df["filt_idx"] = df["filter"].map(FILTER2IDX)
-
+    
     num_fields = df["field_id"].nunique()
     nfilters = len(FILTER2IDX)
     
@@ -266,7 +328,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
     cum_ot = 0.0
         
     for i, (night, night_df) in enumerate(df.groupby("night")):
-        sunset_ts, sunrise_ts = get_night_boundaries(night, sun_el_limit=-10)
+        sunset_ts, sunrise_ts = get_night_boundaries(night, sun_el_limit=_DES_SUN_EL_LIMIT)
         night2ot_clock_seconds[night] = cum_ot
         night_dur = sunrise_ts - sunset_ts
         # night2idx[night] = i

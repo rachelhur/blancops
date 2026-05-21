@@ -349,7 +349,7 @@ class GlobalFeatureEngineer:
         if 'lst' in self.base_features:
             _, df['lst_hours'] = calc_lst(df['datetime'].values)
 
-        df['t_night'] = df.groupby('night')['timestamp'].transform(normalize_times)
+        df['t_night'] = df.groupby('night')['timestamp'].transform(normalize_times, sun_el_limit=-10.0)
         return df
     
     def _add_moon_distance(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -535,22 +535,28 @@ def get_night_boundaries(
     """Compute (sunset_ts, sunrise_ts) UTC unix timestamps for the
     Blanco observing night identified by `anchor`.
 
-    `anchor` accepts whatever is most natural at the call site:
-      - **Unix timestamp** (numeric, including numpy scalars): a moment
-        in time. The night is determined with a local-noon cutover —
-        moments before local solar noon resolve to the night just
-        ended, after to the upcoming. References inside an observing
-        night always land on that night.
-      - **Datetime / Timestamp / ISO string**: same — interpreted as a
-        moment, reduced via the unix-timestamp path. (For
-        `first_row["night"]` at 23:59:59 UTC, the moment is well
-        inside the local-noon cutover region for its night, so this
-        Just Works.)
-      - **`date`**: treated as the canonical evening-date of the
-        observing night and used directly, no cutover needed.
-      - **`pd.Series`**: uses the first element. Convenient for
-        `df.groupby('night').transform(...)` callbacks where every
-        element of the group belongs to the same night by construction.
+    Args
+    ----
+    anchor : float | int | np.integer | np.floating | datetime | date | pd.Timestamp | str | pd.Series
+        `anchor` accepts whatever is most natural at the call site:
+        - **Unix timestamp** (numeric, including numpy scalars): a moment
+            in time. The night is determined with a local-noon cutover —
+            moments before local solar noon resolve to the night just
+            ended, after to the upcoming. References inside an observing
+            night always land on that night.
+        - **Datetime / Timestamp / ISO string**: same — interpreted as a
+            moment, reduced via the unix-timestamp path. (For
+            `first_row["night"]` at 23:59:59 UTC, the moment is well
+            inside the local-noon cutover region for its night, so this
+            Just Works.)
+        - **`date`**: treated as the canonical evening-date of the
+            observing night and used directly, no cutover needed.
+        - **`pd.Series`**: uses the first element. Convenient for
+            `df.groupby('night').transform(...)` callbacks where every
+            element of the group belongs to the same night by construction.
+    Returns
+    -------
+    (sunset_ts, sunrise_ts)
     """
     noon_ts = _noon_anchor_from_input(anchor, observer_lon_rad)
     sunset_ts = calc_twilight(noon_ts, "set", sun_el_limit)
@@ -720,7 +726,7 @@ def get_zenith_features(original_df):
     zenith_df['field_id'] = ZENITH_FIELD_ID
     zenith_df['filter'] = ZENITH_FILTER
     zenith_df['datetime'] = pd.to_datetime(zenith_df['datetime'], utc=True)
-    zenith_df['night'] = pd.to_datetime(zenith_df['night'], utc=True)
+    # zenith_df['night'] = pd.to_datetime(zenith_df['night'], utc=True)
 
     return zenith_df
 

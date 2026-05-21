@@ -14,10 +14,9 @@ from blancops.configs.enums import RewardStructure
 from blancops.ephemerides import ephemerides
 from blancops.math import geometry
 
-from blancops.data.preprocessing import remove_undesired_dates_and_objects
 from blancops.configs.constants import _CYCLICAL_FEATURE_NAMES, _NUM_FILTERS, FILTER2IDX, ZENITH_FILTER
 
-from blancops.data.features.glob_features import GlobalFeatureEngineer, calc_inst_teff_rate
+from blancops.data.features.glob_features import GlobalFeatureEngineer
 from blancops.data.features.bin_features import BinFeatureEngineer
 from blancops.data.features.normalizations import StateNormalizer, build_normalizer_kwargs, setup_feature_names
 
@@ -68,7 +67,7 @@ def _collapse_cyclical_expansions(feature_names, cyclical_names):
 class OfflineDataset(torch.utils.data.Dataset):
     def __init__(
         self, mode, df=None, cfg=None, lookups=None,
-        years=None, months=None, days=None, filters=None,
+        valid_years=None, valid_months=None, valid_days=None, valid_filters=None,
         z_score_stats=None, rel_norm_stats=None
     ): 
         # Setup configurations, normalization method, and lookups
@@ -76,15 +75,6 @@ class OfflineDataset(torch.utils.data.Dataset):
         self._setup_configuration(cfg, norm_kwargs)
         self.lookups = lookups
 
-        # Raw Data Filtering
-        df = remove_undesired_dates_and_objects(
-            df,
-            years_keep=cfg.data.years if years is None else years, 
-            months_keep=cfg.data.months if months is None else months, 
-            days_keep=cfg.data.days if days is None else days,
-            filters_keep=cfg.data.filters if filters is None else filters,
-        )
-        
         # Feature Engineering Pipeline
         self._engineer_features(df, cfg, norm_kwargs)
 

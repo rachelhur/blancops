@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import pandas as pd
 import torch
 import matplotlib
 
@@ -10,12 +11,12 @@ import time
 from blancops.rl.trainer import Trainer
 from blancops.utils.sys_utils import get_system_device, seed_everything
 from blancops.io.logger_utils import configure_logger
-from blancops.data.preprocessing import preprocess_historic_data 
+from blancops.data.preprocessing import load_and_process_historic_data 
 from blancops.data.dataset import OfflineDataset
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
 from blancops.rl.registry import build_algorithm
 from blancops.configs.rl_schema import ExperimentConfig, load_and_validate, resolve_and_save
-from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, _BIN_FEATURES, WORKSPACE
+from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, WORKSPACE
 
 import argparse
 import logging
@@ -85,7 +86,17 @@ def main():
     # ---------------------- #
 
     # --- LOAD DATA AND CONSTRUCT DATASET --- #
-    df = preprocess_historic_data(TRAIN_DATA_PATH)
+    start_date = pd.Timestamp(cfg.data.start_date) if cfg.data.start_date is not None else None
+    end_date = pd.Timestamp(cfg.data.end_date) if cfg.data.end_date is not None else None
+    df = load_and_process_historic_data(
+        fits_path=TRAIN_DATA_PATH,
+        start_date=start_date,
+        end_date=end_date,
+        valid_years=cfg.data.years,
+        valid_months=cfg.data.months,
+        valid_days=cfg.data.days,
+        valid_filters=cfg.data.filters,
+    )
     train_lookups = TrainLookupTables.load_from_dir(TRAIN_DATA_DIR)
     train_dataset = OfflineDataset(
         mode='train',
