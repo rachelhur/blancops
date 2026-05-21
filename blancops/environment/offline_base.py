@@ -19,7 +19,7 @@ from blancops.configs.constants import WAIT_SIGNAL
 import logging
 logger = logging.getLogger(__name__)
  
-class OfflineBlancoEnvBase(BaseBlancoEnv):
+class BaseBlancoOfflineEnv(BaseBlancoEnv):
     """Abstract base for envs with a known multi-night schedule.
  
     Subclasses implement two hooks:
@@ -59,7 +59,6 @@ class OfflineBlancoEnvBase(BaseBlancoEnv):
     def _begin_episode(self) -> None:
         self._night_idx = -1
         self._start_new_night()
-        print(f"OfflineBlancoEnvBase._begin_episode(): Night 0 self._ot_at_sunset = {self._ot_at_sunset}")
  
     def _advance_after_action(self, action: dict) -> None:
         bin_num = int(action["bin"])

@@ -10,10 +10,10 @@ from blancops.data.features.glob_features import get_night_boundaries
  
 import logging
 
-from blancops.environment.offline_base import OfflineBlancoEnvBase
+from blancops.environment.offline_base import BaseBlancoOfflineEnv
 logger = logging.getLogger(__name__)
 
-class HistoricBlancoEnv(OfflineBlancoEnvBase):
+class HistoricBlancoEnv(BaseBlancoOfflineEnv):
     """Validation against historically observed nights.
  
     Driven by a pandas groupby keyed on night. Each night's initial visit
