@@ -3,18 +3,17 @@ import numpy as np
 import torch
 import matplotlib
 
-from blancops.data.lookup_tables import LookupTables
+from blancops.data.lookup_tables import LookupTables, TrainLookupTables
 matplotlib.use('Agg')
 import time
 
 from blancops.rl.trainer import Trainer
-# from blancops.rl.algorithms.builder import build_algorithm
 from blancops.utils.sys_utils import get_system_device, seed_everything
-from blancops.io.logger_utils import configure_logger, setup_logger_old
+from blancops.io.logger_utils import configure_logger
 from blancops.data.preprocessing import preprocess_historic_data 
 from blancops.data.dataset import OfflineDataset
 from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
-from blancops.rl.registry import build_algorithm, build_network
+from blancops.rl.registry import build_algorithm
 from blancops.configs.rl_schema import ExperimentConfig, load_and_validate, resolve_and_save
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH, _BIN_FEATURES, WORKSPACE
 
@@ -87,7 +86,7 @@ def main():
 
     # --- LOAD DATA AND CONSTRUCT DATASET --- #
     df = preprocess_historic_data(TRAIN_DATA_PATH)
-    train_lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, include_historic=True)
+    train_lookups = TrainLookupTables.load_from_dir(TRAIN_DATA_DIR)
     train_dataset = OfflineDataset(
         mode='train',
         df=df,

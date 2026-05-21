@@ -11,7 +11,7 @@ from blancops.math import units
 
 from blancops.configs.constants import TRAIN_DATA_DIR, TRAIN_DATA_PATH
 from blancops.configs.constants import FILTER2IDX
-from blancops.data.lookup_tables import LookupTables
+from blancops.data.lookup_tables import LookupTables, TrainLookupTables
 from blancops.io.fits_io import fits_to_df
 from blancops.math import units
 
@@ -349,7 +349,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
     logger.info(" [+] Constructed start-of-night 'Snapshots' Lookup (required for history-based feature construction) ")
 
     # ---------- Construct LookupTable and save to disk ----------
-    lookups = LookupTables(
+    lookups = TrainLookupTables(
         fields=fields,
         target_fidfilt_counts=target_fidfilt_counts,
         fidfilt_exptime=fidfilt_exptime,
