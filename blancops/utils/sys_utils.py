@@ -71,7 +71,7 @@ def get_workspace_dir() -> Path:
 #         d[keys[-1]] = value
 #     return nested
 
-def get_device():
+def get_system_device():
     device = torch.device(
         "cuda" if torch.cuda.is_available() else
         "cpu"   
