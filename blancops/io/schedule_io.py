@@ -12,8 +12,6 @@ from pathlib import Path
 from blancops.configs.constants import *
 import logging
 logger = logging.getLogger(__name__)
-from tqdm.contrib.logging import logging_redirect_tqdm
-
 
 SCHEDULE_KEYS = ['agent_timestamp', 'agent_field_id', 'agent_bin_id', 'agent_filter']
 import pandas as pd
