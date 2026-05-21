@@ -84,7 +84,7 @@ class LookupTables:
         #     fidfilt_running,
         #     (valid_night["field_id"].values, valid_night["filt_idx"].values),
         #     1,
-        )
+        # )
 
         
     @classmethod
