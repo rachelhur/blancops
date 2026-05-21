@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
  
 from blancops.environment.base import StateSnapshot
-from blancops.data.features.glob_features import calc_twilight, get_night_boundaries
+from blancops.data.features.glob_features import get_night_boundaries
  
 import logging
 

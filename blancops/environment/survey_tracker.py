@@ -102,7 +102,7 @@ class SurveyProgressTracker:
             )
         self._counts[:] = counts
  
-    def add_new_field(self, count: np.ndarray | int, target: np.ndarray | int) -> None:
+    def add_new_field(self, count: np.ndarray | int, targets: np.ndarray | int) -> None:
         """Extends tracker """
         targets = np.asarray(targets, dtype=np.int32)
         if targets.shape != self._target_counts.shape:

@@ -11,10 +11,28 @@ import pandas as pd
 
 from blancops.configs.enums import LookupKeys
 from blancops.configs.constants import FILTER2IDX
+from blancops.data.features.glob_features import get_night_boundaries
 from blancops.math import units
 
 logger = logging.getLogger(__name__)
 
+def _calc_total_survey_ot(observing_nights, sun_el_limit=-10, per_night_overshoot_s=120.0,):
+    ot_total = 0
+    for i, night_str in enumerate(observing_nights):
+        parts = night_str.split('-')
+        night_portion = parts[-1]
+        date_str = "-".join(parts[:3])
+        sunset, sunrise = get_night_boundaries(date_str, sun_el_limit=sun_el_limit)
+        night_dur = sunrise - sunset
+        is_half = (night_portion == 'half1') or (night_portion == 'half2') or (night_portion == 'half')
+        if night_portion == 'full':
+            ot_total += night_dur
+        elif is_half:
+            ot_total += night_dur / 2
+        else:
+            raise ValueError(f"The observing night portion must be one of `full`, `half1`, `half2` or `half`. \
+                                The observing night given at index {i} was {night_str}")
+    return ot_total + per_night_overshoot_s #  buffer
 
 @dataclass(frozen=True)
 class LookupTables:
@@ -31,6 +49,7 @@ class LookupTables:
     target_fidfilt_counts: np.ndarray   # (nfields, nfilters) int
     fidfilt_exptime: np.ndarray         # (nfields, nfilters) float
     dir: Path
+    total_ot_sec: float
  
     # Derived marginals — populated in __post_init__, never set by callers.
     target_fid_counts: np.ndarray = field(init=False, default=None, repr=False)
@@ -38,6 +57,8 @@ class LookupTables:
 
     # Optional historical counts
     historic_df: Optional[pd.DataFrame] = None
+    
+    # Total survey time (past and future)
     
     # ------------------------------------------------------------------
     # I/O
@@ -61,12 +82,15 @@ class LookupTables:
             target_fidfilt_counts = pickle.load(f)
         with open(get_path(LookupKeys.FIDFILT_EXPTIME), "rb") as f:
             fidfilt_exptime = pickle.load(f)
+        with open(get_path(LookupKeys.TOTAL_OT_SECONDS), "rb") as f:
+            total_ot_sec = np.float64(f.read())
 
         return {
             "fields": fields,
             "target_fidfilt_counts": target_fidfilt_counts,
             "fidfilt_exptime": fidfilt_exptime,
             "dir": data_dir,
+            "total_ot_sec": total_ot_sec
         }
 
     def _load_historic_kwargs(cls, data_dir: Path, overrides: Dict[LookupKeys, str]) -> dict:
@@ -86,7 +110,12 @@ class LookupTables:
         #     1,
         # )
 
-        
+
+    @classmethod
+    def _get_required_columns(cls):
+        """Allows subclasses to override expected columns based on input data shape."""
+        return {"ra", "dec", "filter", "count", "exptime"}
+            
     @classmethod
     def load_from_dir(
         cls,
@@ -117,7 +146,10 @@ class LookupTables:
         # EXPOSURE TIME PER (FIELD, FILTER) PAIR
         with open(outdir / LookupKeys.FIDFILT_EXPTIME.value, "wb") as f:
             pickle.dump(self.fidfilt_exptime, f)
-                
+        # TOTAL SURVEY OBSERVING TIME IN SECONDS 
+        with open(outdir / LookupKeys.TOTAL_OT_SECONDS.value, "w") as f:
+            f.write(f"{self.total_ot_sec}")
+
     # ------------------------------------------------------------------
     # Composition
     # ------------------------------------------------------------------
@@ -226,6 +258,7 @@ class LookupTables:
         fields_df: Optional[pd.DataFrame] = None,
         fields_path: Optional[str | Path] = None,
         outdir: Optional[Path] = None,
+        survey_ot_total = None,
         write_to_disk: bool = False,
     ) -> "LookupTables":
         """Build a LookupTables from a JSON fields file."""
@@ -246,7 +279,7 @@ class LookupTables:
         df.columns = df.columns.str.lower()
  
         # Ensure required columns are present ------------------------------
-        required = {"ra", "dec", "filter", "count", "exptime"}
+        required = cls._get_required_columns()
         missing = required - set(df.columns)
         if missing:
             raise ValueError(f"Missing columns: {missing}")
@@ -312,6 +345,7 @@ class LookupTables:
             target_fidfilt_counts=target_fidfilt_counts,
             fidfilt_exptime=fidfilt_exptime,
             dir=resolved_dir,
+            total_ot_sec=survey_ot_total
         )
  
         if write_to_disk:
@@ -393,12 +427,16 @@ class TrainLookupTables(LookupTables):
     night2fid_last_visit_ot: Optional[dict] = None
     night2fidfilt_last_visit_ot: Optional[dict] = None
     night2ot_clock_seconds: Optional[dict] = None
-    total_ot_sec: Optional[float] = None
  
     # Derived marginals
     night2idx: Optional[dict] = None
     total_nights: Optional[int] = None
 
+    @classmethod
+    def _get_required_columns(cls):
+        # We calculate targets from teff, so 'count' is no longer required in the raw data
+        return {"ra", "dec", "filter", "exptime", "teff"}
+    
     @classmethod
     def load_from_dir(
         cls,
@@ -422,9 +460,7 @@ class TrainLookupTables(LookupTables):
             kwargs["night2fidfilt_visit_hist"] = pickle.load(f)
         with open(get_path(LookupKeys.NIGHT2OT_CLOCK_SECONDS), "rb") as f:
             kwargs["night2ot_clock_seconds"] = pickle.load(f)
-        with open(get_path(LookupKeys.TOTAL_OT_SECONDS), "r") as f:
-            kwargs["total_ot_sec"] = np.float64(f.read())
-            
+
         # 3. Add last-visit timestamps
         fid_lv_path = get_path(LookupKeys.NIGHT2FID_LAST_VISIT_TS)
         ff_lv_path = get_path(LookupKeys.NIGHT2FIDFILT_LAST_VISIT_TS)
@@ -507,9 +543,6 @@ class TrainLookupTables(LookupTables):
         if self.night2ot_clock_seconds is not None:
             with open(outdir / LookupKeys.NIGHT2OT_CLOCK_SECONDS.value, "wb") as f:
                 pickle.dump(self.night2ot_clock_seconds, f)
-        if self.total_ot_sec is not None:
-            with open(outdir / LookupKeys.TOTAL_OT_SECONDS.value, "w") as f:
-                f.write(f"{self.total_ot_sec}")
 
     def merge(
         self,

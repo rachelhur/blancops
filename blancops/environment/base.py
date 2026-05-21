@@ -83,6 +83,7 @@ class StateSnapshot:
 
 _FILTER_NAMES = list(FILTER2IDX.keys())
 
+_STALENESS_BIN_REQUIREMENTS = [("attr", "lookups.total_ot_sec")]
 
 _FEATURE_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
     "fwhm": [("hook", "_get_fwhm")],
@@ -242,6 +243,12 @@ class BaseBlancoEnv(gym.Env, ABC):
         # via a StateSnapshot (Historic loads recorded visits; Online keeps
         # whatever the snapshot from telemetry contains).
         self._survey_progress_tracker.zero_counts()
+        # Zero out running counts AND last-visit timestamps by default.
+        # _begin_episode() may overwrite via a StateSnapshot (Historic loads
+        # recorded visits; Online keeps whatever the snapshot from telemetry
+        # contains; Offline optionally seeds night 0 from initial_* kwargs).
+        self._survey_progress_tracker.zero_counts()
+        self._last_visit_ot.fill(np.nan)
         
         # Subclass-defined episode start: load night 0, sync telemetry, etc.
         self._begin_episode()
@@ -742,6 +749,10 @@ class BaseBlancoEnv(gym.Env, ABC):
             bins_per_field, v_mask = self._compute_bin_assignments(timestamp)
             current_counts, target_counts = self._tracker_counts_for_history(tracker)
             ot_now = self._ot_at_sunset + (self._ts - self._sunset_ts)
+            # print("dtype:", self._last_visit_ot.dtype,
+            #         "nan count:", np.isnan(self._last_visit_ot).sum(),
+            #         "sentinel count:", (self._last_visit_ot < -1e17).sum())
+            # print(self.lookups.total_ot_sec, self._last_visit_ot, self._sunrise_ts - self._sunset_ts)
             features.update(
                 compute_bin_progress_features(
                     current_counts=current_counts,
@@ -753,7 +764,7 @@ class BaseBlancoEnv(gym.Env, ABC):
                     idx2filter=self.idx2filter,
                     timestamp=ot_now,
                     last_visit_timestamps=self._last_visit_ot,
-                    t_since_last_visit_divisor=self.lookups.total_ot_sec
+                    t_since_last_visit_divisor=None, #self.lookups.total_ot_sec
                 )
             )
         # for key in self.bin_feature_names:
@@ -888,10 +899,6 @@ class BaseBlancoEnv(gym.Env, ABC):
  
     def _update_action_masks(self):
         """Construct the action mask based on airmass / horizon / completion."""
-        
-        from datetime import datetime, timezone
-        ts_dt = datetime.fromtimestamp(self._ts, tz=timezone.utc)
-
         sun_radec = ephemerides.get_source_ra_dec('sun', time=self._ts)
         _, sun_el = ephemerides.equatorial_to_topographic(sun_radec[0], sun_radec[1], time=self._ts)
         
@@ -1004,6 +1011,15 @@ class BaseBlancoEnv(gym.Env, ABC):
                 + f"\nConfigured global_features: {self.global_feature_names}"
             )
  
+        if self._has_historical_features and self.lookups.total_ot_sec is None:
+            raise ValueError(
+                f"{cls.__name__}: bin features include staleness/history terms "
+                f"(found in bin_feature_names: "
+                f"{[b for b in self.bin_feature_names if any(k in b for k in _STALENESS_BASE_KEYS)]}) "
+                f"but lookups.total_ot_sec is None. This must be the same "
+                f"normalization constant the policy was trained with — typically "
+                f"loaded from the training data directory's total_ot_seconds file."
+            )
     def _is_hook_overridden(self, hook_name: str) -> bool:
         base_fn = BaseBlancoEnv.__dict__.get(hook_name)
         if base_fn is None:

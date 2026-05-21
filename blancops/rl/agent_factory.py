@@ -18,8 +18,13 @@ logger = logging.getLogger(__name__)
 from typing import Tuple
 
 class AgentFactory:
-    def __init__(self, base_model_dir: str = None):
-        self.base_dir = Path(base_model_dir or WORKSPACE / "deployable_models")
+    def __init__(self, base_model_dir: str = WORKSPACE / "deployable_models"):
+        """Factory for building scheduling agents
+        
+        Args:
+            base_model_dir (str, optional): _description_. Defaults to WORKSPACE / "deployable_models".
+        """
+        self.base_dir = Path(base_model_dir)
         self.alias_file = self.base_dir / "aliases.yaml"
         self.aliases = self._load_aliases()
 

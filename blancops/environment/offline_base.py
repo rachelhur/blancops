@@ -116,6 +116,12 @@ class OfflineBlancoEnvBase(BaseBlancoEnv):
         self._sunset_ts = cfg["sunset_ts"]
         self._sunrise_ts = cfg["sunrise_ts"]
         self._night_end_ts = cfg["end_ts"]
+        if "ot_at_sunset" not in cfg:
+            raise KeyError(
+                f"{type(self).__name__}._get_night_config(...) must return "
+                f"'ot_at_sunset'; got keys={list(cfg)}. This is required by "
+                f"_record_visit's OT-clock bookkeeping."
+            )
         self._ot_at_sunset = cfg["ot_at_sunset"]
  
         self._apply_state_snapshot(

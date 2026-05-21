@@ -34,7 +34,7 @@ from blancops.configs.rl_schema import ActionConstraints, load_and_validate
 from blancops.data.dataset import OfflineDataset
 from blancops.data.features.normalizations import build_normalizer
 from blancops.data.lookup_tables import LookupTables
-from blancops.data.preprocessing import preprocess_historic_data
+from blancops.data.preprocessing import load_and_process_historic_data
 from blancops.environment.historic_env import HistoricBlancoEnv
 from blancops.rl.agent_factory import AgentFactory
 from blancops.rl.checkpointer import get_checkpoint
@@ -71,8 +71,8 @@ def build_evaluators(
     ms_outdir = outdir / eval_outdir / 'ms'
 
     # Data
-    lookups = LookupTables.load_from_dir(TRAIN_DATA_DIR, include_historic=True)
-    df = preprocess_historic_data(TRAIN_DATA_PATH)
+    lookups = LookupTables.load_from_dir(DES_DATA_DIR, include_historic=True)
+    df = load_and_process_historic_data(DES_FITS_PATH)
     df_val = df[df['night'].isin(cfg.data.val_nights)]
 
     # Checkpoint + normalizers
