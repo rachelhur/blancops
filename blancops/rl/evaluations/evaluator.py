@@ -20,6 +20,7 @@ import pandas as pd
 import torch
 from einops import rearrange
 import logging
+from datetime import date
 
 from blancops.math import units
 logger = logging.getLogger(__name__)
@@ -33,12 +34,13 @@ from blancops.configs.constants import (
 from blancops.configs.rl_schema import ActionConstraints, load_and_validate
 from blancops.data.dataset import OfflineDataset
 from blancops.data.features.normalizations import build_normalizer
-from blancops.data.lookup_tables import LookupTables
+from blancops.data.lookup_tables import LookupTables, TrainLookupTables
 from blancops.data.preprocessing import load_and_process_historic_data
 from blancops.environment.historic_env import HistoricBlancoEnv
 from blancops.rl.agent_factory import AgentFactory
 from blancops.rl.checkpointer import get_checkpoint
 from blancops.rl.offline_runner import OfflineRunner
+from blancops.io.schedule_io import SCHEDULE_KEYS
 
 from .data_container import (
     DataContainer,
@@ -57,6 +59,8 @@ def build_evaluators(
     device,
     eval_outdir: str = 'holdout_eval',
     style: PlotStyle = None,
+    save_movie=False,
+    save_mollweide=False,
 ) -> Tuple['SingleStepEvaluator', 'MultiStepEvaluator']:
     """Build SS and MS evaluators for the validation set from a config."""
     cfg = (
@@ -71,9 +75,10 @@ def build_evaluators(
     ms_outdir = outdir / eval_outdir / 'ms'
 
     # Data
-    lookups = LookupTables.load_from_dir(DES_DATA_DIR, include_historic=True)
+    lookups = TrainLookupTables.load_from_dir(DES_DATA_DIR / "lookups")
     df = load_and_process_historic_data(DES_FITS_PATH)
-    df_val = df[df['night'].isin(cfg.data.val_nights)]
+    val_nights = [date.fromisoformat(n) if isinstance(n, str) else n for n in cfg.data.val_nights]
+    df_val = df[df['night'].isin(val_nights)]
 
     # Checkpoint + normalizers
     checkpoint = get_checkpoint(outdir, device=device)
@@ -98,7 +103,8 @@ def build_evaluators(
     runner = OfflineRunner(
         agent=agent, policy=agent.policy, cfg=cfg,
         lookups=lookups, num_episodes=1, outdir=ms_outdir,
-        save_SISPI=False, schedule_chunk_size=0,
+        save_SISPI=False, save_state_features=True,
+        save_movie=save_movie, save_mollweide=save_mollweide
     )
 
     # Environment for MS evaluator
@@ -586,51 +592,48 @@ class MultiStepEvaluator(Evaluator):
         )
 
     def _process_eval_metrics_from_manifest(self, manifest):
-        """Streaming path: per-night arrays live in .npz files on disk.
+        """Streaming path: scalar columns from per-night CSVs, obs features
+        from companion ``_obs.npz`` files written by the runner.
 
-        We do two passes:
-          1) Cheap pass: load each night's small columns, build flat
-             arrays and the global `valid` mask. Each .npz load uses
-             ``mmap_mode='r'`` so big arrays aren't materialized yet.
-          2) Big pass: for ``glob_observations``, concat once. For
-             ``bin_observations``, allocate the output dict once and
-             fill per-feature, only ever holding one night's bin
-             observations in RAM at a time.
+        CSVs are pre-filtered (real observations only, no zenith/wait rows),
+        so no valid mask is needed. The companion .npz files contain the same
+        rows in the same order (the runner accumulates obs features only for
+        real observations since save_state_features=True is set in build_evaluators).
         """
-        night_keys = list(manifest.keys())
+        import gc as _gc
 
-        # ---- Pass 1: small per-step columns + valid mask ----
-        # Open each .npz once; small columns are cheap to materialize.
-        # Bigger arrays (`glob_observations`, `bin_observations`) stay
-        # mmapped until we explicitly load them.
-        bin_cols, field_cols, ts_cols, filter_cols, night_label_cols = [], [], [], [], []
-        # Cache shapes so pass 2 can preallocate without re-opening.
-        bin_obs_shapes = {}
+        night_keys = [k for k in manifest if manifest[k] is not None]
+
+        # ---- Pass 1: scalars from per-night CSVs ----
+        frames = []
         for n in night_keys:
-            with np.load(manifest[n], mmap_mode='r') as npz:
-                bin_cols.append(np.asarray(npz['bin']))
-                field_cols.append(np.asarray(npz['field_id']))
-                ts_cols.append(np.asarray(npz['timestamp']))
-                filter_cols.append(np.asarray(npz['filter_idx']))
-                night_label_cols.append(np.full(len(npz['bin']), n))
-                # 'bin_observations' shape is (nrows, nbins, nfeats)
-                bin_obs_shapes[n] = npz['bin_observations'].shape
+            df = pd.read_csv(manifest[n])
+            df['_night_key'] = n
+            frames.append(df)
 
-        bin_arr = np.concatenate(bin_cols)
-        field_arr = np.concatenate(field_cols)
-        ts_arr = np.concatenate(ts_cols)
-        filter_arr = np.concatenate(filter_cols)
-        night_col = np.concatenate(night_label_cols)
-        del bin_cols, field_cols, ts_cols, filter_cols, night_label_cols
+        full_df    = pd.concat(frames, ignore_index=True)
+        ts_arr     = full_df[SCHEDULE_KEYS['timestamp']].values
+        bin_arr    = full_df[SCHEDULE_KEYS['bin_id']].values
+        filter_arr = full_df[SCHEDULE_KEYS['filter_idx']].values
+        field_arr  = full_df[SCHEDULE_KEYS['field_id']].values
+        night_col  = full_df['_night_key'].values
+        n_rows     = len(ts_arr)
+        del frames, full_df
 
-        valid = (bin_arr != -1) & (bin_arr != -2)
-        n_valid = int(valid.sum())
+        feat_names_glob = self.data.dataset.global_feature_names
+        feat_names_bin  = self.data.dataset.bin_feature_names
+
+        # ---- Pass 2: obs features from companion _obs.npz files ----
+        # Path convention: nights/ep-N_night-K.csv → nights/ep-N_night-K_obs.npz
+        first_npz = Path(manifest[night_keys[0]])
+        first_npz = first_npz.parent / (first_npz.stem + '_obs.npz')
 
         # ---- Pass 2a: glob_observations (single concat) ----
-        feat_names_glob = self.data.dataset.global_feature_names
         glob_parts = []
         for n in night_keys:
-            with np.load(manifest[n]) as npz:
+            npz_path = Path(manifest[n])
+            npz_path = npz_path.parent / (npz_path.stem + '_obs.npz')
+            with np.load(npz_path) as npz:
                 glob_parts.append(np.asarray(npz['glob_observations'], dtype=np.float32))
         glob_arr = np.concatenate(glob_parts, axis=0)
         del glob_parts
@@ -638,48 +641,27 @@ class MultiStepEvaluator(Evaluator):
         glob_df['night'] = night_col
         del glob_arr
 
-        # ---- Pass 2b: bin_observations per-feature ----
-        # Preallocate the per-feature output arrays, then fill them by
-        # streaming one night at a time. Peak extra RAM per iteration is
-        # ONE night's (nrows, nbins, nfeats) — bounded and small.
-        feat_names_bin = self.data.dataset.bin_feature_names
-        # Infer (nbins, nfeats) from the first night.
-        first_shape = next(iter(bin_obs_shapes.values()))
-        nbins = first_shape[1]
+        # ---- Pass 2b: bin_observations, streamed per night ----
+        with np.load(first_npz, mmap_mode='r') as npz:
+            nbins = npz['bin_observations'].shape[1]
         bin_feat_dict = {
-            name: np.empty((n_valid, nbins), dtype=np.float32)
+            name: np.empty((n_rows, nbins), dtype=np.float32)
             for name in feat_names_bin
         }
-
-        # Compute per-night offsets into the global valid index space.
-        write_offset = 0
         row_offset = 0
-        import gc as _gc
         for n in night_keys:
-            with np.load(manifest[n]) as npz:
+            npz_path = Path(manifest[n])
+            npz_path = npz_path.parent / (npz_path.stem + '_obs.npz')
+            with np.load(npz_path) as npz:
                 bin_obs = np.asarray(npz['bin_observations'], dtype=np.float32)
-            nrows = bin_obs.shape[0]
-            night_valid = valid[row_offset:row_offset + nrows]
-            n_take = int(night_valid.sum())
-            if n_take > 0:
-                # Slice once, then index per feature into preallocated output.
-                bin_obs_valid = bin_obs[night_valid]  # (n_take, nbins, nfeats)
-                for i, name in enumerate(feat_names_bin):
-                    bin_feat_dict[name][write_offset:write_offset + n_take] = bin_obs_valid[:, :, i]
-                del bin_obs_valid
-                write_offset += n_take
+            n_night = bin_obs.shape[0]
+            for i, name in enumerate(feat_names_bin):
+                bin_feat_dict[name][row_offset:row_offset + n_night] = bin_obs[:, :, i]
             del bin_obs
-            row_offset += nrows
+            row_offset += n_night
             _gc.collect()
 
-        return (
-            ts_arr[valid],
-            bin_arr[valid],
-            filter_arr[valid],
-            field_arr[valid],
-            glob_df[valid],
-            bin_feat_dict,
-        )
+        return ts_arr, bin_arr, filter_arr, field_arr, glob_df, bin_feat_dict
 
     # ---- MS-specific plots ------------------------------------------
 
