@@ -45,9 +45,11 @@ class OfflineRunner:
         self._nights_dir = self.outdir / 'nights'
         self._nights_dir.mkdir(exist_ok=True)
         self._sispi_dir = self.outdir / 'sispi'
-        self._sispi_dir.mkdir(exist_ok=True)
+        if self.save_SISPI:
+            self._sispi_dir.mkdir(exist_ok=True)
         self._plots_dir = self.outdir / 'plots'
-        self._plots_dir.mkdir(exist_ok=True)
+        if self.save_movie or self.save_mollweide:
+            self._plots_dir.mkdir(exist_ok=True)
 
     # ------------------------------------------------------------------
     # Per-night CSV streaming
@@ -243,13 +245,13 @@ class OfflineRunner:
                             SCHEDULE_KEYS['bin_id']:    int(bin_idx),
                             'reward':          float(reward),
                         })
-                        if self.save_state_features:
-                            per_night_obs['glob_observations'].append(
-                                self._restore_nans(obs['global_state'], info.get('glob_nan_mask'))
-                            )
-                            per_night_obs['bin_observations'].append(
-                                self._restore_nans(obs['bin_state'], info.get('bin_nan_mask'))
-                            )
+                    if self.save_state_features and is_real_obs:
+                        per_night_obs['glob_observations'].append(
+                            self._restore_nans(obs['global_state'], info.get('glob_nan_mask'))
+                        )
+                        per_night_obs['bin_observations'].append(
+                            self._restore_nans(obs['bin_state'], info.get('bin_nan_mask'))
+                        )
 
                     running_reward += reward
                     last_bin_idx = bin_idx
