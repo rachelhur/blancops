@@ -200,22 +200,31 @@ class BaseAlgConfig(BaseModel):
             raise ValueError(f"activation must be one of {valid_activations}, got {self.activation}")
         return self
 
+class RewardWeights(BaseModel):
+    w_slew: float = 1.0
+    w_airmass: float = 1.0
+    w_t_last_visit: float = 1.0
+    w_min_tiling: float = 1.0
+    airmass_limit: float = 3.0
+    t_ref_seconds: float = 60*60*12
+
 class BCAlgConfig(BaseAlgConfig):
     algorithm: Literal[Algorithm.BC]
-    
+
     # Loss function knobs (used by some strategies, ignored by others)
     reduction: str = "mean"
     gamma_focal: float = 2.0
     alpha: Optional[float] = None
-    
+
     # Pseudo-autoregressive knobs
     filter_penalty: float | None = None
-    
+
     # Hybrid-marginal weights
     alpha_bin: float | None = None
     beta_filter: float | None = None
     zeta_joint: float | None = None
     reward: RewardStructure | None = None
+    reward_weights: RewardWeights = Field(default_factory=RewardWeights)
     
     @model_validator(mode="after")
     def validate_strategy_requirements(self) -> "BCAlgConfig":
@@ -244,6 +253,7 @@ class BCAlgConfig(BaseAlgConfig):
 class DDQNAlgConfig(BaseAlgConfig):
     algorithm: Literal[Algorithm.DDQN]
     reward: RewardStructure = RewardStructure.TEFF
+    reward_weights: RewardWeights = Field(default_factory=RewardWeights)
     tau: float = 0.005 # DDQN specific parameter
     gamma: float = 0.99 # DDQN specific parameter
     
@@ -305,9 +315,10 @@ class IQLAlgConfig(DDQNAlgConfig):
             raise ValueError('awr_clip must be positive')
         return v
 
-AnyModelConfig = Union[BCAlgConfig, DDQNAlgConfig, CQLAlgConfig]
+AnyModelConfig = Union[BCAlgConfig, DDQNAlgConfig, CQLAlgConfig, IQLAlgConfig]
      
 class TrainConfig(BaseModel):
+    checkpoint_metric: CheckpointMetric = CheckpointMetric.ANGULAR_SEPARATION
     max_epochs: int = 50
     batch_size: int   = 1024
     lr_scheduler: str = "cosine_annealing"

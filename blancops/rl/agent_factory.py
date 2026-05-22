@@ -8,8 +8,7 @@ from pathlib import Path
 from blancops.configs.constants import WORKSPACE
 from blancops.configs.enums import Algorithm
 from blancops.configs.rl_schema import ExperimentConfig, load_and_validate
-from blancops.rl.policies.q_policies import QFlatPolicy
-from blancops.rl.registry import _build_bc_policy, build_network
+from blancops.rl.registry import _build_bc_policy, _build_q_adapter, build_network
 from blancops.rl.agent import Agent
 
 import logging
@@ -109,8 +108,9 @@ class AgentFactory:
         
         if cfg.model.algorithm == Algorithm.BC:
             policy = _build_bc_policy(cfg, core_net)
-        elif cfg.model.algorithm == Algorithm.DDQN:
-            policy = QFlatPolicy(core_net)
+        elif cfg.model.algorithm in (Algorithm.DDQN, Algorithm.CQL, Algorithm.IQL):
+            # For IQL, algorithm.policy is the policy_net (QFlatPolicy), not the Q-adapter.
+            policy = _build_q_adapter(cfg, core_net)
         
         try:
             checkpoint = torch.load(weights_path, map_location=device)

@@ -1,3 +1,4 @@
+import operator
 from random import random
 import gymnasium as gym
 from collections import defaultdict
@@ -14,13 +15,35 @@ from pathlib import Path
 from blancops.configs.constants import *
 import logging
 
-from blancops.configs.enums import Algorithm
+from blancops.configs.enums import Algorithm, CheckpointMetric
 from blancops.rl.algorithms.base import AlgorithmBase
 from blancops.rl.checkpointer import Checkpointer
 
-# Get the logger associated with this module's name (e.g., 'my_module')
 logger = logging.getLogger(__name__)
 from tqdm.contrib.logging import logging_redirect_tqdm
+
+# Direction and operator for each checkpoint metric.
+_CKPT_DIRECTION: dict[CheckpointMetric, str] = {
+    CheckpointMetric.VAL_LOSS:           'min',
+    CheckpointMetric.ANGULAR_SEPARATION: 'min',
+    CheckpointMetric.MAX_Q_POLICY:       'max',
+}
+_CKPT_INIT_BEST: dict[str, float] = {
+    'min': float('inf'),
+    'max': float('-inf'),
+}
+_CKPT_OP = {
+    'min': operator.lt,
+    'max': operator.gt,
+}
+# Optional gate: (metric_key, comparator, threshold). Both gate and primary
+# metric must pass before a checkpoint is saved. None = no gate.
+_CKPT_GATE: dict[CheckpointMetric, tuple | None] = {
+    CheckpointMetric.VAL_LOSS:           None,
+    CheckpointMetric.ANGULAR_SEPARATION: None,
+    CheckpointMetric.MAX_Q_POLICY:       ('td_error', operator.lt, 0.50),
+}
+
 
 class Trainer:
     """
@@ -35,15 +58,8 @@ class Trainer:
             top_k: int = 1,
             overwrite: bool = False,
             hard_overwrite: bool = False,
+            ckpt_metric: CheckpointMetric = CheckpointMetric.VAL_LOSS,
             ):
-        """
-        Args
-        ----
-            algorithm (Algorithm): The Q-learning algorithm
-            env (gymnasium.Env): The environment in which the agent will act.
-            outdir (str): directory to save results
-            normalize_obs (bool): Whether or not to normalize observations
-        """
         self.algorithm = algorithm
         self.device = algorithm.device
         if not os.path.exists(train_outdir):
@@ -51,19 +67,21 @@ class Trainer:
         self.train_outdir = Path(train_outdir)
         self.overwrite = overwrite
         self.hard_overwrite = hard_overwrite
+        self.ckpt_metric = ckpt_metric
         self.checkpointer = Checkpointer(
-            self.train_outdir / "checkpoints", 
-            top_k=top_k, 
-            mode='min',
-            overwrite=overwrite,          # soft reset
-            hard_overwrite=hard_overwrite     # change to True if desired
-        ) 
+            self.train_outdir / "checkpoints",
+            top_k=top_k,
+            mode=_CKPT_DIRECTION[ckpt_metric],
+            overwrite=overwrite,
+            hard_overwrite=hard_overwrite,
+        )
            
     def _validate_valloader(self, valloader):
         if len(valloader) == 0:
             raise ValueError("Validation dataloader is empty! Check dataset split logic.")
     
-    def fit(self, num_epochs, batch_size, trainloader, valloader, patience=10, train_log_freq=10, hpGrid=None, norm_stats=None, start_epoch=None):
+    def fit(self, num_epochs, batch_size, trainloader, valloader, patience=10,
+            train_log_freq=10, hpGrid=None, norm_stats=None, start_epoch=None):
         
         if (self.overwrite or self.hard_overwrite) and start_epoch > 0:
             raise ValueError("Cannot overwrite checkpoints and resume from a previous epoch.")
@@ -95,13 +113,11 @@ class Trainer:
         
         loader_iter = iter(trainloader)
 
-        use_best_val_loss = self.algorithm.name == Algorithm.BC
-        use_best_ang_sep = self.algorithm.name in [Algorithm.DQN, Algorithm.DDQN, Algorithm.CQL]
-        assert use_best_val_loss or use_best_ang_sep, "Algorithm name is not valid."
-        
-        best_val_loss = min(val_metrics.get('val_loss', [1e5])) 
-        best_ang_sep = min(val_metrics.get('ang_sep', [1e5])) 
-        
+        metric_key = self.ckpt_metric.value                  # string key into val_metrics
+        direction = _CKPT_DIRECTION[self.ckpt_metric]
+        best_metric_val = _CKPT_INIT_BEST[direction]
+        compare = _CKPT_OP[direction]
+
         best_epoch = start_epoch
         patience_cur = patience
         use_patience = patience != 0
@@ -171,31 +187,41 @@ class Trainer:
                         )       
 
                         # Early stopping and model saving
-                        val_loss_cur = val_metrics.get('val_loss', [1e5])[-1]
-                        ang_sep_cur = val_metrics.get('ang_sep', [1e5])[-1]
-                        improved = False
-                        
-                        if val_loss_cur < best_val_loss and use_best_val_loss:
-                            improved = True
-                            best_val_loss = val_loss_cur
-                            metric_str = f"val loss is {val_loss_cur:.3f}"
-                            tracking_metric = best_val_loss
-                            
-                        elif ang_sep_cur < best_ang_sep and use_best_ang_sep:
-                            improved = True
-                            best_ang_sep = ang_sep_cur
-                            metric_str = f"angular separation is {ang_sep_cur:.3f}"
-                            tracking_metric = best_ang_sep
-                        
+                        ckpt_vals = val_metrics.get(metric_key)
+                        if ckpt_vals is None:
+                            logger.warning(
+                                f"Checkpoint metric '{metric_key}' not in val metrics "
+                                f"(hpGrid missing?); skipping improvement check."
+                            )
+                            improved = False
+                        else:
+                            ckpt_metric_val_cur = ckpt_vals[-1]
+                            improved = compare(ckpt_metric_val_cur, best_metric_val)
+                            gate = _CKPT_GATE[self.ckpt_metric]
+                            if improved and gate is not None:
+                                gate_key, gate_op, gate_thresh = gate
+                                gate_vals = val_metrics.get(gate_key)
+                                if gate_vals is None:
+                                    logger.warning(f"Gate metric '{gate_key}' not in val metrics; gate skipped.")
+                                else:
+                                    gate_passed = gate_op(gate_vals[-1], gate_thresh)
+                                    if not gate_passed:
+                                        logger.debug(
+                                            f"Gate failed: {gate_key}={gate_vals[-1]:.3f} not "
+                                            f"{gate_op.__name__} {gate_thresh}. Skipping checkpoint."
+                                        )
+                                    improved = gate_passed
                         if improved:
+                            best_metric_val = ckpt_metric_val_cur
                             best_epoch = i_epoch
+                            metric_str = f"{metric_key}={best_metric_val:.3f}"
                             patience_cur = patience
                             logger.info(f'Improved model at step {i_step} (epoch {i_epoch}): {metric_str}. Saving weights')
                             
                             self.checkpointer.save_training_state(
                                 algorithm=self.algorithm, 
                                 epoch=i_epoch, 
-                                metric_value=tracking_metric,
+                                metric_value=best_metric_val,
                                 is_best=True,
                                 norm_stats=norm_stats
                             )
@@ -211,10 +237,7 @@ class Trainer:
                             if patience_cur == 0:
                                 logger.info("No patience left. Ending training.")
                                 break
-        if use_best_val_loss:
-            logger.info(f"Best val loss was {best_val_loss:.3f} at epoch {best_epoch}")
-        elif use_best_ang_sep:
-            logger.info(f"Best angular separation was {best_ang_sep:.3f} at epoch {best_epoch}")
+        logger.info(f"Best {metric_key}={best_metric_val:.3f} at epoch {best_epoch}")
         with open(train_metrics_filepath, 'wb') as handle:
             pickle.dump(train_metrics, handle)
         with open(val_metrics_filepath, 'wb') as handle:

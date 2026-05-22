@@ -1,4 +1,5 @@
 from enum import Enum
+import operator
 
 class Algorithm(str, Enum):
     BC = "bc"
@@ -19,8 +20,12 @@ class ActionArchitecture(str, Enum):
     PSEUDO_AUTOREGRESSIVE = "pseudo_ar"
     AUTOREGRESSIVE = "autoregressive"
     # MARGINAL = "marginal"
-
-
+    
+class CheckpointMetric(str, Enum):
+    VAL_LOSS = "val_loss"
+    ANGULAR_SEPARATION = "ang_sep"
+    MAX_Q_POLICY = "q_policy"
+    
 _AUTOREGRESSIVE_NETWORKS = {Network.AUTOREGRESSIVE}
 
 def is_autoregressive(network: Network) -> bool:
@@ -33,12 +38,12 @@ class ActionSpace(str, Enum):
     AZEL = 'azel'
     RADEC = 'radec'
 
-
 class RewardStructure(str, Enum):
     EXPERT_ACTION = "expert_action"
     SURVEY_UNIFORMITY = "survey_uniformity"
     NEGATIVE_SLEW = "negative_slew"
     TEFF = "teff"
+    SURVEY_AIRMASS_SLEW = "survey_airmass_slew"
 
 class LookupKeys(str, Enum):
     FIELDS = "fields_table.json"

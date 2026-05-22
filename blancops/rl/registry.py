@@ -154,11 +154,6 @@ def build_network(cfg: ExperimentConfig) -> nn.Module:
 # BC policy/strategy construction
 # --------------------------------------------------------------------------- #
 
-def _build_q_adapter(cfg, net):
-    if is_autoregressive(cfg.model.network):
-        return QAutoregressivePolicy(net, cfg.data.num_filters)
-    return QFlatPolicy(net)
-
 def _build_bc_policy(cfg: ExperimentConfig, core_net: nn.Module):
     # Filter-only action space short-circuits all strategy logic.
     if cfg.data.action_space == 'filter':
@@ -314,9 +309,48 @@ def build_algorithm(cfg: ExperimentConfig, device: torch.device):
             )
 
     if cfg.model.algorithm == Algorithm.IQL:
-        logger.info(f"Loading IQL algorithm with expectile={cfg.model.expectile}, awr_beta={cfg.model.awr_beta}, awr_clip={cfg.model.awr_clip}")
-        # IQL-specific implementation would go here
-        # For now, we'll raise an error since it's not implemented
-        raise NotImplementedError("IQL algorithm is not yet implemented")
+        logger.info(
+            f"Loading IQL algorithm with expectile={cfg.model.expectile}, "
+            f"awr_beta={cfg.model.awr_beta}, awr_clip={cfg.model.awr_clip}"
+        )
+        activation_fn = get_activation(cfg.model.activation)
+
+        target_net = copy.deepcopy(core_net).to(device)
+        policy_raw = build_network(cfg).to(device)   # separate net for the AWR policy
+        v_net = MLP(
+            input_dim=cfg.data.state_dim,
+            output_dim=1,
+            hidden_dim=cfg.model.hidden_dim,
+            activation=activation_fn,
+        ).to(device)
+
+        q_adapter = _build_q_adapter(cfg, core_net)
+        q_target_adapter = _build_q_adapter(cfg, target_net)
+        policy_adapter = _build_q_adapter(cfg, policy_raw)  # QFlatPolicy for checkpointing
+
+        iql_optimizer = torch.optim.Adam(
+            [*q_adapter.parameters(), *v_net.parameters(), *policy_adapter.parameters()],
+            lr=cfg.train.lr_init,
+        )
+        loss_function = get_loss_function('mse')  # TD regression
+
+        return IQL(
+            q_adapter=q_adapter,
+            q_target_adapter=q_target_adapter,
+            v_net=v_net,
+            policy_net=policy_adapter,
+            optimizer=iql_optimizer,
+            loss_function=loss_function,
+            gamma=cfg.model.gamma,
+            tau=cfg.model.tau,
+            expectile=cfg.model.expectile,
+            awr_beta=cfg.model.awr_beta,
+            awr_clip=cfg.model.awr_clip,
+            lr_scheduler=cfg.train.lr_scheduler,
+            lr_scheduler_kwargs=cfg.train.lr_scheduler_kwargs,
+            lr_scheduler_epoch_start=cfg.train.lr_sched_epoch_start,
+            lr_scheduler_num_epochs=cfg.train.lr_sched_epoch_duration,
+            device=device,
+        )
 
     raise ValueError(f"Algorithm {cfg.model.algorithm} has no construction branch.")

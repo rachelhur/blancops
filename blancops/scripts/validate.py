@@ -9,14 +9,6 @@ import logging
 
 from blancops.utils.sys_utils import get_system_device
 
-logger = logging.getLogger(__name__)
-
-
-def build_and_run_evaluators(cfg):
-    device = get_system_device()
-    s_eval, m_eval = build_evaluators(cfg, device=device)
-    s_eval.run(); m_eval.run()
-    logger.info("Done")
 
 def main():
     
@@ -29,6 +21,8 @@ def main():
     parser.add_argument('-c', '--cfg_path', type=str, default=None, help="Path to config file. If passed, all other arguments are ignored")
     parser.add_argument('-l', '--logging_level', type=str, default='debug', help='Logging level. Options: info, debug')
     parser.add_argument('-f', '--force_overwrite', action='store_true', help='Whether to force overwrite previous rollout files.')
+    parser.add_argument('--save_movies', action='store_true', help='Whether to save movie files.')
+    parser.add_argument('--save_mollweides', action='store_true', help='Whether to save movie files.')
 
     args = parser.parse_args()
     
@@ -61,7 +55,7 @@ def main():
     # Build and run evaluators
     # ------------------------------
     logger.info("Building evaluators...")
-    s_eval, m_eval = build_evaluators(cfg, device=device)
+    s_eval, m_eval = build_evaluators(cfg, device=device, save_movie=args.save_movies, save_mollweide=args.save_mollweides)
     
     logger.info("Running evaluators...")
     s_eval.run(); m_eval.run(overwrite=args.force_overwrite)

@@ -1,3 +1,8 @@
+import matplotlib
+matplotlib.use('TkAgg') # Forces the Tkinter backend
+import matplotlib.pyplot as plt
+
+from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 import json
@@ -11,6 +16,7 @@ import torch
 from torch.utils.data import DataLoader, Subset, RandomSampler
 
 from blancops.configs.enums import RewardStructure
+from blancops.configs.rl_schema import RewardWeights
 from blancops.ephemerides import ephemerides
 from blancops.math import geometry
 
@@ -100,6 +106,7 @@ class OfflineDataset(torch.utils.data.Dataset):
     def _setup_configuration(self, cfg, norm_kwargs):
         """Initializes constants, spaces, and feature names."""
         self.reward = cfg.model.reward
+        self.reward_weights = getattr(cfg.model, 'reward_weights', None) or RewardWeights()
         self._calculate_action_mask = cfg.model.algorithm != 'bc'
         self.include_bin_features = len(cfg.data.bin_features) > 0
         
@@ -159,14 +166,13 @@ class OfflineDataset(torch.utils.data.Dataset):
 
     def _build_transitions(self, action_space):
         """Builds the strict RL transitions (S, A, R, S', Dones, Masks)."""
-        (self.states, self._prenorm_bin_states, self.actions, self.rewards, 
+        (self.states, self._prenorm_bin_states, self.actions, self.rewards,
          self.dones, self.action_masks, self.num_transitions) = self._construct_transitions(
-            df=self._df, 
-            bin_states=self._prenorm_bin_states,  
-            include_bin_features=self.include_bin_features, 
+            df=self._df,
+            bin_states=self._prenorm_bin_states,
+            include_bin_features=self.include_bin_features,
             action_space=action_space,
         )
-        self.slew_distances = self._construct_slew_distances(self._df)
 
     def _split_data(self, train_val_split, seed):
         """Calculates indices for the train/val dataloaders."""
@@ -264,7 +270,8 @@ class OfflineDataset(torch.utils.data.Dataset):
         self.curr_compact_idxs = np.array([df_idx_to_compact[i] for i in current_state_idxs])
         self.next_compact_idxs = np.array([df_idx_to_compact[i] for i in next_state_idxs])
         self.state_idxs, self.current_state_idxs, self.next_state_idxs = state_idxs, current_state_idxs, next_state_idxs
-        
+        self.slew_distances = self._construct_slew_distances(df)
+
         states, bin_states = self._construct_states(df=df, bin_states=bin_states, include_bin_features=include_bin_features, state_idxs=state_idxs)
         num_transitions = len(next_state_idxs)
 
@@ -345,11 +352,62 @@ class OfflineDataset(torch.utils.data.Dataset):
         if reward == RewardStructure.TEFF:
             return df.iloc[next_state_idxs]['teff'].fillna(0).values
             # return calc_inst_teff_rate(df=df, next_state_idxs=next_state_idxs)
-        elif (reward == RewardStructure.EXPERT_ACTION) or (reward is None):
+        elif reward == RewardStructure.EXPERT_ACTION:
             next_state_df = df.iloc[next_state_idxs]
             return np.ones(len(next_state_df), dtype=np.float32)
+        elif reward == RewardStructure.SURVEY_AIRMASS_SLEW:
+            rw = self.reward_weights
+            # Slew
+            R_slew = self._construct_slew_reward()
+            # Airmass
+            R_airmass = self._construct_airmass_reward(df=df, next_state_idxs=next_state_idxs, rw=rw)
+            # Time since last visit
+            R_tsince = self._construct_t_since_reward(df=df, next_state_idxs=next_state_idxs, rw=rw)
+            # Min Tiling
+            R_tiling = self._construct_min_tiling_reward(df=df, next_state_idxs=next_state_idxs, rw=rw)
+
+            return (rw.w_slew * R_slew
+                    + rw.w_airmass * R_airmass
+                    + rw.w_t_last_visit * R_tsince
+                    + rw.w_min_tiling * R_tiling).astype(np.float32)
+        elif reward == None:
+            return np.zeros(len(next_state_idxs), dtype=np.float32)
         else:
             raise NotImplementedError
+    def _construct_airmass_reward(self, df, next_state_idxs, rw):
+        airmass = df.iloc[next_state_idxs]['airmass'].values
+        R_airmass = np.clip(
+            (rw.airmass_limit - airmass) / (rw.airmass_limit - 1.0), 0.0, 1.0
+        )
+        return R_airmass
+    
+    def _construct_slew_reward(self):
+        R_slew = 1.0 - self.slew_distances.numpy() / np.pi
+        return R_slew
+    
+    def _construct_t_since_reward(self, df, next_state_idxs, rw):
+        t_diff = df.groupby(['field_id', 'filter'])['timestamp'].diff()
+        t_since = t_diff.iloc[next_state_idxs].fillna(rw.t_ref_seconds).values
+        t_min = t_since.min()
+        t_max = t_since.max()
+        if t_max > t_min:
+            R_tsince = (t_since - t_min) / (t_max - t_min)
+        else:
+            R_tsince = np.ones_like(t_since) # Fallback if all fields have identical t_since
+        return R_tsince   
+
+    def _construct_min_tiling_reward(self, df, next_state_idxs, rw):
+        field_ids = df.iloc[next_state_idxs]['field_id'].values.astype(int)
+        filter_idxs = df.iloc[next_state_idxs]['filter'].map(FILTER2IDX).values.astype(int)
+        visits_before = df.groupby(['field_id', 'filter']).cumcount().iloc[next_state_idxs].values
+        target_visits = self.lookups.target_fidfilt_counts[field_ids, filter_idxs]
+        safe_target = np.where(target_visits > 0, target_visits, 1)
+        R_tiling = np.where(
+            target_visits > 0,
+            np.clip(1.0 - visits_before / safe_target, 0.0, 1.0),
+            0.0,
+        )
+        return R_tiling
     
     def _construct_slew_distances(self, df):
         curr_bids = df.iloc[self.current_state_idxs]['bin'].values.copy()

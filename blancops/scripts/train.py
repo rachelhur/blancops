@@ -17,6 +17,7 @@ from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_
 from blancops.rl.registry import build_algorithm
 from blancops.configs.rl_schema import ExperimentConfig, load_and_validate, resolve_and_save
 from blancops.configs.constants import DES_DATA_DIR, DES_FITS_PATH, WORKSPACE
+from blancops.configs.enums import Algorithm, CheckpointMetric
 
 import argparse
 import logging
@@ -145,12 +146,22 @@ def main():
 
     latest_ckpt_path = outdir / "checkpoints" / "latest_checkpoint.pt"
 
+    # _ALGO_CKPT_METRIC = {
+    #     Algorithm.BC:   CheckpointMetric.VAL_LOSS,
+    #     Algorithm.DQN:  CheckpointMetric.ANGULAR_SEPARATION,
+    #     Algorithm.DDQN: CheckpointMetric.ANGULAR_SEPARATION,
+    #     Algorithm.CQL:  CheckpointMetric.ANGULAR_SEPARATION,
+    #     Algorithm.IQL:  CheckpointMetric.MAX_Q_POLICY,
+    # }
+    # ckpt_metric = _ALGO_CKPT_METRIC.get(cfg.model.algorithm, CheckpointMetric.VAL_LOSS)
+
     trainer = Trainer(
         algorithm=algorithm,
         train_outdir=outdir,
         top_k=args.top_k,
         overwrite=args.overwrite,
-        hard_overwrite=args.hard_overwrite
+        hard_overwrite=args.hard_overwrite,
+        ckpt_metric=cfg.train.checkpoint_metric
     )
     
     if latest_ckpt_path.exists() and args.resume_from_checkpoint:
@@ -173,7 +184,7 @@ def main():
         batch_size=cfg.train.batch_size,
         patience=cfg.train.patience,
         hpGrid=train_dataset.hpGrid,
-        norm_stats=train_dataset.get_norm_stats()
+        norm_stats=train_dataset.get_norm_stats(),
     )
     end_time = time.time()
     logger.info(f'Total train time = {end_time - start_time}s on {device}')
