@@ -8,15 +8,6 @@ from astropy.coordinates import EarthLocation
 import astropy.units as u
 
 
-def preprocess_fits(fits_path):
-    df = fits_to_df(fits_path)
-    df = df.pipe(_replace_with_pd_dt)\
-            .pipe(_drop_nan_dts)\
-            .pipe(_add_timestamp)\
-            .pipe(_add_night)
-    return df
-
-
 def fits_to_df(fits_path):
     d = fitsio.read(fits_path)
     df = pd.DataFrame(d.astype(d.dtype.newbyteorder('='))) # Big-endian/little-endian error
@@ -41,3 +32,11 @@ def _add_timestamp(df):
     return df.assign(timestamp=t_array.unix.astype(np.int64))
 def _add_night(df):
     return df.assign(night=(df['datetime'] - pd.Timedelta(hours=12)).dt.date)
+
+def preprocess_fits(fits_path):
+    df = fits_to_df(fits_path)
+    df = df.pipe(_replace_with_pd_dt)\
+            .pipe(_drop_nan_dts)\
+            .pipe(_add_timestamp)\
+            .pipe(_add_night)
+    return df
