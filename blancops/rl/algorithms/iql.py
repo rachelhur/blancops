@@ -2,14 +2,14 @@ import torch
 import torch.nn.functional as F
 
 from blancops.configs.enums import Algorithm
-from blancops.rl.algorithms.ddqn import DDQN
+from blancops.rl.algorithms.base import AlgorithmBase
 
 import logging
 logger = logging.getLogger(__name__)
 
 
-class IQL(DDQN):
-    """Implicit Q-Learning: Loss = Q_loss + V_loss + π_loss 
+class IQL(AlgorithmBase):
+    """Implicit Q-Learning: Loss = Q_loss + V_loss + π_loss
     Learns the state-value function via expectile regression to
     estimate the Q-value function.
     See [https://arxiv.org/abs/2110.06169]
@@ -17,17 +17,17 @@ class IQL(DDQN):
     name = Algorithm.IQL
     def __init__(
         self,
-        q_adapter,                 # adapts Q-net to flat (B, |A|) Q-values
-        q_target_adapter,          # frozen target Q-net
-        v_net,                     # state-value network: (B,) -> (B,)
-        policy_net,                # policy network: emits (B, |A|) action logits
-        optimizer,                 # optimizer over all three networks' params
-        loss_function,             
+        q_adapter, # QFlatPolicy adapting Q-net to flat (B, |A|) Q-values
+        q_target_adapter, # QFlatPolicy wrapping frozen target Q-net
+        v_net, # MLP state-value network: s -> (B, 1)
+        policy_net, # QFlatPolicy wrapping policy net; saved by checkpointer
+        optimizer, # optimizer over q, v, and policy params
+        loss_function,
         gamma: float = 0.99,
-        tau: float = 0.005,        # same as ddqn - target Q-net soft-update rate
-        expectile: float = 0.7,    # tau in IQL paper — V regression upper-expectile
-        awr_beta: float = 3.0,     # AWR temperature - higher = more aggressive weighting towards high-advantage actions but more variance. sparser-reward maybe higher beta ~10, noisy expert data ~ 1
-        awr_clip: float = 100.0,   # advantage-exp clip ceiling (prevents blowup)
+        tau: float = 0.005, # target Q-net soft-update rate
+        expectile: float = 0.7, # tau in IQL paper — V regression upper-expectile
+        awr_beta: float = 3.0, # AWR temperature
+        awr_clip: float = 100.0, # advantage-exp clip ceiling (prevents blowup)
         lr_scheduler=None,
         lr_scheduler_kwargs=None,
         lr_scheduler_epoch_start: int = 1,
@@ -35,7 +35,7 @@ class IQL(DDQN):
         device: str | torch.device = "cpu",
     ):
         super().__init__(
-            policy=q_adapter,  # base class stores `self.policy`; here it's the Q-adapter
+            policy=policy_net, # AlgorithmBase stores as self.policy; saved by checkpointer
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
             lr_scheduler_kwargs=lr_scheduler_kwargs,
@@ -43,16 +43,16 @@ class IQL(DDQN):
             lr_scheduler_num_epochs=lr_scheduler_num_epochs,
             device=device,
         )
-    
+
         assert loss_function is not None, "loss_function must be provided for Q-regression"
         assert 0.5 < expectile < 1.0, (
             f"expectile must be in (0.5, 1.0); got {expectile}. "
             "0.5 recovers MSE; higher values upper-bound V toward max-Q."
         )
 
-        self.q_adapter = q_adapter  # alias of self.policy for readability
+        self.q_adapter = q_adapter.to(device)
         self.v_net = v_net.to(device)
-        self.policy_net = policy_net.to(device)
+        self.policy_net = policy_net  # same object as self.policy; named alias for clarity
 
         self.q_target_adapter = q_target_adapter.to(device)
         self.q_target_adapter.eval()
@@ -68,12 +68,49 @@ class IQL(DDQN):
 
 
     # ----------------------------------------------------------------------- #
+    # Multi-net train/val overrides (AlgorithmBase only handles self.policy)
+    # ----------------------------------------------------------------------- #
+
+    def train_step(self, batch, epoch_num, step_num=None, hpGrid=None, compute_metrics=False) -> dict:
+        self.q_adapter.train()
+        self.v_net.train()
+        self.policy.train()
+        self.optimizer.zero_grad(set_to_none=True)
+
+        batch_dict = self._unpack_batch(batch)
+        with torch.amp.autocast(self.device_type_str, dtype=self.amp_dtype):
+            loss, metrics = self._compute_loss(batch_dict, hpGrid=hpGrid, compute_metrics=compute_metrics)
+
+        loss.backward()
+        all_params = [*self.q_adapter.parameters(), *self.v_net.parameters(), *self.policy.parameters()]
+        torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+        self.optimizer.step()
+        self._scheduler_step(epoch_num)
+        self._post_step()
+
+        metrics["train_loss"] = loss.item()
+        return metrics
+
+    def val_step(self, batch, hpGrid=None) -> dict:
+        self.q_adapter.eval()
+        self.v_net.eval()
+        self.policy.eval()
+        batch_dict = self._unpack_batch(batch)
+
+        with torch.no_grad():
+            with torch.amp.autocast(self.device_type_str, dtype=self.amp_dtype):
+                loss, metrics = self._compute_loss(batch_dict, hpGrid=hpGrid, compute_metrics=True)
+
+        metrics["val_loss"] = loss.item()
+        return metrics
+
+    # ----------------------------------------------------------------------- #
     # Hook implementations
     # ----------------------------------------------------------------------- #
 
     def _unpack_batch(self, batch) -> dict:
         (state, actions, rewards, next_state, dones,
-         action_masks, next_action_masks, bin_states, next_bin_states) = batch
+         action_masks, next_action_masks, bin_states, next_bin_states, _) = batch
 
         return {
             "state":             self._to_dev(state, torch.float32),
@@ -173,7 +210,7 @@ class IQL(DDQN):
             adv = q_target_taken - v_pred
             weights = torch.exp(self.awr_beta * adv).clamp(max=self.awr_clip)
 
-        action_logits = self.policy_net(x_glob=state, x_bin=bin_states)
+        action_logits = self.policy_net.get_q_values(state, bin_states)
         mask_val = torch.finfo(action_logits.dtype).min
         action_logits = action_logits.masked_fill(~action_masks, mask_val)
 
@@ -204,7 +241,7 @@ class IQL(DDQN):
 
         # Argmax over the *policy* (not Q) — this is what IQL actually deploys.
         with torch.no_grad():
-            policy_logits = self.policy_net(x_glob=state, x_bin=bin_states)
+            policy_logits = self.policy_net.get_q_values(state, bin_states)
             policy_logits = policy_logits.masked_fill(
                 ~action_masks, torch.finfo(policy_logits.dtype).min
             )
