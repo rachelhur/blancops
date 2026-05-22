@@ -254,6 +254,7 @@ class DDQNAlgConfig(BaseAlgConfig):
     algorithm: Literal[Algorithm.DDQN]
     reward: RewardStructure = RewardStructure.TEFF
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
+    reward_norm: str = 'minmax'
     tau: float = 0.005 # DDQN specific parameter
     gamma: float = 0.99 # DDQN specific parameter
     

@@ -350,11 +350,11 @@ class OfflineDataset(torch.utils.data.Dataset):
 
     def _construct_rewards(self, df, next_state_idxs, reward):
         if reward == RewardStructure.TEFF:
-            return df.iloc[next_state_idxs]['teff'].fillna(0).values
+            R_tot = df.iloc[next_state_idxs]['teff'].fillna(0).values
             # return calc_inst_teff_rate(df=df, next_state_idxs=next_state_idxs)
         elif reward == RewardStructure.EXPERT_ACTION:
             next_state_df = df.iloc[next_state_idxs]
-            return np.ones(len(next_state_df), dtype=np.float32)
+            R_tot = np.ones(len(next_state_df), dtype=np.float32)
         elif reward == RewardStructure.SURVEY_AIRMASS_SLEW:
             rw = self.reward_weights
             # Slew
@@ -366,7 +366,7 @@ class OfflineDataset(torch.utils.data.Dataset):
             # Min Tiling
             R_tiling = self._construct_min_tiling_reward(df=df, next_state_idxs=next_state_idxs, rw=rw)
 
-            return (rw.w_slew * R_slew
+            R_tot = (rw.w_slew * R_slew
                     + rw.w_airmass * R_airmass
                     + rw.w_t_last_visit * R_tsince
                     + rw.w_min_tiling * R_tiling).astype(np.float32)
@@ -374,6 +374,14 @@ class OfflineDataset(torch.utils.data.Dataset):
             return np.zeros(len(next_state_idxs), dtype=np.float32)
         else:
             raise NotImplementedError
+        if self.model.reward_norm == None:
+            pass
+        if self.model.reward_norm == 'minmax':
+            R_tot = (R_tot - R_tot.min()) / (R_tot.max() - R_tot.min())
+        else:
+            logger.warning("Unknown reward norm: {}".format(self.model.reward_norm))
+            
+        return R_tot
     def _construct_airmass_reward(self, df, next_state_idxs, rw):
         airmass = df.iloc[next_state_idxs]['airmass'].values
         R_airmass = np.clip(
