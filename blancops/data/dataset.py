@@ -1,5 +1,5 @@
 import matplotlib
-matplotlib.use('TkAgg') # Forces the Tkinter backend
+# matplotlib.use('TkAgg') # Forces the Tkinter backend
 import matplotlib.pyplot as plt
 
 from matplotlib import pyplot as plt

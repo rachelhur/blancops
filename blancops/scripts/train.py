@@ -1,10 +1,8 @@
-import os
 import numpy as np
 import pandas as pd
-import torch
 import matplotlib
 
-from blancops.data.lookup_tables import LookupTables, TrainLookupTables
+from blancops.data.lookup_tables import TrainLookupTables
 matplotlib.use('Agg')
 import time
 
