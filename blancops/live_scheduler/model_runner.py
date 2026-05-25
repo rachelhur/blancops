@@ -242,10 +242,10 @@ class AIModelRunner(ModelRunner):
             tel.setdefault('dec', tel.pop('pointing_dec'))
         if 'timestamp' not in tel:
             tel['timestamp'] = utc_now()
-        if 'filter' not in tel:
+        if 'filter' not in tel: # XXX - need to read current filter in telescope to send to agent
             tel['filter'] = 'g'
-        if tel.get('is_exposing'):
-            tel['timestamp'] = tel['timestamp'] + tel.get('remaining_exposure_time', 0)
+        if tel.get('is_exposing'): # XXX - check with Paul
+            tel['timestamp'] = tel['exposure_start_time'] # XXX Model input state time should be timestamp at exposure start time
         return tel
 
     def update_lookups(self, new_fields_path, new_dir=None):
