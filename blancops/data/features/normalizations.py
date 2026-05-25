@@ -63,7 +63,7 @@ def expand_feature_set(feature_names, cyclical_feature_names, do_filt=True):
         
         is_cyclic = is_cyclic and not never_cyclic_feat
         if is_cyclic:
-            logger.info(f"Expanding {feat_name} to {feat_name}_cos and {feat_name}_sin")
+            logger.debug(f"Expanding {feat_name} to {feat_name}_cos and {feat_name}_sin")
             feature_names_out.extend([f"{feat_name}_cos", f"{feat_name}_sin"])
         if not has_filt_dep and not is_cyclic:
             feature_names_out.append(feat_name)
