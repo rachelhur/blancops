@@ -39,7 +39,6 @@ class LiveBlancoEnv(BaseBlancoEnv):
  
     def __init__(
         self,
-        *,
         cfg,
         constraints_cfg,
         lookups,
@@ -47,8 +46,6 @@ class LiveBlancoEnv(BaseBlancoEnv):
         rel_norm_stats,
         telemetry_init,
         survey_night_idx=0,
-        # telemetry_client,
-        # observing_night,
     ):
         self._survey_night_idx = survey_night_idx
         
@@ -59,9 +56,10 @@ class LiveBlancoEnv(BaseBlancoEnv):
             z_score_stats=z_score_stats,
             rel_norm_stats=rel_norm_stats,
         )
-        # self._telemetry = telemetry_client
-        # self._observing_night = observing_night
         # airmass_limit and sun_el_limit are stored on self by base.
+        # Live sessions always start fresh; offline envs load this from
+        # historical snapshots via offline_base.py._apply_state_snapshot.
+        self._ot_at_sunset = 0.0
         self.sync_telemetry(telemetry=telemetry_init)
         self._validate_feature_config()
     # -----------------------------------------------------------------------
