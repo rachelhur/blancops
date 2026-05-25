@@ -49,7 +49,7 @@ class LookupTables:
     target_fidfilt_counts: np.ndarray   # (nfields, nfilters) int
     fidfilt_exptime: np.ndarray         # (nfields, nfilters) float
     dir: Path
-    total_ot_sec: float
+    # total_ot_sec: float
  
     # Derived marginals — populated in __post_init__, never set by callers.
     target_fid_counts: np.ndarray = field(init=False, default=None, repr=False)
@@ -82,15 +82,15 @@ class LookupTables:
             target_fidfilt_counts = pickle.load(f)
         with open(get_path(LookupKeys.FIDFILT_EXPTIME), "rb") as f:
             fidfilt_exptime = pickle.load(f)
-        with open(get_path(LookupKeys.TOTAL_OT_SECONDS), "rb") as f:
-            total_ot_sec = np.float64(f.read())
+        # with open(get_path(LookupKeys.TOTAL_OT_SECONDS), "rb") as f:
+        #     total_ot_sec = np.float64(f.read())
 
         return {
             "fields": fields,
             "target_fidfilt_counts": target_fidfilt_counts,
             "fidfilt_exptime": fidfilt_exptime,
             "dir": data_dir,
-            "total_ot_sec": total_ot_sec
+            # "total_ot_sec": total_ot_sec
         }
 
     def _load_historic_kwargs(cls, data_dir: Path, overrides: Dict[LookupKeys, str]) -> dict:
@@ -147,8 +147,8 @@ class LookupTables:
         with open(outdir / LookupKeys.FIDFILT_EXPTIME.value, "wb") as f:
             pickle.dump(self.fidfilt_exptime, f)
         # TOTAL SURVEY OBSERVING TIME IN SECONDS 
-        with open(outdir / LookupKeys.TOTAL_OT_SECONDS.value, "w") as f:
-            f.write(f"{self.total_ot_sec}")
+        # with open(outdir / LookupKeys.TOTAL_OT_SECONDS.value, "w") as f:
+            # f.write(f"{self.total_ot_sec}")
 
     # ------------------------------------------------------------------
     # Composition
@@ -285,7 +285,7 @@ class LookupTables:
             raise ValueError(f"Missing columns: {missing}")
  
         # Check RA/Dec values are in radians --------------------------------
-        if (df["ra"] > 2 * np.pi).any() or (df["dec"] > 2 * np.pi).any():
+        if (df["ra"] > 2 * np.pi).any() or (df["dec"].abs() > np.pi / 2).any():
             raise ValueError(
                 "Data Check Failed: At least one RA/Dec values degrees exceed 2pi); "
                 "please convert to radians before building lookups."
@@ -293,11 +293,11 @@ class LookupTables:
  
         # Resolve name column from common aliases ---------------------------
         if "field_name" in df.columns:
-            df = df.rename(columns={"field_name": "object"})
+            df = df.rename(columns={"field_name": "field"})
         elif "fieldname" in df.columns:
-            df = df.rename(columns={"fieldname": "object"})
+            df = df.rename(columns={"fieldname": "field"})
         else:
-            df["object"] = (
+            df["field"] = (
                 "field_"
                 + df.groupby(["ra", "dec"], sort=False).ngroup().astype(str)
             )
@@ -314,7 +314,7 @@ class LookupTables:
             raise ValueError(f"Unknown filter(s): {list(bad)}")
  
         # Validate per-field columns
-        per_field_cols = ["object", "ra", "dec"]
+        per_field_cols = ["field", "ra", "dec"]
         for col in per_field_cols:
             counts = df.groupby("field_id")[col].nunique()
             if (counts > 1).any():
@@ -326,7 +326,7 @@ class LookupTables:
 
         # Construct lookups ---------------------------------------
         fields_lookup = (
-            df[['field_id', 'object', 'ra', 'dec']]
+            df[['field_id', 'field', 'ra', 'dec']]
             .drop_duplicates()
             .sort_values(by='field_id')
             .set_index('field_id')
@@ -345,7 +345,7 @@ class LookupTables:
             target_fidfilt_counts=target_fidfilt_counts,
             fidfilt_exptime=fidfilt_exptime,
             dir=resolved_dir,
-            total_ot_sec=survey_ot_total
+            # total_ot_sec=survey_ot_total
         )
  
         if write_to_disk:
@@ -399,7 +399,7 @@ class LookupTables:
             )
  
         # Validate per-field columns
-        required_cols = {"object", "ra", "dec"}
+        required_cols = {"field", "ra", "dec"}
         missing = required_cols - set(self.fields.columns)
         if missing:
             raise ValueError(f"`fields` is missing required columns: {missing}")
@@ -549,19 +549,31 @@ class TrainLookupTables(LookupTables):
         new_lookups: "TrainLookupTables",
         new_dir: Optional[Path] = None,
     ) -> "TrainLookupTables":
-        """Merge base attributes and maintain training-specific historical arrays."""
+        raise NotImplementedError("Merging of TrainLookupTables is not yet implemented.")
         kwargs = self._get_merge_base_kwargs(new_lookups, new_dir)
+        
+        num_new_fields = len(new_lookups.fields)
+        nfilters = len(FILTER2IDX)
+        
+        def _pad_1d(hist_dict, pad_val=0):
+            if hist_dict is None: return None
+            return {k: np.pad(v, (0, num_new_fields), constant_values=pad_val) for k, v in hist_dict.items()}
+
+        def _pad_2d(hist_dict, pad_val=0):
+            if hist_dict is None: return None
+            return {k: np.pad(v, ((0, num_new_fields), (0, 0)), constant_values=pad_val) for k, v in hist_dict.items()}
+
         kwargs.update({
-            "night2fid_visit_hist": self.night2fid_visit_hist,
-            "night2fidfilt_visit_hist": self.night2fidfilt_visit_hist,
-            "night2fid_last_visit_ts": self.night2fid_last_visit_ts,
-            "night2fidfilt_last_visit_ts": self.night2fidfilt_last_visit_ts,
-            "night2fid_last_visit_ot": self.night2fid_last_visit_ot,
-            "night2fidfilt_last_visit_ot": self.night2fidfilt_last_visit_ot,
+            "night2fid_visit_hist": _pad_1d(self.night2fid_visit_hist, pad_val=0),
+            "night2fidfilt_visit_hist": _pad_2d(self.night2fidfilt_visit_hist, pad_val=0),
+            "night2fid_last_visit_ts": _pad_1d(self.night2fid_last_visit_ts, pad_val=np.nan),
+            "night2fidfilt_last_visit_ts": _pad_2d(self.night2fidfilt_last_visit_ts, pad_val=np.nan),
+            "night2fid_last_visit_ot": _pad_1d(self.night2fid_last_visit_ot, pad_val=np.nan),
+            "night2fidfilt_last_visit_ot": _pad_2d(self.night2fidfilt_last_visit_ot, pad_val=np.nan),
             "night2ot_clock_seconds": self.night2ot_clock_seconds,
-            "total_ot_sec": self.total_ot_sec,
         })
         return TrainLookupTables(**kwargs)
+    
 
     def __post_init__(self):
         super().__post_init__()

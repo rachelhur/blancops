@@ -51,7 +51,7 @@ def write_SISPI_from_df(schedule_df, out_fn, save_dir, lookups, filter_override_
     ordered_field_ids = schedule_df[SCHEDULE_KEYS['field_id']].values
 
     input_dict = {}
-    input_dict['object'] = [str(lookups.fields['object'].values[fid]) for fid in ordered_field_ids]
+    input_dict['object'] = [str(lookups.fields['field'].values[fid]) for fid in ordered_field_ids]
     input_dict['RA'] = [round(float(lookups.fields['ra'].values[fid] / units.deg), 5) for fid in ordered_field_ids]
     input_dict['dec'] = [round(float(lookups.fields['dec'].values[fid] / units.deg), 5) for fid in ordered_field_ids]
     if filter_override_val is not None:

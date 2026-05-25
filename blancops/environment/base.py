@@ -83,7 +83,7 @@ class StateSnapshot:
 
 _FILTER_NAMES = list(FILTER2IDX.keys())
 
-_STALENESS_BIN_REQUIREMENTS = [("attr", "lookups.total_ot_sec")]
+# _STALENESS_BIN_REQUIREMENTS = [("attr", "lookups.total_ot_sec")]
 
 _FEATURE_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
     "fwhm": [("hook", "_get_fwhm")],
@@ -1009,14 +1009,14 @@ class BaseBlancoEnv(gym.Env, ABC):
                 + f"\nConfigured global_features: {self.global_feature_names}"
             )
  
-        if self._has_historical_features and self.lookups.total_ot_sec is None:
-            raise ValueError(
-                f"{cls.__name__}: bin features include staleness/history terms "
-                f"(found in bin_feature_names: "
-                f"{[b for b in self.bin_feature_names if any(k in b for k in _STALENESS_BASE_KEYS)]}) "
-                f"but lookups.total_ot_sec is None. This must be the same "
-                f"normalization constant the policy was trained with — typically "
-                f"loaded from the training data directory's total_ot_seconds file."
+        # if self._has_historical_features and self.lookups.total_ot_sec is None:
+        #     raise ValueError(
+        #         f"{cls.__name__}: bin features include staleness/history terms "
+        #         f"(found in bin_feature_names: "
+        #         f"{[b for b in self.bin_feature_names if any(k in b for k in _STALENESS_BASE_KEYS)]}) "
+        #         f"but lookups.total_ot_sec is None. This must be the same "
+        #         f"normalization constant the policy was trained with — typically "
+        #         f"loaded from the training data directory's total_ot_seconds file."
             )
     def _is_hook_overridden(self, hook_name: str) -> bool:
         base_fn = BaseBlancoEnv.__dict__.get(hook_name)

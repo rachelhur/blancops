@@ -365,8 +365,8 @@ class GlobalFeatureEngineer:
 
     def _map_bins_and_fields(self, df: pd.DataFrame) -> pd.DataFrame:
         """Maps RA/Dec to field_id and bin number, using lookups and hpGrid if provided."""
-        # df['field_id'] = df['object'].map({v: k for k, v in self.fid2name.items()})
-        df['field_id'] = df['object'].map({v: k for k, v in self.lookups.fields['object'].to_dict().items()})
+        # df['field_id'] = df['field'].map({v: k for k, v in self.fid2name.items()})
+        df['field_id'] = df['field'].map({v: k for k, v in self.lookups.fields['field'].to_dict().items()})
 
         if self.hpGrid is not None:
             lon = df['az'] if self.hpGrid.is_azel else df['ra']
@@ -375,7 +375,7 @@ class GlobalFeatureEngineer:
             df['bin'] = self.hpGrid.ang2idx(lon=lon, lat=lat)
 
             # Re-assign zenith specifics
-            zenith_mask = df['object'] == 'zenith'
+            zenith_mask = df['field'] == 'zenith'
             df.loc[zenith_mask, "bin"] = ZENITH_BIN_NUM
             df.loc[zenith_mask, "field_id"] = ZENITH_FIELD_ID
 
@@ -722,7 +722,7 @@ def get_zenith_features(original_df):
     zenith_df['airmass'] = ZENITH_AIRMASS
     zenith_df['zd'] = ZENITH_ZD * units.deg
     zenith_df['ha'] = ZENITH_HA * units.deg
-    zenith_df['object'] = ZENITH_OBJECT
+    zenith_df['field'] = ZENITH_OBJECT
     zenith_df['field_id'] = ZENITH_FIELD_ID
     zenith_df['filter'] = ZENITH_FILTER
     zenith_df['datetime'] = pd.to_datetime(zenith_df['datetime'], utc=True)

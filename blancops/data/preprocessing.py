@@ -21,8 +21,6 @@ import logging
 from blancops.survey.des_consts import _VALID_TEFF_THRESHOLD, _DES_SUN_EL_LIMIT
 logger = logging.getLogger(__name__)
 
-from blancops.configs.constants import FILTER2IDX
-from blancops.configs.constants import DES_DATA_DIR, DES_FITS_PATH
 
 _OP_MAP = {
     '=': operator.eq,
@@ -34,13 +32,37 @@ _OP_MAP = {
     '!=': operator.ne
 }
 
-_DES_SELECTION_CRITERIA = \
-    {'propid': ('2012B-0001', '=='), 
-     'exptime': (90, '=='),
-     'datetime': (pd.Timestamp("2000-01-01", tz="UTC"), '>='),
-     'teff': (np.nan, '!=')
-     }
-_DES_UNWANTED_OBJECTS = ["guide", "DES vvds","J0","gwh","DESGW","Alhambra-8","cosmos","COSMOS hex","TMO","LDS","WD0","DES supernova hex","NGC","ec", "(outlier)"]
+# Applies AND based selections given the following criteria:
+_DES_SELECTION_CRITERIA = [
+    ('propid', '2012B-0001', '=='), 
+    ('exptime', 100, '<'),
+    ('exptime', 40, '>'),
+    ('datetime', pd.Timestamp("2000-01-01", tz="UTC"), '>='),
+    ('teff', np.nan, '!='),
+    ('program', 'supernova', '!='),
+    ('program', 'des gw', '!='),
+]
+# Specific objects to remove from dataset (non-astronomical targets or non DES wide-field survey targets).
+# Most (but not all) of these should be taken care of by the 'program' and 'propid' selection criteria.
+_DES_UNWANTED_OBJECTS = [
+    "guide", 
+    "pointing", 
+    "DES vvds",
+    "J0",
+    "SN",
+    "gwh",
+    "DESGW",
+    "Alhambra",
+    "cosmos",
+    "COSMOS hex",
+    "TMO",
+    "LDS",
+    "WD0",
+    "DES supernova hex",
+    "NGC",
+    "ec", 
+    ]
+
 
 def load_and_process_historic_data(
     fits_path: str | Path | None = None, 
@@ -66,50 +88,64 @@ def load_and_process_historic_data(
     selections (dict): dict
         Selection criteria for the dataframe. Currently only supports equal, greater than, less than.
     """
+    assert fits_path or df, "Provide either fits_path or df, not both."
     if df is None:
         df = preprocess_fits(fits_path)
+        
 
-    df = df\
+    df = df \
         .pipe(_apply_selection_criteria, selections=selections) \
+        .pipe(_remove_outliers, col='object', cutoff_dist=outlier_cutoff_dist) \
         .pipe(_convert_df_to_radians) \
-        .pipe(_add_essential_cols) \
         .pipe(_filter_observing_timeframe, start_date=start_date, end_date=end_date, valid_years=valid_years, valid_months=valid_months, valid_days=valid_days, valid_filters=valid_filters) \
-        .pipe(_remove_object_outliers, cutoff_dist=outlier_cutoff_dist) \
-        .pipe(_remove_unwanted_objects, objects_to_remove=objects_to_remove)
-    df.sort_values(by='timestamp').reset_index(drop=True, inplace=True)
+        .pipe(_remove_unwanted_objects, objects_to_remove=objects_to_remove) \
+        .pipe(_add_essential_cols) \
+        .pipe(_add_field_col) \
+        
+    df = df.sort_values(by='timestamp').reset_index(drop=True)
     
     return df
 
-def _apply_selection_criteria(df, selections: dict):
+def _apply_selection_criteria(df, selections: list):
     sel_mask = np.ones(len(df), dtype=bool)
     
-    for crit_key, crit_val in selections.items():
-        if isinstance(crit_val, tuple) and len(crit_val) == 2:
-            val, op_str = crit_val
-        else:
-            val = crit_val
-            op_str = '=='  # Default to equality if no operator is provided
-            
+    for crit_key, val, op_str in selections:
         try:
             op_func = _OP_MAP[op_str]
         except KeyError:
-            raise ValueError(f"Operator '{op_str}' is not supported. Use one of {list(_OP_MAP.keys())}")
+            raise ValueError(f"Operator '{op_str}' is not supported.")
             
-        sel_mask &= op_func(df[crit_key], val)
-    df = df[sel_mask].copy()
-    return df
+        # Special handling for NaN comparisons
+        if pd.isna(val):
+            if op_str == '!=':
+                sel_mask &= df[crit_key].notna()
+            elif op_str == '==':
+                sel_mask &= df[crit_key].isna()
+        else:
+            sel_mask &= op_func(df[crit_key], val)
+            
+    return df[sel_mask].copy()
     
-def _convert_df_to_radians(df: pd.DataFrame, key_list: list = []):
-    key_list += ['ra', 'dec', 'az', 'zd', 'ha']
+def _convert_df_to_radians(df: pd.DataFrame, key_list: list | None = None) -> pd.DataFrame:
+    """Converts specified columns in the dataframe from degrees to radians.
+    
+    If key_list is None, it defaults to converting 'ra', 'dec', 'az', 'zd', and 'ha'.
+    """
+    if key_list is None:
+        key_list = []
+        
+    key_list.extend(['ra', 'dec', 'az', 'zd', 'ha'])
     key_list = list(set(key_list))
-    df.loc[:, ['ra', 'dec', 'az', 'zd', 'ha']] *= units.deg
+    if not all(key in df.columns for key in key_list):
+        raise ValueError(f"Not all keys in key_list are present in the dataframe. Missing keys: {[key for key in key_list if key not in df.columns]}")
+    df.loc[:, key_list] *= units.deg
     return df
 
 def _add_essential_cols(df):
     df['el'] = np.pi/2 - df['zd'].values
     return df
     
-def _remove_unwanted_objects(df, objects_to_remove=_DES_UNWANTED_OBJECTS):
+def _remove_unwanted_objects(df, objects_to_remove) -> pd.DataFrame:
     """Removes objects that have specific substrings in their object name"""    
     pattern = '|'.join(re.escape(obj) for obj in objects_to_remove)
     mask = ~df['object'].str.contains(pattern, case=False, na=False, regex=True) & (df['object'] != '')
@@ -118,7 +154,7 @@ def _remove_unwanted_objects(df, objects_to_remove=_DES_UNWANTED_OBJECTS):
     df = df[mask]
     return df
 
-def _remove_object_outliers(df, cutoff_dist=3.5) -> pd.DataFrame:
+def _remove_outliers(df, col='object', cutoff_dist=3.5) -> pd.DataFrame:
     """Remove rows if they are outside of a certain cutoff from the object's median RA/Dec.
 
     Args
@@ -131,12 +167,12 @@ def _remove_object_outliers(df, cutoff_dist=3.5) -> pd.DataFrame:
     cleaned_df (pd.DataFrame): The cleaned dataframe with relabelled objects removed.
     """
     indices_to_drop = []
-    for obj_name, g in df.groupby('object'):
-        median_ra = _get_object_median_ra(g.ra)
+    for obj_name, g in df.groupby(col):
+        median_ra = _get_median_ra(g.ra)
         median_dec = g.dec.median()
 
         # Calculate true on-sky distance from the robust center
-        distances = _get_haversine_dist(median_ra, median_dec, g.ra.values, g.dec.values)
+        distances = get_haversine_dist(median_ra, median_dec, g.ra.values, g.dec.values)
         
         # Mask and re-label
         mask_outlier = distances > cutoff_dist
@@ -207,18 +243,43 @@ def _filter_observing_timeframe(
     return df[mask].copy()
 
 
-def _get_object_median_ra(dither_ras):
-    ra_rad = np.radians(dither_ras)
+def _get_median_ra(ra_arr):
+    """Returns the median RA for a given array of RA values.
+    Useful for edge aware centering.
+    
+    Args
+    ----
+    ra_arr (np.ndarray): Array of RA values in degrees.
+    """
+    ra_rad = np.radians(ra_arr)
     
     mean_x = np.mean(np.cos(ra_rad))
     mean_y = np.mean(np.sin(ra_rad))
     
     anchor_ra = np.degrees(np.arctan2(mean_y, mean_x)) % 360
-    shifted_ra = (dither_ras - anchor_ra + 180) % 360 - 180
+    shifted_ra = (ra_arr - anchor_ra + 180) % 360 - 180
     
     return (np.median(shifted_ra) + anchor_ra) % 360
 
-def _get_haversine_dist(ra_center, dec_center, ra_array, dec_array):
+def _get_mean_ra(ra_arr):
+    """Returns the mean RA for a given array of RA values.
+    Useful for edge aware centering.
+    
+    Args
+    ----
+    ra_arr (np.ndarray): Array of RA values in degrees.
+    """
+    ra_rad = np.radians(ra_arr)
+    
+    mean_x = np.mean(np.cos(ra_rad))
+    mean_y = np.mean(np.sin(ra_rad))
+    
+    anchor_ra = np.degrees(np.arctan2(mean_y, mean_x)) % 360
+    shifted_ra = (ra_arr - anchor_ra + 180) % 360 - 180
+    
+    return (np.mean(shifted_ra) + anchor_ra) % 360
+
+def get_haversine_dist(ra_center, dec_center, ra_array, dec_array):
     """Calculates great-circle distance between a center point and an array of points."""
     ra1, dec1 = np.radians(ra_center), np.radians(dec_center)
     ra2, dec2 = np.radians(ra_array), np.radians(dec_array)
@@ -230,6 +291,13 @@ def _get_haversine_dist(ra_center, dec_center, ra_array, dec_array):
     a = np.clip(a, 0.0, 1.0)
     return np.degrees(2.0 * np.arcsin(np.sqrt(a)))
 
+def _add_field_col(df):
+    """Adds a 'field' column to the dataframe by stripping tiling information from the 'object' column."""
+    assert all('tiling' in obj_name for obj_name in df['object'].unique()), "All object names must contain 'tiling' for this function to work as intended."
+    df['field'] = df['object'].str.replace(r'\s*tiling\s+\d+', '', regex=True)
+    return df
+    
+
 def build_DES_lookups(fits_path=None, outdir=None):
     fits_path = Path(fits_path or DES_FITS_PATH).resolve()
     outdir = Path(outdir or DES_DATA_DIR).resolve()
@@ -239,11 +307,9 @@ def build_DES_lookups(fits_path=None, outdir=None):
         logger.warning("No observations found for the specified year/month/day/filter selections.")
         raise ValueError
     
-    # df['field_id'] = pd.factorize(df['object'])[0]
-    
-    object2idx = {obj_name: idx for idx, obj_name in enumerate(sorted(df['object'].unique()))}
-    # field_id is 0..N-1 contiguous by construction (pd.factorize).
-    df['field_id'] = df['object'].map(object2idx)
+    # Require field_id is 0..N-1 contiguous
+    field2idx = {obj_name: idx for idx, obj_name in enumerate(sorted(df['field'].unique()))}
+    df['field_id'] = df['field'].map(field2idx)
     df["filt_idx"] = df["filter"].map(FILTER2IDX)
     
     num_fields = df["field_id"].nunique()
@@ -269,8 +335,8 @@ def build_DES_lookups(fits_path=None, outdir=None):
     for field_id, g in df.groupby("field_id"):
         fields_rows.append({
             "field_id": int(field_id),
-            "object": g["object"].iloc[0],
-            "ra": float(g["ra"].mean()),
+            "field": g["field"].iloc[0],
+            "ra": float(_get_mean_ra(g["ra"].values / units.deg) * units.deg),
             "dec": float(g["dec"].mean()),
         })
     fields = pd.DataFrame(fields_rows).set_index("field_id").sort_index()
@@ -405,9 +471,9 @@ def build_DES_lookups(fits_path=None, outdir=None):
 
         cum_ot += night_dur
         
-    total_observing_seconds = cum_ot
+    # total_observing_seconds = cum_ot
 
-    logger.info(" [+] Constructed start-of-night 'Snapshots' Lookup (required for history-based feature construction) ")
+    logger.info(" [+] Constructed start-of-night 'Snapshots' Lookup (required for history-based feature construction and per-night rollout) ")
 
     # ---------- Construct LookupTable and save to disk ----------
     lookups = TrainLookupTables(
@@ -422,7 +488,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
         night2fid_last_visit_ot=night2fid_last_visit_ot,
         night2fidfilt_last_visit_ot=night2fidfilt_last_visit_ot,
         night2ot_clock_seconds=night2ot_clock_seconds,
-        total_ot_sec=total_observing_seconds,
+        # total_ot_sec=total_observing_seconds,
     )
     lookups.write_to_disk(outdir)
     logger.info(f" [+] Successfully generated all lookup tables in {outdir}")
