@@ -150,13 +150,13 @@ def parse_args():
     path_group = parser.add_argument_group("Pathing")
     path_group.add_argument(
         "--field-lookup-dir",
-        type=str,
+        type=Path,
         default=defaults.get("field_lookup_dir", "./field_lookups"),
         help="Directory containing field lookup tables for AI inference.",
     )
     path_group.add_argument(
         "--fields-path",
-        type=str,
+        type=Path,
         default=defaults.get("fields_path", None),
         help=(
             "Optional path to a fields file used to construct lookups. If omitted, "
@@ -165,7 +165,7 @@ def parse_args():
     )
     path_group.add_argument(
         "--output-directory",
-        type=str,
+        type=Path,
         default=defaults.get("output_directory", "./observing_logs"),
         help="Directory where observing logs are written.",
     )
