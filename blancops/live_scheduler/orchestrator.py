@@ -126,6 +126,7 @@ class SchedulerOrchestrator:
                 # submit the observation the first time through without waiting further
                 if self.first_exposure and self.progress.check_start_condition():
                     self.client.submit_observation(obs_row)
+                    self.model.record_visit(obs_row)
                     self.last_submitted_obs = obs_row
                     self.first_exposure = False
                     submitted = True
@@ -145,6 +146,7 @@ class SchedulerOrchestrator:
                     and self.progress.check_start_condition()
                 ):
                     self.client.submit_observation(obs_row)
+                    self.model.record_visit(obs_row)
                     logger.info(
                         f"[Orchestrator] Observation [{obs_row['field_id']}] submitted after [{self.last_submitted_obs['field_id']}] finished."
                     )

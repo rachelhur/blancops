@@ -70,6 +70,15 @@ class ModelRunner(ABC):
 
         pass
 
+    def record_visit(self, obs_row) -> None:
+        """Notify the runner that an observation was submitted to the telescope.
+
+        Called by the orchestrator immediately after each hardware submission so
+        that subsequent rollouts reflect the running visit history. Default is a
+        no-op; AI-backed runners override to update their internal env.
+        """
+        pass
+
 
 class MockModelRunner(ModelRunner):
     """Randomized mock implementation used for development and dry runs."""
@@ -227,6 +236,10 @@ class AIModelRunner(ModelRunner):
         self.env.restore_snapshot(rollout_snapshot)
 
         return proposed_schedule
+
+    def record_visit(self, obs_row) -> None:
+        """Update the live env's visit history after a hardware submission."""
+        self.env.record_visit(obs_row)
 
     def resolve_rollout_telemetry(self, telemetry: dict) -> dict:
         """Normalize raw client telemetry to env-canonical form.
