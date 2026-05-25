@@ -114,7 +114,7 @@ def build_evaluators(
     night_start_bin_states = None
     if cfg.data.bin_state_dim > 0:
         cur = val_dataset._df.iloc[val_dataset.current_state_idxs].reset_index(drop=True)
-        night_start_indices = cur.index[cur['object'] == 'zenith'].values + 1
+        night_start_indices = cur.index[cur['field'] == 'zenith'].values + 1
         night_start_bin_states = val_dataset._prenorm_bin_states[night_start_indices].detach().numpy()
 
     env = HistoricBlancoEnv(
