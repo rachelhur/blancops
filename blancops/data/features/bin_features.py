@@ -227,8 +227,8 @@ def compute_bin_progress_features(
         """
         age_v = np.where(
             in_plan_mask & ~np.isnan(last_visit_per_field),
-            (timestamp - last_visit_per_field) / t_since_last_visit_divisor,
-            np.inf,
+            np.maximum(0.0, (timestamp - last_visit_per_field) / t_since_last_visit_divisor),
+            np.inf, # XXX the np.max() is for the case in live env rollout where timestamp < field's last visit
         )
         res = np.full(nbins, np.inf, dtype=np.float32)
         np.minimum.at(res, bins_mem, age_v)
