@@ -575,7 +575,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         #    look, but isn't changed in this refactor.
         if self._field_id == ZENITH_FIELD_ID:
             blanco = ephemerides.blanco_observer(time=timestamp)
-            ra, dec = new_features['lst'], blanco.lon
+            ra, dec = new_features['lst'], blanco.lat
         else:
             ra = self._ra_arr[self._field_id]
             dec = self._dec_arr[self._field_id]
