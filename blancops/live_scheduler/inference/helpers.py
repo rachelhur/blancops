@@ -10,28 +10,13 @@ import astropy.units as au
 from blancops.math import units
 
 def build_env(cfg, norm_stats, lookups, telemetry_now):
-    
     constraints_cfg = ActionConstraints()
     zscore_stats = norm_stats.get('z_score', {})
     rel_norm_stats = norm_stats.get('rel_norm', {})
-    
-    global_normalizer = build_normalizer(state_feature_names=cfg.data.global_features, cfg=cfg)
-    bin_normalizer = build_normalizer(state_feature_names=cfg.data.bin_features, cfg=cfg)
-    norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
-    global_normalizer = StateNormalizer(
-        state_feature_names=cfg.data.global_features, 
-        **norm_kwargs
-    )
-    bin_normalizer = StateNormalizer(
-        state_feature_names=cfg.data.bin_features, 
-        **norm_kwargs
-    )
     env = LiveBlancoEnv(
         cfg=cfg,
         constraints_cfg=constraints_cfg,
         lookups=lookups,
-        global_normalizer=global_normalizer,
-        bin_normalizer=bin_normalizer,
         z_score_stats=zscore_stats, 
         rel_norm_stats=rel_norm_stats,
         telemetry_init=telemetry_now
