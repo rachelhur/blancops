@@ -147,6 +147,13 @@ class LiveBlancoEnv(BaseBlancoEnv):
     # BaseBlancoEnv lifecycle hooks
     # -----------------------------------------------------------------------
  
+    def reset(self, **kwargs):
+        raise RuntimeError(
+            "LiveBlancoEnv.reset() must not be called mid-session. "
+            "Use sync_telemetry() to realign with hardware state, or "
+            "construct a new LiveBlancoEnv for a fresh session."
+        )
+
     def _begin_episode(self, ot_at_sunset=0) -> None:
         self._ot_at_sunset = ot_at_sunset
         self.sync_telemetry()

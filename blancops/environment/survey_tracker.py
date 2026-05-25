@@ -117,7 +117,14 @@ class SurveyProgressTracker:
         """Accumulate `n` visits at the given index."""
         idx = self._get_counts_idx(field_id, filter_idx)
         self._counts[idx] += n
-        
+
+    def copy(self) -> 'SurveyProgressTracker':
+        """Return an independent copy (safe to pass to callers that must not mutate live state)."""
+        return SurveyProgressTracker(
+            target_counts=self._target_counts.copy(),
+            initial_counts=self._counts.copy(),
+        )
+
     # raw queries ------------------------------------------------------
 
     def get_counts(self) -> np.ndarray:
