@@ -59,6 +59,26 @@ class TelescopeClient(ABC):
         pass
 
     @abstractmethod
+    def check_telemetry_change(self, current_telemetry, last_telemetry):
+        """
+        Report whether the telescope state has changed meaningfully since the last check.
+
+        Arguments
+        ---------
+        current_telemetry : dict
+            Most recently fetched telemetry dict.
+        last_telemetry : dict
+            Previously stored telemetry dict.
+
+        Returns
+        -------
+        bool
+            True if the pointing or other state has changed enough to warrant replanning.
+        """
+
+        pass
+
+    @abstractmethod
     def close(self):
         """
         Clean up any open connections or resources when the client is no longer needed.
@@ -94,6 +114,14 @@ class MockTelescopeClient(TelescopeClient):
 
         return {"pointing_ra": self.current_ra, "pointing_dec": self.current_dec}
 
+    def check_telemetry_change(self, current_telemetry, last_telemetry):
+        """Returns True if the pointing has changed since the last call."""
+        if not last_telemetry:
+            return True
+        tel_current = (current_telemetry.get("pointing_ra"), current_telemetry.get("pointing_dec"))
+        tel_last = (last_telemetry.get("pointing_ra"), last_telemetry.get("pointing_dec"))
+        return tel_current != tel_last
+        
     def check_exposure_status(self):
         """Return True when simulated slew+exposure time has elapsed."""
 
@@ -200,6 +228,14 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             logger.exception(f"[Client] Error fetching telemetry: {e}")
             return {"pointing_ra": None, "pointing_dec": None}
 
+    def check_telemetry_change(self, current_telemetry, last_telemetry):
+        """Returns True if the pointing has changed since the last telemetry check."""
+        if not last_telemetry:
+            return True
+        ra_changed = current_telemetry.get("pointing_ra") != last_telemetry.get("pointing_ra")
+        dec_changed = current_telemetry.get("pointing_dec") != last_telemetry.get("pointing_dec")
+        return ra_changed or dec_changed
+    
     def check_exposure_status(self):
         """Return exposure readiness state from control system."""
 
