@@ -446,14 +446,12 @@ class BaseBlancoEnv(gym.Env, ABC):
             )
         else:
             bin_state_normed = np.array([], dtype=np.float32)
-            glob_nan_mask = None
- 
-        self._global_state = global_state_normed
-        self._bin_state = bin_state_normed
-        self._last_glob_nan_mask = glob_nan_mask    # stash for get_info
-        self._last_bin_nan_mask  = bin_nan_mask
-    
-        return {"global_state": self._global_state, "bin_state": self._bin_state}
+            bin_nan_mask = None
+
+        self._last_glob_nan_mask = glob_nan_mask
+        self._last_bin_nan_mask = bin_nan_mask
+
+        return {"global_state": global_state_normed, "bin_state": bin_state_normed}
     
     def get_info(self) -> dict:
         """
