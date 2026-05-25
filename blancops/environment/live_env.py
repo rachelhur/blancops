@@ -153,9 +153,9 @@ class LiveBlancoEnv(BaseBlancoEnv):
  
     def _refresh_night_boundaries(self) -> None:
         """Recompute sunrise/sunset for the configured observing night."""
-        ts = utc_now()
-        self._sunset_ts = calc_twilight(ts, "set", self.sun_el_limit)
-        self._sunrise_ts = calc_twilight(ts, "rise", self.sun_el_limit)
+        self._sunset_ts, self._sunrise_ts = get_night_boundaries(
+            self._ts, sun_el_limit=self.sun_el_limit
+        )
         self._night_end_ts = self._sunrise_ts
  
     def _match_pointing_to_fid(self, ra: float, dec: float) -> int:
