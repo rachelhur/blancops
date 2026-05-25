@@ -4,6 +4,8 @@ import time
 from blancops.ephemerides import time_utils
 import pandas as pd
 
+import logging
+logger = logging.getLogger(__name__)
 
 class SchedulerOrchestrator:
     """Coordinate client, model, UI, and state manager during a live observing session."""
@@ -62,7 +64,7 @@ class SchedulerOrchestrator:
     def run(self):
         """Run the continuous proposal/approval/submission loop until end condition."""
 
-        print("\n[Orchestrator] Starting Live Scheduler Loop...")
+        logger.info("\n[Orchestrator] Starting Live Scheduler Loop...")
 
         # XXX add in pre-loop checks:
         # - get initial telemetry
@@ -94,7 +96,7 @@ class SchedulerOrchestrator:
 
             # guard against placeholder/failed model output
             if chunk_df is None or chunk_df.empty:
-                print("[Orchestrator] Model returned empty chunk. Regenerating...")
+                logger.warning("[Orchestrator] Model returned empty chunk. Regenerating...")
                 continue
 
             # get user approval for the chunk before executing
@@ -118,7 +120,7 @@ class SchedulerOrchestrator:
                 continue
 
             # wait for a valid submission point while monitoring interrupts/drift
-            print("\n[Orchestrator] Waiting to execute the approved chunk...")
+            logger.info("[Orchestrator] Waiting to execute the approved chunk...")
             submitted = False
             while not submitted and not self.progress.check_end_condition():
                 # submit the observation the first time through without waiting further
@@ -127,7 +129,7 @@ class SchedulerOrchestrator:
                     self.last_submitted_obs = obs_row
                     self.first_exposure = False
                     submitted = True
-                    print(
+                    logger.info(
                         f"[Orchestrator] First observation submitted: {obs_row['field_id']}"
                     )
                     continue
@@ -143,7 +145,7 @@ class SchedulerOrchestrator:
                     and self.progress.check_start_condition()
                 ):
                     self.client.submit_observation(obs_row)
-                    print(
+                    logger.info(
                         f"[Orchestrator] Observation [{obs_row['field_id']}] submitted after [{self.last_submitted_obs['field_id']}] finished."
                     )
                     self.progress.record_completion(self.last_submitted_obs)
@@ -153,30 +155,30 @@ class SchedulerOrchestrator:
 
                 # check for user-triggered soft interrupt to replan chunk
                 if self.ui.check_for_replan_signal():
-                    print("\n[Orchestrator] User gave soft interrupt. Aborting chunk.")
+                    logger.info("[Orchestrator] User gave soft interrupt. Aborting chunk.")
                     break
 
                 # periodically check for telemetry, field list changes => trigger replan
                 delta = time_utils.utc_now() - self.last_telemetry_check
                 if delta > self.telemetry_poll_rate_sec:
-                    print("[Orchestrator] Performing periodic telemetry/field check")
+                    logger.info("[Orchestrator] Performing periodic telemetry/field check")
                     new_telemetry = self.client.get_telemetry()
                     self.last_telemetry_check = time_utils.utc_now()
                     telemetry_changed = False  # XXX check telemetry changes
                     if telemetry_changed:
-                        print("[Orchestrator] Telemetry change detected.")
+                        logger.info("[Orchestrator] Telemetry change detected.")
                     fields_changed = False  # XXX check field list changes
                     if fields_changed:
-                        print("[Orchestrator] Field list change detected.")
+                        logger.info("[Orchestrator] Field list change detected.")
                     if telemetry_changed or fields_changed:
-                        print(
+                        logger.info(
                             "[Orchestrator] Telemetry or field list changed; aborting chunk."
                         )
                         break
 
         # announce session end
         if self.progress.check_end_condition():
-            print("[Orchestrator] Observing run complete (end condition met).")
+            logger.info("[Orchestrator] Observing run complete (end condition met).")
         else:
-            print("[Orchestrator] Observing run complete (unknown exit).")
+            logger.info("[Orchestrator] Observing run complete (unknown exit).")
         self.client.close()

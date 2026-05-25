@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 from blancops.math import units
 from blancops.plotting import live_scheduling_viz
 import pathlib
-
+import logging
+logger = logging.getLogger(__name__)
 
 class BaseInterface(ABC):
     """Abstract interface for user interaction with proposed observation chunks."""
@@ -78,25 +79,25 @@ class CLIInterface(BaseInterface):
         self.output_dir = pathlib.Path(output_dir) if output_dir is not None else None
         self.show_plots = show_plots
         if self.output_dir is None and not self.show_plots:
-            print("[Interface] Warning: No plots will be saved or displayed.")
+            logger.warning("[Interface] Warning: No plots will be saved or displayed.")
 
     def display_chunk(self, chunk_df):
         """Print the proposed chunk and save a simple RA/Dec plot."""
 
         # print the proposed chunk as a table in the terminal
-        print("\n" + "=" * 88)
-        print("[Interface] Proposed Observing Chunk")
-        print("=" * 88)
-        print(chunk_df.to_string(index=False))
-        print("=" * 88)
+        logger.info("\n" + "=" * 88)
+        logger.info("[Interface] Proposed Observing Chunk")
+        logger.info("=" * 88)
+        logger.info(chunk_df.to_string(index=False))
+        logger.info("=" * 88)
 
         # skip plotting when upstream returns an empty/malformed proposal
         required_cols = {"ra", "dec"}
         if chunk_df.empty:
-            print("[Interface] Chunk is empty; skipping plot generation.")
+            logger.info("[Interface] Chunk is empty; skipping plot generation.")
             return
         if not required_cols.issubset(chunk_df.columns):
-            print(
+            logger.info(
                 "[Interface] Chunk missing required ra/dec columns; skipping plot generation."
             )
             return
@@ -106,7 +107,7 @@ class CLIInterface(BaseInterface):
         skymap = live_scheduling_viz.plot_live_schedule_snapshot(proposed_df=chunk_df)
         if self.output_dir is not None:
             plt.savefig(self.output_dir / "current_chunk_proposal.png")
-            print(
+            logger.info(
                 f"[Interface] Plot saved to '{self.output_dir / 'current_chunk_proposal.png'}'."
             )
         if self.show_plots:
@@ -121,10 +122,10 @@ class CLIInterface(BaseInterface):
                 input("Approve this chunk? [Y]es, [N]o (mask fields): ").strip().upper()
             )
             if resp == "Y":
-                print("[Interface] Chunk accepted.")
+                logger.info("[Interface] Chunk accepted.")
                 return True
             elif resp == "N":
-                print("[Interface] Chunk rejected.")
+                logger.info("[Interface] Chunk rejected.")
                 return False
             else:
                 print("[Interface] Invalid input, please enter Y or N.")

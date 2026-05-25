@@ -5,6 +5,8 @@ import os
 from blancops.ephemerides import time_utils, ephemerides
 import pandas as pd
 
+import logging
+logger = logging.getLogger(__name__)
 
 class ProgressManager:
     """Track the current observing session and log completed fields to disk."""
@@ -87,7 +89,7 @@ class ProgressManager:
         else:
             session_date = local_now
         session_date = session_date.strftime("%Y-%m-%d")
-        print(f"[Progress] Generated session ID: {session_date}")
+        logger.info(f"[Progress] Generated session ID: {session_date}")
         return session_date
 
     def _load_history(self):
@@ -108,12 +110,12 @@ class ProgressManager:
                     try:
                         fields.append(json.loads(line))
                     except json.JSONDecodeError:
-                        print(
+                        logger.info(
                             f"[Progress] Skipping malformed history line in {self.history_file}."
                         )
                         continue
 
-            print(
+            logger.info(
                 f"[Progress] Resumed with {len(fields)} completed fields from {self.history_file}."
             )
         return pd.DataFrame(fields).convert_dtypes()

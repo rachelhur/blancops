@@ -13,6 +13,8 @@ from blancops.live_scheduler.scl import SCL
 import json
 from datetime import datetime
 
+import logging
+logger = logging.getLogger(__name__)
 
 class TelescopeClient(ABC):
     """Abstract interface for telescope-control interactions used by the scheduler."""
@@ -85,7 +87,7 @@ class MockTelescopeClient(TelescopeClient):
         # track current pointing to model stepping through observations
         self.current_ra, self.current_dec = ephemerides.get_source_ra_dec("zenith")
 
-        print("[Client] Initialized mock telescope client.")
+        logger.info("[Client] Initialized mock telescope client.")
 
     def get_telemetry(self):
         """Return the currently simulated telescope pointing."""
@@ -115,16 +117,16 @@ class MockTelescopeClient(TelescopeClient):
         if exp_time is not None:
             self.exposure_duration = exp_time
 
-        print(
+        logger.info(
             f"[Client] SUBMITTED: RA={obs_row['ra']}, DEC={obs_row['dec']}, FILTER={obs_row['filter']}"
         )
-        print(
+        logger.info(
             f"[Client] Estimated time until ready for next submission: {self.slew_time + self.exposure_duration:.1f}s."
         )
 
     def close(self):
         """No resources to clean up for the mock client."""
-        print("[Client] Closing mock telescope client (no resources to clean up).")
+        logger.info("[Client] Closing mock telescope client (no resources to clean up).")
 
 
 class BlancoSCLTelescopeClient(TelescopeClient):
@@ -134,15 +136,15 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         """Initialize and confirm the connection to the control system."""
 
         # Initialize the TCP/IP communication client
-        print(f"[Client] Attempting to connect to SCLN server at {server_ip}:{server_port}...")
+        logger.info(f"[Client] Attempting to connect to SCLN server at {server_ip}:{server_port}...")
         self.scl_client = SCL(server_ip, server_port)
         self.transaction_id = 0
         
         # check if connection was successful
         if self.scl_client.is_connected():
-            print(f"[Client] Initialized connection to SCLN server at {server_ip}:{server_port}.")
+            logger.info(f"[Client] Initialized connection to SCLN server at {server_ip}:{server_port}.")
         else:
-            print(f"[Client] WARNING: Could not connect to SCLN server at {server_ip}:{server_port}.")
+            logger.warning(f"[Client] WARNING: Could not connect to SCLN server at {server_ip}:{server_port}.")
 
         # track current pointing based on submissions
         self.current_ra, self.current_dec = None, None
@@ -195,7 +197,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             return {"pointing_ra": ra, "pointing_dec": dec}
             
         except Exception as e:
-            print(f"[Client] Error fetching telemetry: {e}")
+            logger.exception(f"[Client] Error fetching telemetry: {e}")
             return {"pointing_ra": None, "pointing_dec": None}
 
     def check_exposure_status(self):
@@ -236,21 +238,21 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         }
 
         # send the command and wait for the synchronous response
-        print(f"[Client] SUBMIT: RA={cmd['parameters']['ra']}, DEC={cmd['parameters']['dec']}, FILTER={cmd['parameters']['filter']}")
+        logger.info(f"[Client] SUBMIT: RA={cmd['parameters']['ra']}, DEC={cmd['parameters']['dec']}, FILTER={cmd['parameters']['filter']}")
         try:
             response_str = self.scl_client.send_command(json.dumps(cmd))
             response = json.loads(response_str) if response_str else {}
             
             if response.get("status") == "FAILED":
-                print(f"[Client] EXPOSURE FAILED: {response.get('message')}")
+                logger.warning(f"[Client] EXPOSURE FAILED: {response.get('message')}")
                 
             return response
             
         except Exception as e:
-            print(f"[Client] Error submitting observation: {e}")
+            logger.exception(f"[Client] Error submitting observation: {e}")
             return None
 
     def close(self):
         """Clean up the SCL client connection."""
         self.scl_client.close()
-        print("[Client] Closed connection to SCLN server.")
+        logger.info("[Client] Closed connection to SCLN server.")

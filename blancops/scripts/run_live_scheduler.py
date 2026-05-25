@@ -18,7 +18,7 @@ from blancops.math import units
 from blancops.ephemerides import time_utils
 
 # Use logging module -> stdout and/or file out instead of lieu statements
-from blancops.io.logger_utils import setup_logger_old
+from blancops.io.logger_utils import configure_logger
 
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parents[1] / "configs" / "live_scheduler_default.yaml"
@@ -271,7 +271,14 @@ def main():
         
     # Setup logger. The format arg determines how message is formatted. For example, with the format below, a message will be printed like:
     # 2026-05-01 13:40:05 - INFO - Initializing blancops Live Scheduler...".
-    logger = setup_logger_old(save_dir=args.output_directory, parent_module=__name__, logging_filename='run_live_scheduler.log', logging_level='info', format="%(asctime)s - %(levelname)s - [%(name)s] %(message)s")
+    logger = configure_logger(
+        level="info",
+        log_to_stdout=True,
+        log_to_file=True,
+        outdir=args.output_directory / "logs",
+        filename="run_live_scheduler.log",
+        use_tqdm=True
+    )
     # initialize requested telescope client
     logger.info("Initializing blancops Live Scheduler...")
     if args.client_mode.lower() == "mock":
