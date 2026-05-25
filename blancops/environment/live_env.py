@@ -22,9 +22,8 @@ import logging
 import numpy as np
  
 from blancops.environment.base import BaseBlancoEnv, StateSnapshot
-from blancops.data.features.glob_features import calc_twilight
-from blancops.configs.constants import WAIT_SIGNAL, ZENITH_FILTER_IDX
-from blancops.ephemerides.time_utils import utc_now
+from blancops.data.features.glob_features import get_night_boundaries
+from blancops.configs.constants import WAIT_SIGNAL, ZENITH_FILTER_IDX, FILTER2IDX
  
 logger = logging.getLogger(__name__)
  
