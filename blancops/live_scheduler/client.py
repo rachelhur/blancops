@@ -215,7 +215,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             return response.get("readyToExpose", False)
             
         except Exception as e:
-            print(f"[Client] Error checking exposure status: {e}")
+            logger.exception(f"[Client] Error checking exposure status: {e}")
             return False
 
     def submit_observation(self, obs_row, exp_time=None):
