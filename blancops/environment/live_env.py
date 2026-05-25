@@ -100,7 +100,49 @@ class LiveBlancoEnv(BaseBlancoEnv):
         self._global_state = self._calculate_global_features()
         if self.include_bin_features:
             self._bin_state = self._calculate_bin_features()
- 
+
+    def record_visit(self, obs_row) -> None:
+        """Record that an observation was submitted to the telescope.
+
+        Called by the orchestrator immediately after each hardware submission so
+        that subsequent rollouts reflect the in-progress observation.  Unlike
+        ``compute_post_action_snapshot``, the visit OT is anchored to the
+        current real timestamp (``self._ts``), not a simulated future time —
+        this avoids the clock-skew that produced negative staleness values.
+
+        Does not advance ``_ts``; timestamp is only updated via
+        ``sync_telemetry`` from real hardware telemetry.
+        """
+        field_id = int(obs_row["field_id"])
+        filter_idx = int(FILTER2IDX[obs_row["filter"]])
+        self._record_visit(field_id=field_id, filter_idx=filter_idx)
+        self._field_id = field_id
+        self._filter_idx = filter_idx
+        self._update_action_masks()
+        self._global_state = self._calculate_global_features()
+        if self.include_bin_features:
+            self._bin_state = self._calculate_bin_features()
+
+    def save_snapshot(self) -> StateSnapshot:
+        """Capture the full mutable state — pointing, time, and visit counts."""
+        return StateSnapshot(
+            timestamp=self._ts,
+            field_id=self._field_id,
+            bin_num=self._bin_num,
+            filter_idx=self._filter_idx,
+            counts_cur=self._survey_progress_tracker.raw_counts.copy(),
+            last_visit_ot_cur=self._last_visit_ot.copy(),
+        )
+
+    def restore_snapshot(self, snap: StateSnapshot) -> None:
+        """Restore mutable state from a snapshot and recompute derived arrays."""
+        self._apply_state_snapshot(snap)
+        self._refresh_night_boundaries()
+        self._update_action_masks()
+        self._global_state = self._calculate_global_features()
+        if self.include_bin_features:
+            self._bin_state = self._calculate_bin_features()
+
     # -----------------------------------------------------------------------
     # BaseBlancoEnv lifecycle hooks
     # -----------------------------------------------------------------------
