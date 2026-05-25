@@ -86,7 +86,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
             snap = StateSnapshot(
                 timestamp=telemetry["timestamp"],
                 field_id=self._match_pointing_to_fid(ra=telemetry["ra"], dec=telemetry["dec"]),
-                filter_idx=telemetry.get("filter_idx", ZENITH_FILTER_IDX),
+                filter_idx=telemetry.get("filter_idx", FILTER2IDX.get(telemetry.get("filter"), ZENITH_FILTER_IDX)),
                 # counts_cur intentionally omitted — preserve running history.
             )
             self._apply_state_snapshot(snap)
