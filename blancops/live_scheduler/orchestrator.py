@@ -89,7 +89,7 @@ class SchedulerOrchestrator:
                 self.model.generate_chunk(  # XXX update the call to this function
                     telemetry=telemetry,
                     available_fields=[],  # XXX Placeholder
-                    masked_fields=all_masks,
+                    masked_field=all_masks,
                     chunk_size=self.chunk_size,
                 )
             )
