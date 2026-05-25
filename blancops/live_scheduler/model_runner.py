@@ -12,11 +12,12 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from abc import ABC, abstractmethod
-from blancops.data.constants import IDX2FILTER
+from blancops.configs.constants import IDX2FILTER
+from blancops.data.features.glob_features import get_night_boundaries
 from blancops.ephemerides.time_utils import utc_now
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
-from blancops.data.lookup import LookupTables
+from blancops.data.lookup_tables import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.live_scheduler.inference.helpers import build_env
 from blancops.rl.agent_factory import AgentFactory
@@ -165,7 +166,7 @@ class AIModelRunner(ModelRunner):
     def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu", 
                  field_choice_method: str = "interp"):
         self.device = device
-        self.TESTING_MODE = True # REMOVE WHEN ENVIRONMENT IS FULLY FUNCTIONING
+        self.TESTING_MODE = True # XXX remove before production
         
         # Fields and Lookups
         self.fields_dir = Path(field_lookup_dir)
@@ -181,53 +182,81 @@ class AIModelRunner(ModelRunner):
         )
         
         self.model_dir = factory.resolve_model_dir(model_path_or_alias)
-        self.env = build_env(self.cfg, self.model_dir, self.lookups)
-        self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
-        print(f"[Model] Loaded model weights from {self.model_dir} into memory.")
+        if self.TESTING_MODE:
+            sunset_ts, _ = get_night_boundaries(utc_now(), -20)
+            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=sunset_ts)
+            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': sunset_ts}
+            self.env = build_env(cfg=self.cfg, lookups=self.lookups, norm_stats=norm_stats, telemetry_now=telemetry)
+            self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
+            print(f"[Model] Loaded model weights from {model_path_or_alias} into memory.")
+        else:
+            raise NotImplementedError
 
     @staticmethod
     def _get_lookups(fields_path, fields_dir):
         if fields_path:
-            lookups = LookupTables.generate_lookups_from_fields(fields_path=fields_path, outdir=fields_dir, write_to_disk=True)
+            lookups = LookupTables.build_lookups_from_fields(fields_path=fields_path, outdir=fields_dir, write_to_disk=True)
         else:
-            lookups = LookupTables.load_from_dir(fields_dir, is_training=False, is_historic=False, construct_if_missing=True)
+            lookups = LookupTables.load_from_dir(fields_dir, include_historic=False)
         return lookups
         
-    def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size, new_fields=None, new_lookup_dir=None) -> pd.DataFrame:
-        
-        if self.TESTING_MODE:
-            obs, info = self.env.get_obs(), self.env.get_info()
-            # ra, dec = telemetry["pointing_ra"], telemetry["pointing_dec"]
-            
-            # self.env.step()
-            raise NotImplementedError
-        else:
-            # UPDATE TELEMETRY/FIELD LOOKUPS
-            telemetry = self.process_telemetry(telemetry)
-            self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
-            
-            # UPDATE ENV AND GET CURRENT STATE/OBS
-            self.env.sync_to_telemetry(telemetry)   # will sync up with (1) telemetry time
-                                                                    # (2) current ra, dec 
-                                                                    # (3) its counters for (field, filter) for *successful* exposures that have occured since last 
-                                                                    # chunk generation
-                                                    # note to self, should reset environment counters back to "original state" at the end of policy rollout 
-            obs, info = self.env.get_obs(), self.env.get_info()
-            
-            # GENERATE SCHEDULE
-            print("[Model] Generating state features and running inference...")
-            proposed_schedule = self.rollout_policy(init_obs=obs, init_info=info, chunk_size=chunk_size)
-            return proposed_schedule
+    def generate_chunk(self, telemetry=None, available_fields=None, masked_field=None,
+                       chunk_size=3, new_fields=None, new_lookup_dir=None,
+                       ) -> pd.DataFrame:
+        """Schedules a chunk of size `chunk_size` observations given the current state.
+
+        The live env's visit history is maintained externally by the orchestrator via
+        ``LiveBlancoEnv.record_visit`` after each hardware submission. This method
+        syncs the env to real telemetry, saves a rollout snapshot, runs the rollout,
+        then restores the env so live state is not permanently mutated by the simulation.
+        """
+        # Normalize telemetry key names and inject timestamp/filter defaults.
+        telemetry = self.resolve_rollout_telemetry(telemetry)
+
+        self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
+
+        # Sync live env with hardware telemetry, save rollout baseline, run rollout,
+        # then restore so live state (including record_visit history) is preserved.
+        self.env.sync_telemetry(telemetry)
+        rollout_snapshot = self.env.save_snapshot()
+        obs, info = self.env.get_obs(), self.env.get_info()
+
+        print("[Model] Generating state features and running inference...")
+        proposed_schedule = self._rollout(init_obs=obs, init_info=info, chunk_size=chunk_size)
+
+        self.env.restore_snapshot(rollout_snapshot)
+
+        return proposed_schedule
+
+    def resolve_rollout_telemetry(self, telemetry: dict) -> dict:
+        """Normalize raw client telemetry to env-canonical form.
+
+        Renames hardware key aliases (``pointing_ra`` → ``ra``, etc.), injects a
+        wall-clock timestamp when the client doesn't provide one, and adds a
+        default filter string. Works on a copy — does not mutate the input dict.
+        """
+        tel = dict(telemetry)
+        if 'pointing_ra' in tel:
+            tel.setdefault('ra', tel.pop('pointing_ra'))
+        if 'pointing_dec' in tel:
+            tel.setdefault('dec', tel.pop('pointing_dec'))
+        if 'timestamp' not in tel:
+            tel['timestamp'] = utc_now()
+        if 'filter' not in tel:
+            tel['filter'] = 'g'
+        if tel.get('is_exposing'):
+            tel['timestamp'] = tel['timestamp'] + tel.get('remaining_exposure_time', 0)
+        return tel
 
     def update_lookups(self, new_fields_path, new_dir=None):
         if not new_fields_path: 
             return self.lookups
         
-        new_lookups = LookupTables.generate_lookups_from_fields(fields_path=new_fields_path, write_to_disk=False)
+        new_lookups = LookupTables.build_lookups_from_fields(fields_path=new_fields_path, write_to_disk=False)
         self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir) # writes to disk if new_dir is not None
         return self.lookups
     
-    def rollout_policy(self, init_obs: dict, init_info: dict, chunk_size: int) -> pd.DataFrame:
+    def _rollout(self, init_obs: dict, init_info: dict, chunk_size: int) -> pd.DataFrame:
         proposed_schedule = {'bin_idx': [],
                     'field_id': [],
                     'filter': [],
@@ -236,6 +265,8 @@ class AIModelRunner(ModelRunner):
                     'dec': [],
                     }
         
+        info = self.env.set_constraints(airmass_limit=2.5, sun_el_limit=-15.0)
+
         obs, info = init_obs, init_info
         for i in range(chunk_size):
             bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, self.hpGrid)
@@ -245,22 +276,24 @@ class AIModelRunner(ModelRunner):
             proposed_schedule['field_id'].append(field_id)
             proposed_schedule['filter'].append(IDX2FILTER[filter_idx])
             proposed_schedule['timestamp'].append(info.get('timestamp'))
+    
             
-            ra, dec = self.lookups.fid2radec[field_id]
+            ra, dec = self.lookups.fields[["ra", "dec"]].loc[field_id]
+
             proposed_schedule['ra'].append(ra)
             proposed_schedule['dec'].append(dec)
             
             obs, reward, terminated, truncated, info = self.env.step(actions)
             if terminated or truncated: #ie, end of night - orchestrator default stops this, but doesn't hurt to have extra check here
                 break
-        
+            
         for key, val in proposed_schedule.items():
             if key in ['bin_idx', 'field_id', 'timestamp']:
                 dtype = np.int64
             elif key in ['ra', 'dec']:
                 dtype = np.float64
+            elif key == 'filter':
+                dtype = str
             proposed_schedule[key] = np.array(val, dtype=dtype)
         
-        self.env.reset_to_original_state()
-            
         return pd.DataFrame(proposed_schedule)
