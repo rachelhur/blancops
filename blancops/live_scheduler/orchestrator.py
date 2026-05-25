@@ -176,6 +176,10 @@ class SchedulerOrchestrator:
                         )
                         break
 
+        # record the last submitted observation
+        if self.last_submitted_obs:
+            self.progress.record_completion(self.last_submitted_obs)
+
         # announce session end
         if self.progress.check_end_condition():
             logger.info("[Orchestrator] Observing run complete (end condition met).")
