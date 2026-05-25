@@ -108,7 +108,8 @@ class LiveBlancoEnv(BaseBlancoEnv):
     # BaseBlancoEnv lifecycle hooks
     # -----------------------------------------------------------------------
  
-    def _begin_episode(self) -> None:
+    def _begin_episode(self, ot_at_sunset=0) -> None:
+        self._ot_at_sunset = ot_at_sunset
         self.sync_telemetry()
  
     def _advance_after_action(self, action: dict) -> None:
