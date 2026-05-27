@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch
 from torch.nn import functional as F
 import logging
+
+from blancops.rl.neural_nets.encoders import FlatStateEncoder
 logger = logging.getLogger(__name__)
 
 def setup_network():
@@ -31,7 +33,7 @@ class ContextualScoreMLP(nn.Module):
     def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, nlayers=3, use_contextual_gating=False, activation=None):
         super(ContextualScoreMLP, self).__init__()
         self.score_dim = score_dim
-        self.activation = nn.ReLU if activation is None else activation
+        self.activation = nn.LeakyReLU if activation is None else activation
         self.use_contextual_gating = use_contextual_gating
         if use_contextual_gating:
             self.gate_net = nn.Sequential(
@@ -69,55 +71,24 @@ class ContextualScoreMLP(nn.Module):
         return joint_action_scores 
     
 
-class MultiHeadMLP(nn.Module):
-    """Encode bin features in a per-bin encoder (like contextualMLP), and fuse with latent global features. """
-    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None, use_contextual_gating=False):
+class DualStreamMLP(nn.Module):
+    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None, use_contextual_gating=False,
+                 use_layer_norm=True):
         super().__init__()
-        self.activation = nn.ReLU if activation is None else activation
+        self.activation = nn.LeakyReLU if activation is None else activation
         self.glob_enc = nn.Sequential(
             nn.Linear(global_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim) if use_layer_norm else nn.Identity(),
             self.activation()
         )
         self.bin_enc = nn.Sequential(
             nn.Linear(bin_feat_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim) if use_layer_norm else nn.Identity(),
             self.activation()
         )
         self.net = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, score_dim) 
-        )
-
-    def forward(self, x_glob, x_bin, y_data=None):
-        batch_size, n_bins, _ = x_bin.shape
-        
-        # 1. Process independently
-        g_emb = self.glob_enc(x_glob) 
-        g_emb = g_emb.unsqueeze(1).expand(-1, n_bins, -1) # Shape: (Batch, Bins, Hidden)
-        
-        b_emb = self.bin_enc(x_bin) # Shape: (Batch, Bins, Hidden)
-        
-        # 2. Fuse deep in the network
-        fused = torch.cat([g_emb, b_emb], dim=-1) # Shape: (Batch, Bins, Hidden * 2)
-        
-        # 3. Output scores
-        scores = self.net(fused) 
-        return scores.view(batch_size, -1)
-
-class MultiHeadMLP(nn.Module):
-    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None, use_contextual_gating=False):
-        super().__init__()
-        self.activation = nn.ReLU if activation is None else activation
-        self.glob_enc = nn.Sequential(
-            nn.Linear(global_dim, hidden_dim),
-            self.activation()
-        )
-        self.bin_enc = nn.Sequential(
-            nn.Linear(bin_feat_dim, hidden_dim),
-            self.activation()
-        )
-        self.net = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim) if use_layer_norm else nn.Identity(),
             self.activation(),
             nn.Linear(hidden_dim, score_dim) 
         )
@@ -139,38 +110,8 @@ class MultiHeadMLP(nn.Module):
         return scores.view(batch_size, -1)
 
 
-class StateEncoder(nn.Module):
-    def __init__(self, glob_dim, bin_dim, nbins, glob_hidden, bin_hidden, bin_out, output_dim, activation=None):
-        super().__init__()
-        self.activation = nn.ReLU if activation is None else activation
-        # Global encoder
-        self.glob_enc = nn.Sequential(
-            nn.Linear(glob_dim, glob_hidden),
-            self.activation(),
-            nn.Linear(glob_hidden, glob_hidden),
-            self.activation()
-        )
-        # Bin encoder - processes each bin's features independently and then flattens
-        self.bin_enc = nn.Sequential(
-            nn.Linear(bin_dim, bin_hidden),
-            self.activation(),
-            nn.Linear(bin_hidden, bin_out),
-            self.activation()
-        )
-        # Concatenate global and entire sky features (ie, the flattened bin features) and output latent state representation
-        self.fusion_net = nn.Sequential(
-            nn.Linear(glob_hidden + bin_out * nbins, output_dim),
-            self.activation()
-        )
-        
-    def forward(self, x_glob, x_bin):
-        x_context = self.glob_enc(x_glob) # shape (batch, glob_hidden)
-        x_binfeats = self.bin_enc(x_bin) # shape (batch, nbinbs, bin_hidden)
-        x_binfeats_flat = x_binfeats.view(x_binfeats.size(0), -1) # Shape: (batch_size, nbins * bin_hidden)
-        x = torch.cat([x_context, x_binfeats_flat], dim=-1) #shape (batch, glob_hidden + nbins * bin_hidden)
-        x_latent = self.fusion_net(x)
-        return x_latent
-    
+
+       
 from torch.distributions import Categorical
 
 class AutoregressiveNet(nn.Module):
@@ -196,7 +137,7 @@ class AutoregressiveNet(nn.Module):
             emb_dim = state_latent_dim // 8 # about 11% of latent state size - tune later
 
         # State encoder
-        self.state_encoder = StateEncoder(glob_dim, bin_dim, nbins=nbins, glob_hidden=glob_hidden, bin_hidden=bin_hidden, bin_out=bin_out, output_dim=state_latent_dim, activation=self.activation)
+        self.state_encoder = FlatStateEncoder(glob_dim, bin_dim, nbins=nbins, glob_hidden=glob_hidden, bin_hidden=bin_hidden, bin_out=bin_out, output_dim=state_latent_dim, activation=self.activation)
         
         # 2. Embeddings for previously sampled actions (we don't need one for the final action)
         if bin_first:
@@ -282,36 +223,6 @@ class AutoregressiveNet(nn.Module):
         
         return pred_actions, joint_log_prob, joint_entropy
     
-class BinEmbeddingDQN(nn.Module):
-    """Deep Q-Network mapping observations to action-values.
-    """
-    def __init__(self, n_global_features, n_bin_features, action_dim, hidden_dim=128, activation=None, embedding_dim=None):
-        super(BinEmbeddingDQN, self).__init__()
-
-        self.activation = nn.ReLU if activation is None else activation
-
-        self.bin_embedding = nn.Embedding(action_dim, embedding_dim)
-        
-        input_dim = (n_bin_features + embedding_dim) * action_dim + n_global_features
-
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, action_dim)
-        )
-
-    def forward(self, state, actions):
-        local_features, global_features, bin_features = state
-
-        bin_embeddings = self.bin_embedding(actions) # [batch, n_bins, emb_dim]
-        bin_input = torch.cat([bin_features, bin_embeddings], dim=-1)  # [batch, n_bins, n_features + emb_dim]
-        
-        bin_flat = bin_input.flatten(start_dim=1)  # [batch, n_bins * (n_features + emb_dim)]
-        full_input = torch.cat([bin_flat, local_features, global_features], dim=-1)
-        
-        return self.net(full_input)
 
 class CNN(nn.Module):
     def __init__(self, num_features):
