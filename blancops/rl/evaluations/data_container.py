@@ -110,6 +110,8 @@ class DataContainer(ABC):
 
         out['bin_idx'] = bin_idxs
         out['timestamp']  = filtered['timestamp'].values
+        out['night'] = filtered['night'].values
+        out['datetime'] = pd.to_datetime(out['timestamp'].values, unit='s')
         _has_filter_idx = 'filter_idx' in filtered.columns
         _has_filter_onehot = 'is_filter' in filtered.columns
         _has_filter_name = 'filter' in filtered.columns
@@ -226,11 +228,12 @@ class DataContainer(ABC):
 
     def _get_base_agent_df(self, bin_idxs, filter_idxs, timestamps) -> pd.DataFrame:
         df = pd.DataFrame()
-        df['bin_idx']   = bin_idxs
+        df['bin_idx'] = bin_idxs
         df['timestamp'] = timestamps.astype(np.int64)
+        df['datetime'] = pd.to_datetime(df['timestamp'].values, unit='s')
         df['bin_az'], df['bin_el'], df['bin_ra'], df['bin_dec'] = self._get_bin_coords(bin_idxs, timestamps)
         df['filter_idx'] = filter_idxs
-        df['filter']     = df['filter_idx'].map(IDX2FILTER)
+        df['filter'] = df['filter_idx'].map(IDX2FILTER)
         df['az'] = df['el'] = df['ra'] = df['dec'] = np.nan
         return df
 
@@ -294,8 +297,9 @@ class SingleStepDataContainer(DataContainer):
         self.convert_to_deg(self.expert_df)
         self.convert_to_deg(self.prev_expert_df)
 
-    def populate_agent_df(self, bin_idxs, filter_idxs, timestamps) -> None:
+    def populate_agent_df(self, bin_idxs, filter_idxs, timestamps, field_ids=None) -> None:
         df = self._get_base_agent_df(bin_idxs, filter_idxs, timestamps)
+        df['night'] = self.expert_df['night'].values
         df['bin_airmass'] = calc_airmass(df['bin_el'].to_numpy())
 
         # Borrow environmental params from expert (same timestamps).
@@ -363,6 +367,7 @@ class MultiStepDataContainer(DataContainer):
     def populate_agent_df(self, bin_idxs, filter_idxs, timestamps,
                           field_ids, glob_df, bin_feat_dict) -> None:
         df = self._get_base_agent_df(bin_idxs, filter_idxs, timestamps)
+        df['night'] = glob_df['night'].values
         df['ra'], df['dec'], df['az'], df['el'] = self._get_field_coords(field_ids, timestamps)
 
         df['moon_phase'] = calc_moon_phase(timestamps)
