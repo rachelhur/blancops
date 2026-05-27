@@ -229,6 +229,12 @@ class OfflineRunner:
                     else:
                         bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, hpGrid, epsilon=None)
 
+                    obs_timestamp = info.get('timestamp')
+                    pre_step_glob = obs['global_state']
+                    pre_step_glob_nan_mask = info.get('glob_nan_mask')
+                    pre_step_bin  = obs['bin_state']
+                    pre_step_bin_nan_mask  = info.get('bin_nan_mask')
+
                     obs, reward, terminated, truncated, info = env.step({
                         'bin': np.int32(bin_idx),
                         'field_id': np.int32(field_id),
@@ -239,7 +245,7 @@ class OfflineRunner:
                     is_real_obs = bin_idx >= 0
                     if is_first_wait or is_real_obs:
                         per_night_rows.append({
-                            SCHEDULE_KEYS['timestamp']: info.get('timestamp'),
+                            SCHEDULE_KEYS['timestamp']: obs_timestamp,
                             SCHEDULE_KEYS['field_id']:  int(field_id),
                             SCHEDULE_KEYS['filter_idx']: int(filter_idx),
                             SCHEDULE_KEYS['bin_id']:    int(bin_idx),
@@ -247,10 +253,10 @@ class OfflineRunner:
                         })
                     if self.save_state_features and is_real_obs:
                         per_night_obs['glob_observations'].append(
-                            self._restore_nans(obs['global_state'], info.get('glob_nan_mask'))
+                            self._restore_nans(pre_step_glob, pre_step_glob_nan_mask)
                         )
                         per_night_obs['bin_observations'].append(
-                            self._restore_nans(obs['bin_state'], info.get('bin_nan_mask'))
+                            self._restore_nans(pre_step_bin, pre_step_bin_nan_mask)
                         )
 
                     running_reward += reward
