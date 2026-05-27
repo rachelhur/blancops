@@ -183,10 +183,10 @@ class BCHybridMarginalPolicy(BCPolicyBase):
         expert_bins = expert_flat // self.num_filters
         expert_filters = expert_flat % self.num_filters
 
-        bin_logits_marginal = torch.logsumexp(logits_2d, dim=2)
+        bin_logits_marginal = torch.logsumexp(logits_2d, dim=1) #XXX check dims before running
         bin_loss = self.bin_loss_function(bin_logits_marginal, expert_bins)
 
-        filter_logits_marginal = torch.logsumexp(logits_2d, dim=1)
+        filter_logits_marginal = torch.logsumexp(logits_2d, dim=2)
         filter_loss = self.filter_loss_function(filter_logits_marginal, expert_filters)
 
         joint_loss = self.joint_loss_function(action_logits, expert_flat)
