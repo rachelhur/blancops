@@ -11,7 +11,7 @@ class Algorithm(str, Enum):
 class Network(str, Enum):
     MLP = "mlp"
     CONTEXTUAL_SCORE_MLP = "contextual_score_mlp"
-    MULTI_HEAD_MLP = "multi_head_mlp"
+    DUAL_STREAM_MLP = "dual_stream_mlp"
     AUTOREGRESSIVE = "autoregressive"
 
 class ActionArchitecture(str, Enum):
@@ -43,7 +43,7 @@ class RewardStructure(str, Enum):
     SURVEY_UNIFORMITY = "survey_uniformity"
     NEGATIVE_SLEW = "negative_slew"
     TEFF = "teff"
-    SURVEY_AIRMASS_SLEW = "survey_airmass_slew"
+    COMPOSITE = "composite" # Turned on and off by weights. See rl_schema.py
 
 class LookupKeys(str, Enum):
     FIELDS = "fields_table.json"

@@ -13,7 +13,7 @@ from blancops.rl.neural_nets.neural_nets import (
     ContextualScoreMLP,
     MLP,
     AutoregressiveNet,
-    MultiHeadMLP,
+    DualStreamMLP,
 )
 from blancops.rl.algorithms.bc import BehaviorCloning
 from blancops.rl.algorithms.ddqn import DDQN, calculate_distance_matrix
@@ -54,13 +54,14 @@ NETWORK_REGISTRY = {
     Network.CONTEXTUAL_SCORE_MLP: ContextualScoreMLP,
     Network.MLP: MLP,
     Network.AUTOREGRESSIVE: AutoregressiveNet,
-    Network.MULTI_HEAD_MLP: MultiHeadMLP,
+    Network.DUAL_STREAM_MLP: DualStreamMLP,
 }
 
 _ACTIVATION_REGISTRY = {
     'relu': nn.ReLU,
     'mish': nn.Mish,
     'swish': nn.SiLU,
+    'gelu': nn.GELU,
     'leaky_relu': nn.LeakyReLU,
     'tanh': nn.Tanh,
     'sigmoid': nn.Sigmoid,
@@ -121,27 +122,17 @@ def build_network(cfg: ExperimentConfig) -> nn.Module:
             nlayers=cfg.model.nlayers,
             use_contextual_gating=cfg.model.contextual_gating,
         )
-
-    if cfg.model.network == Network.BIN_FILTER_AUTOREGRESSIVE:
-        bin_first = cfg.model.bin_first
-        action_dims = (
-            [cfg.data.nbins, cfg.data.num_filters]
-            if bin_first
-            else [cfg.data.num_filters, cfg.data.nbins]
-        )
+    
+    if cfg.model.network == Network.DUAL_STREAM_MLP:
+        layer_norm = cfg.model.algorithm != Algorithm.BC
         return network_class(
-            glob_dim=cfg.data.state_dim,
-            bin_dim=cfg.data.bin_state_dim,
-            action_dims=action_dims,
-            glob_hidden=cfg.model.glob_hidden,
-            bin_hidden=cfg.model.bin_hidden,
-            bin_out=cfg.model.bin_out,
-            state_latent_dim=cfg.model.state_latent_dim,
-            activation=activation_fn,
-            bin_first=bin_first,
-            nbins=cfg.data.nbins,
-            nfilters=cfg.data.num_filters,
-        )
+            global_dim=cfg.data.state_dim, 
+            bin_feat_dim=cfg.data.bin_state_dim, 
+            hidden_dim=cfg.model.hidden_dim, 
+            score_dim=cfg.data.num_filters, 
+            activation=activation_fn, 
+            use_contextual_gating=False,
+            use_layer_norm=layer_norm)
 
     if cfg.model.network == Network.MLP:
         # Add kwargs if/when a flat-MLP path is needed.
