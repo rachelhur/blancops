@@ -67,11 +67,9 @@ class Agent:
 
         if self.field_choice_method == 'interp':
             with torch.no_grad():
-                # Ensure tensors have the batch dimension expected by ScoreMLP
                 # glob_tensor = torch.as_tensor(glob_tensor, device=self.device, dtype=torch.float32).unsqueeze(0)
                 # bin_tensor = torch.as_tensor(bin_tensor, device=self.device, dtype=torch.float32).unsqueeze(0)
                 
-                # Get raw joint scores from MLP: shape (1, n_bins * n_filters)
                 raw_scores = self.policy.core_net(glob_tensor, bin_tensor)
                 
                 n_bins = bin_tensor.shape[1]
@@ -90,8 +88,8 @@ class Agent:
                 # Project RA/Dec to local Az/El frame using the current timestamp
                 timestamp = info.get('timestamp')
                 target_lons, target_lats = ephemerides.equatorial_to_topographic(
-                    ra=target_coords[:, 0], 
-                    dec=target_coords[:, 1], 
+                    ra=target_coords[:, 0],
+                    dec=target_coords[:, 1],
                     time=timestamp
                 )
             else:
