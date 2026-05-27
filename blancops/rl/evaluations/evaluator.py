@@ -25,12 +25,16 @@ from datetime import date
 from blancops.math import units
 logger = logging.getLogger(__name__)
 
+from collections import defaultdict
+
 from blancops.configs.constants import (
     FILTER2IDX,
     DES_DATA_DIR,
     DES_FITS_PATH,
     _NUM_FILTERS,
 )
+from blancops.ephemerides import ephemerides as _ephemerides
+from blancops.math.interpolate import interpolate_on_sphere
 from blancops.configs.rl_schema import ActionConstraints, load_and_validate
 from blancops.data.dataset import OfflineDataset
 from blancops.data.features.normalizations import build_normalizer
@@ -358,41 +362,121 @@ class SingleStepEvaluator(Evaluator):
     """One-step-ahead inference."""
 
     N_INFERENCE_SLICES = 8
+    _INTERP_NEIGHBORS = 16  # RBF neighbors for interpolate_on_sphere; controls speed vs accuracy
 
     def __init__(self, policy, data_container: SingleStepDataContainer,
-                 plotter: EvaluationPlotter, device: str = 'cuda'):
+                 plotter: EvaluationPlotter, device: str = 'cuda',
+                 field_choice_method: str = 'interp'):
         super().__init__(policy, data_container, plotter, device)
+        self.field_choice_method = field_choice_method
 
     def run(self) -> None:
-        agent_bin_idxs, agent_filter_idxs = self._batch_single_step_validation()
+        agent_bin_idxs, agent_filter_idxs, agent_field_ids = self._batch_single_step()
         timestamps = self.data.expert_df['timestamp'].astype(int)
 
-        self.data.populate_agent_df(agent_bin_idxs, agent_filter_idxs, timestamps)
+        self.data.populate_agent_df(agent_bin_idxs, agent_filter_idxs, timestamps,
+                                    field_ids=agent_field_ids)
         # IMPORTANT: convert agent_df to deg BEFORE computing errors so both
         # dataframes share units inside populate_errors_df.
         self.data.convert_to_deg(self.data.agent_df)
         self.data.populate_errors_df()
         self.data.convert_to_deg(self.data.errors_df)
 
-    def _batch_single_step_validation(self):
+    def _batch_single_step(self):
         n_slices = self.N_INFERENCE_SLICES
         chunk = len(self.data.dataset.curr_compact_idxs) // n_slices
-        outputs = []
+        action_outputs = []
+        score_outputs  = []
+
         for i in range(n_slices):
             sl = slice(i * chunk, None if i == n_slices - 1 else (i + 1) * chunk)
             idxs = self.data.dataset.curr_compact_idxs[sl]
+            glob  = self.data.dataset.states[idxs].to(self.device)
+            bins  = self.data.dataset.bin_states[idxs].to(self.device)
+            masks = self.data.dataset.action_masks[idxs].to(self.device)
             with torch.no_grad():
-                outputs.append(self.policy.select_action(
-                    self.data.dataset.states[idxs].to(self.device),
-                    self.data.dataset.bin_states[idxs].to(self.device),
-                    self.data.dataset.action_masks[idxs].to(self.device),
-                ))
-        bin_idxs = torch.cat(outputs).cpu().detach().numpy()
+                action_outputs.append(self.policy.select_action(glob, bins, masks))
+                if self.field_choice_method == 'interp':
+                    score_outputs.append(self.policy.core_net(glob, bins).cpu())
+
+        bin_idxs = torch.cat(action_outputs).cpu().detach().numpy()
         if 'filter' in self.data.action_space:
             filter_idxs = bin_idxs % _NUM_FILTERS
             bin_idxs    = bin_idxs // _NUM_FILTERS
-            return bin_idxs, filter_idxs
-        return bin_idxs, None
+        else:
+            filter_idxs = None
+
+        if self.field_choice_method != 'interp':
+            return bin_idxs, filter_idxs, None
+
+        field_ids = self._choose_fields_interp(
+            bin_idxs, filter_idxs, torch.cat(score_outputs).numpy(),
+        )
+        return bin_idxs, filter_idxs, field_ids
+
+    def _choose_fields_interp(self, bin_idxs, filter_idxs, all_scores):
+        """For each chosen bin, pick the best field via Q-value interpolation."""
+        n_bins    = self.data.dataset.nbins
+        n_filters = all_scores.shape[-1] // n_bins
+        lon_data  = self.data.hpGrid.lon
+        lat_data  = self.data.hpGrid.lat
+        is_azel   = self.data.hpGrid.is_azel
+
+        fids_all = self.data.lookups.fields.index.values
+        ra_all   = self.data.lookups.fields['ra'].values
+        dec_all  = self.data.lookups.fields['dec'].values
+        timestamps = self.data.expert_df['timestamp'].values
+
+        _filter_idxs = filter_idxs if filter_idxs is not None else np.zeros(len(bin_idxs), dtype=int)
+
+        # Precompute static bin→fields map for equatorial grids.
+        static_map = None
+        if not is_azel:
+            bids = self.data.hpGrid.ang2idx(lon=ra_all, lat=dec_all)
+            static_map = defaultdict(list)
+            for fid, bid in zip(fids_all, bids):
+                static_map[int(bid)].append(int(fid))
+
+        field_ids_out = np.empty(len(bin_idxs), dtype=int)
+
+        for j, (bid, filt_idx, q_row, ts) in enumerate(
+            zip(bin_idxs, _filter_idxs, all_scores, timestamps)
+        ):
+            q_map = q_row.reshape(n_bins, n_filters)[:, int(filt_idx)]
+
+            if is_azel:
+                # Project all field RA/Dec to az/el at this observation's timestamp.
+                az_all, el_all = _ephemerides.equatorial_to_topographic(ra_all, dec_all, time=float(ts))
+                bids_j = self.data.hpGrid.ang2idx(lon=az_all, lat=el_all)
+                bin_map_j = defaultdict(list)
+                for fid, b in zip(fids_all, bids_j):
+                    if b is not None:  # field not observable at this timestamp
+                        bin_map_j[int(b)].append(int(fid))
+                valid_fids = bin_map_j.get(int(bid), [])
+            else:
+                az_all = el_all = None
+                valid_fids = static_map.get(int(bid), [])
+
+            if not valid_fids:
+                # Fallback: nearest field to chosen bin center by angular distance.
+                blon, blat = lon_data[int(bid)], lat_data[int(bid)]
+                lons_f = az_all if is_azel else ra_all
+                lats_f = el_all if is_azel else dec_all
+                dists = (lons_f - blon) ** 2 + (lats_f - blat) ** 2
+                field_ids_out[j] = int(fids_all[np.argmin(dists)])
+                continue
+
+            target_lons = (az_all if is_azel else ra_all)[np.array(valid_fids)]
+            target_lats = (el_all if is_azel else dec_all)[np.array(valid_fids)]
+
+            q_interp = interpolate_on_sphere(
+                az=target_lons, el=target_lats,
+                az_data=lon_data, el_data=lat_data,
+                values=q_map, neighbors=self._INTERP_NEIGHBORS,
+            )
+            field_ids_out[j] = valid_fids[int(np.argmax(q_interp))]
+
+        return field_ids_out
 
     # ---- Convenience pass-throughs ----------------------------------
 

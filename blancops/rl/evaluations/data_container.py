@@ -244,16 +244,26 @@ class DataContainer(ABC):
         `convert_to_deg()` on both first). Output is stored as radians and is
         converted to degrees by the standard `convert_to_deg()` pass.
         """
-        expert_radec_rad = self.expert_df[['bin_ra', 'bin_dec']].to_numpy() * units.deg
-        agent_radec_rad  = self.agent_df[['bin_ra', 'bin_dec']].to_numpy() * units.deg
+        
+        expert_radec_rad_bin = self.expert_df[['bin_ra', 'bin_dec']].to_numpy() * units.deg
+        agent_radec_rad_bin  = self.agent_df[['bin_ra', 'bin_dec']].to_numpy() * units.deg
 
+        expert_radec_rad = self.expert_df[['ra', 'dec']].to_numpy() * units.deg
+        agent_radec_rad = self.agent_df[['ra', 'dec']].to_numpy() * units.deg
+        
+        bin_angseps = np.fromiter(
+            (angular_separation(p1, p2) for p1, p2 in zip(expert_radec_rad_bin, agent_radec_rad_bin)),
+            dtype=float, count=len(expert_radec_rad_bin),
+        )
         angseps = np.fromiter(
             (angular_separation(p1, p2) for p1, p2 in zip(expert_radec_rad, agent_radec_rad)),
             dtype=float, count=len(expert_radec_rad),
         )
+        
         self.errors_df = pd.DataFrame({
             'timestamp': self.expert_df['timestamp'].values,
-            'bin_angular_separation': angseps,
+            'bin_angular_separation': bin_angseps,
+            'angular_separation': angseps
         })
 
     def convert_to_deg(self, df: pd.DataFrame) -> pd.DataFrame:
