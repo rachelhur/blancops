@@ -668,9 +668,8 @@ class BinFeatureEngineer:
         ``sort=False``, groups iterate in row order, so the global counter
         ``i`` matches each row's slot in the pre-allocated arrays.
  
-        Counter is incremented AFTER the helper runs at row i, so row i's
-        features describe the state going into the action at row i+1 — the
-        same semantics the original offline pipeline had.
+        Features at row i reflect counts from rows 0..i-1, 
+        i.e., the world state before the observation at row i was made
 
         OT-clock handling: ``last_visit_*_ot`` and ``timestamp`` passed to
         ``compute_bin_progress_features`` are both in observing-time seconds,

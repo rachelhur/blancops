@@ -107,6 +107,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         """Initializes constants, spaces, and feature names."""
         self.reward = cfg.model.reward
         self.reward_weights = getattr(cfg.model, 'reward_weights', None) or RewardWeights()
+        self.reward_norm = getattr(cfg.model, 'reward_norm', 'minmax')
         self._calculate_action_mask = cfg.model.algorithm != 'bc'
         self.include_bin_features = len(cfg.data.bin_features) > 0
         
@@ -355,7 +356,7 @@ class OfflineDataset(torch.utils.data.Dataset):
         elif reward == RewardStructure.EXPERT_ACTION:
             next_state_df = df.iloc[next_state_idxs]
             R_tot = np.ones(len(next_state_df), dtype=np.float32)
-        elif reward == RewardStructure.SURVEY_AIRMASS_SLEW:
+        elif reward == RewardStructure.COMPOSITE:
             rw = self.reward_weights
             # Slew
             R_slew = self._construct_slew_reward()
@@ -374,9 +375,9 @@ class OfflineDataset(torch.utils.data.Dataset):
             return np.zeros(len(next_state_idxs), dtype=np.float32)
         else:
             raise NotImplementedError
-        if self.model.reward_norm == None:
+        if self.reward_norm == None:
             pass
-        if self.model.reward_norm == 'minmax':
+        if self.reward_norm == 'minmax':
             R_tot = (R_tot - R_tot.min()) / (R_tot.max() - R_tot.min())
         else:
             logger.warning("Unknown reward norm: {}".format(self.model.reward_norm))
@@ -410,11 +411,13 @@ class OfflineDataset(torch.utils.data.Dataset):
         visits_before = df.groupby(['field_id', 'filter']).cumcount().iloc[next_state_idxs].values
         target_visits = self.lookups.target_fidfilt_counts[field_ids, filter_idxs]
         safe_target = np.where(target_visits > 0, target_visits, 1)
+        assert ZENITH_FILTER not in df.iloc[next_state_idxs]['filter'].values
         R_tiling = np.where(
             target_visits > 0,
             np.clip(1.0 - visits_before / safe_target, 0.0, 1.0),
             0.0,
         )
+        
         return R_tiling
     
     def _construct_slew_distances(self, df):

@@ -481,7 +481,7 @@ class GlobalFeatureEngineer:
         if 'global_mean_tiling' in self.base_features:
             df['global_mean_tiling'] = out_overall
         for filt in FILTER2IDX.keys():
-            if any(('global_mean_tiling' == base_feat) for base_feat in self.base_features):
+            if 'global_mean_tiling' in self.base_features:
                 df[f'global_mean_tiling_{filt}'] = out_per_filt[filt]
 
         return df
@@ -781,3 +781,9 @@ def calculate_sun_rise_and_set_azel(df):
         set_azels[i] = np.array([sun_az, sun_el])
 
     return rise_azels, set_azels
+
+def estimate_fwhm(fwhm, airmass, wavelength, airmass_new, wavelength_new):
+    C_air = (airmass_new / airmass) ** .6
+    C_wave = (wavelength / wavelength_new) ** .2
+    fwhm_new = fwhm * C_air * C_wave
+    return fwhm_new 

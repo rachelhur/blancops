@@ -51,8 +51,9 @@ def build_normalizer_kwargs(norm_config: NormalizationConfig, do_filt=True) -> d
 def expand_feature_set(feature_names, cyclical_feature_names, do_filt=True):
     feature_names_out = []
     for feat_name in feature_names:
+        has_filt_dep = do_filt and feat_name in _FILTER_DEP_FEATURE_NAMES
         if do_filt:
-            has_filt_dep = feat_name in _FILTER_DEP_FEATURE_NAMES
+            # has_filt_dep = feat_name in _FILTER_DEP_FEATURE_NAMES
             if has_filt_dep:
                 [feature_names_out.append(f"{feat_name}_{filt}") for filt in FILTER2IDX.keys()] 
 
@@ -361,74 +362,6 @@ class StateNormalizer:
             else:
                 state[..., m['sin']] = np.arcsin(np.clip(state[..., m['sin']], -1.0, 1.0))
         
-    def inverse_transform_df(self, df, feature_names=None,
-                            z_stats_dict=None, rel_stats_dict=None):
-        """
-        Inverse-normalize columns of a DataFrame in place.
-
-        Args:
-            df: DataFrame containing normalized columns.
-            feature_names: Iterable restricting which columns are inverted.
-                If None, every active feature whose name matches a column in
-                df will be inverted. Pass the explicit list when df also
-                holds raw-unit columns that must NOT be touched.
-            z_stats_dict, rel_stats_dict: forward-pass stats. Required iff
-                any z/rel-active feature is in the inversion set.
-
-        Caveats:
-            - sin inverse is lossy (arcsin only recovers [-pi/2, pi/2]).
-            - NaN sentinels in the input are NOT recovered as NaN; they
-            propagate as ordinary numbers through the inverse. If the
-            runner ever saves a nan_mask per column, plumb it in and set
-            those cells to NaN before any arithmetic.
-            - Cyclical (cos, sin) expansion is not undone here.
-            - Assumes each feature appears in at most one norm-type list.
-        """
-        if feature_names is None:
-            target = None  # match anything
-        else:
-            target = set(feature_names)
-
-        def _want(feat):
-            return feat in df.columns and (target is None or feat in target)
-
-        # Reverse forward order: stateful first (rel, then z), then stateless.
-        if self.do_rel:
-            if rel_stats_dict is None and any(_want(f) for f in self.active_features['rel']):
-                raise ValueError("rel_stats_dict required to invert rel-normalized features.")
-            for feat in self.active_features['rel']:
-                if _want(feat):
-                    if feat not in rel_stats_dict:
-                        raise KeyError(f"rel_stats_dict missing '{feat}'")
-                    df[feat] = df[feat].to_numpy() * rel_stats_dict[feat]['std']
-
-        if self.do_z:
-            if z_stats_dict is None and any(_want(f) for f in self.active_features['z']):
-                raise ValueError("z_stats_dict required to invert z-normalized features.")
-            for feat in self.active_features['z']:
-                if _want(feat):
-                    if feat not in z_stats_dict:
-                        raise KeyError(f"z_stats_dict missing '{feat}'")
-                    s = z_stats_dict[feat]['std']
-                    m = z_stats_dict[feat]['mean']
-                    df[feat] = df[feat].to_numpy() * s + m
-
-        if self.do_frac:
-            for feat in self.active_features['frac']:
-                if _want(feat):
-                    df[feat] = df[feat].to_numpy() / 2 + 0.5
-
-        if self.do_log:
-            for feat in self.active_features['log']:
-                if _want(feat):
-                    df[feat] = np.exp(df[feat].to_numpy()) - 1e-9
-
-        if self.do_sin:
-            for feat in self.active_features['sin']:
-                if _want(feat):
-                    df[feat] = np.arcsin(np.clip(df[feat].to_numpy(), -1.0, 1.0))
-        
-        return df
 
     def inverse_transform_df(self, df, feature_names=None,
                             z_stats_dict=None, rel_stats_dict=None, drop_cyclical_components=False):

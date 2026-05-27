@@ -1017,7 +1017,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         #         f"but lookups.total_ot_sec is None. This must be the same "
         #         f"normalization constant the policy was trained with — typically "
         #         f"loaded from the training data directory's total_ot_seconds file."
-            )
+            # )
     def _is_hook_overridden(self, hook_name: str) -> bool:
         base_fn = BaseBlancoEnv.__dict__.get(hook_name)
         if base_fn is None:
