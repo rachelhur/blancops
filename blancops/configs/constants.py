@@ -56,15 +56,15 @@ _FILTER_DEP_FEATURE_NAMES = [
 
 _GLOBAL_FEATURES = [
     "t_night", 
-    "t_survey",  # loss of generality
+    "t_survey",  # DO NOT USE loss of generality
     "lst", 
-    "ha", 
-    "el",
-    "ra",
-    "az",
-    "airmass", 
-    "dec",  # redundant with el, airmass
-    "sun_ra", "sun_dec", "sun_az", "sun_el", 
+    "ha",   # azel: always use
+    "el",   # azel: always use
+    "ra",   # azel: don't use
+    "az",   # azel: don't use
+    "airmass", # always use
+    "dec",  # azel: don't use
+    "sun_ra", "sun_dec", "sun_az", "sun_el",    # azel: don't use source az's
     "moon_ra", "moon_dec", "moon_az", "moon_el",
     "moon_distance",
     # "num_unvisited_fields",
@@ -100,7 +100,11 @@ _BIN_FEATURES = [
     "rel_min_tiling",
     "rel_t_since_last_visit",
     "t_until_set",
-    "t_since_last_visit"
+    "t_since_last_visit" # use rel_t_since_last_visit instead
+                            # the z-score norm bakes in an assumed survey cadence
+                            # resulting in loss of generality for future surveys
+                            # rel_t_since_last_visit still suffers from a different spread,
+                            # but much better off
 ]
 
 
@@ -116,20 +120,20 @@ _NORM_TYPES = Literal[
 
 _ALLOWED_NORMS_PER_FEATURE = {
     # Telescope coords
-    'ra': {'cyclical', 'z_score'},
-    'az': {'cyclical', 'z_score'},
-    'ha': {'cyclical', 'z_score'},
-    'lst': {'cyclical', 'z_score'},
+    'ra': {'cyclical'},
+    'az': {'cyclical'},
+    'ha': {'cyclical'},
+    'lst': {'cyclical'},
     
     # Sun coords
-    'sun_ra': {'cyclical', 'z_score'},
-    'sun_az': {'cyclical', 'z_score'},
+    'sun_ra': {'cyclical'},
+    'sun_az': {'cyclical'},
     'sun_el': {'z_score'},
     'sun_dec': {'z_score'},
     
     # Moon coords
-    'moon_ra': {'cyclical', 'z_score'},
-    'moon_az': {'cyclical', 'z_score'},
+    'moon_ra': {'cyclical'},
+    'moon_az': {'cyclical'},
     'moon_el': {'z_score'},
     'moon_dec': {'z_score'},
     
