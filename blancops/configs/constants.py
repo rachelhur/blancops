@@ -227,6 +227,20 @@ _DEFAULT_NORM_MAPPING = {
     
 }
 
+_DEFAULT_BC_AZEL_GLOB_FEATURES = [
+    't_night', 'moon_phase', 'moon_distance', 'airmass', 'ha', 'lst',
+    'sun_ra', 'sun_dec', 'sun_el', 'moon_ra', 'moon_dec', 'moon_el',
+    'is_filter', 'sky_brightness', 'global_mean_tiling', 'fwhm'
+]
+_DEFAULT_BC_AZEL_BIN_FEATURES = [
+    'moon_distance', 'airmass', 'el',
+    'delta_az', 'delta_el',
+    'pointing_distance',
+    'rel_ha', 'rel_moon_distance', 'rel_t_since_last_visit', 
+    'rel_min_tiling', 'rel_num_unvisited_fields', 'rel_num_incomplete_fields',
+    't_until_set'
+]
+
 """
 SISPI FORMAT
 """
