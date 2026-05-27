@@ -88,12 +88,16 @@ def build_evaluators(
     checkpoint = get_checkpoint(outdir, device=device)
     zscore_stats = checkpoint['norm_stats'].get('z_score', {})
     rel_norm_stats = checkpoint['norm_stats'].get('rel_norm', {})
-    global_normalizer = build_normalizer(state_feature_names=cfg.data.global_features, cfg=cfg)
-    
 
     val_dataset = OfflineDataset(
         df=df_val, cfg=cfg, lookups=lookups,
         z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, mode='test',
+    )
+
+    # Build with the dataset's expanded names so filter-dependent features
+    # (sky_brightness_g, urgency_r, ...) appear in active_features and can be inverted.
+    global_normalizer = build_normalizer(
+        state_feature_names=val_dataset.global_feature_names, cfg=cfg,
     )
     
     # Agent + runner
