@@ -338,16 +338,22 @@ class MultiStepDataContainer(DataContainer):
         )
         self._populate_expert_derived(self.expert_df, prev_expert_df=None)
 
-        # Reconstruct transitions from shifted positions, masking invalid hops.
-        bin_radecs = self.expert_df[['bin_ra', 'bin_dec']].to_numpy()
-        radecs     = self.expert_df[['ra', 'dec']].to_numpy()
-        prev_bin_radecs = self.expert_df[['bin_ra', 'bin_dec']].shift(1).to_numpy()
-        prev_radecs     = self.expert_df[['ra', 'dec']].shift(1).to_numpy()
+        prev_df_slew    = self._extract_expert_data(self.dataset.current_state_idxs)
+        prev_bin_radecs = prev_df_slew[['bin_ra', 'bin_dec']].to_numpy()
+        prev_radecs     = prev_df_slew[['ra', 'dec']].to_numpy()
 
-        bin_slew = calc_slew_distance(prev_bin_radecs, bin_radecs)
-        slew     = calc_slew_distance(prev_radecs, radecs)
-        bin_slew[~self.expert_valid_mask] = np.nan
-        slew[~self.expert_valid_mask]     = np.nan
+        # Locate each next_state_idx in state_idxs to get its row in expert_df.
+        next_positions  = np.searchsorted(self.dataset.state_idxs, self.dataset.next_state_idxs)
+        nxt_bin_radecs  = self.expert_df[['bin_ra', 'bin_dec']].to_numpy()[next_positions]
+        nxt_radecs      = self.expert_df[['ra', 'dec']].to_numpy()[next_positions]
+
+        pair_bin_slews  = calc_slew_distance(prev_bin_radecs, nxt_bin_radecs)
+        pair_slews      = calc_slew_distance(prev_radecs, nxt_radecs)
+
+        bin_slew = np.full(len(self.expert_df), np.nan)
+        slew     = np.full(len(self.expert_df), np.nan)
+        bin_slew[next_positions] = pair_bin_slews
+        slew[next_positions]     = pair_slews
 
         self.expert_df['bin_slew_dist'] = bin_slew
         self.expert_df['slew_dist']     = slew
