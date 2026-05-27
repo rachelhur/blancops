@@ -206,37 +206,6 @@ class Evaluator(ABC):
         ax.set_xticklabels(names, rotation=45)
         return ax
     
-    def _get_scalar_metrics_from_df(self, df):
-        metrics = {}
-        
-        # AIRMASS
-        metrics['airmass'] = {}
-        metrics['airmass']['mean'] = df['airmass'].mean()
-        metrics['airmass']['p10'] = df['airmass'].quantile(0.10)
-        metrics['airmass']['p90'] = df['airmass'].quantile(0.90)
-        
-        # HA
-        metrics['ha'] = {}
-        metrics['abs_ha'] = {}
-        
-        metrics['ha']['mean'] = df['ha'].mean() / units.deg
-        metrics['ha']['p10'] = df['ha'].quantile(0.10) / units.deg
-        metrics['ha']['p90'] = df['ha'].quantile(0.90) / units.deg
-        
-        metrics['abs_ha']['mean'] = df['ha'].abs().mean() / units.deg
-        metrics['abs_ha']['p10'] = df['ha'].abs().quantile(0.10) / units.deg
-        metrics['abs_ha']['p90'] = df['ha'].abs().quantile(0.90) / units.deg
-        
-        # SLEW DIST
-        metrics['slew_dist'] = {}
-        metrics['slew_dist']['mean'] = df['slew_dist'].mean()
-        metrics['slew_dist']['p10'] = df['slew_dist'].quantile(0.10)
-        metrics['slew_dist']['p90'] = df['slew_dist'].quantile(0.90)
-        
-        # FILTER SWITCHES
-        metrics['filter_switch_percentage'] = sum(df['filter_idx'].values[:-1] != df['filter_idx'].values[1:]) / len(df)
-
-        return metrics
 
     # ---- Common plot pass-throughs ----------------------------------
 
@@ -357,6 +326,41 @@ class Evaluator(ABC):
         fig.legend(loc='upper right', bbox_to_anchor=(0.95, 0.95))
         plt.tight_layout()
         return fig, axs
+    
+    def plot_violin_per_filter(self, key_metric='moon_el'):
+        expert_df = self.data.expert_df.assign(source='Expert')
+        agent_df  = self.data.agent_df.assign(source='BC Agent')
+
+        combined_df = pd.concat(
+            [expert_df[[key_metric, 'filter', 'source']],
+            agent_df[[key_metric, 'filter', 'source']]],
+            ignore_index=True,
+        )
+        self.plotter.plot_violin_per_filter(combined_df, key_metric=key_metric)
+        
+    def plot_metric_distributions(self):
+        metrics = ['airmass', 'ha', 'slew_dist']
+
+        expert_df = self.data.expert_df.copy()
+        agent_df = self.data.agent_df.copy()
+        expert_df['ha'] /= units.deg
+        agent_df['ha'] /= units.deg
+        
+        # Remove slew distances > 35 degrees (arbitrary cutoff) # XXX need to check train data construction
+        expert_df['slew_dist'] = expert_df['slew_dist'].where(expert_df['slew_dist'] < 10, np.nan)
+        agent_df['slew_dist'] = agent_df['slew_dist'].where(agent_df['slew_dist'] < 10, np.nan)
+        
+        expert_df = expert_df[metrics].assign(source='Expert')
+        agent_df  = agent_df[metrics].assign(source='BC Agent')
+
+        # 3. Combine into a single long-format DataFrame
+        combined_df = pd.concat([expert_df, agent_df], ignore_index=True)
+        
+        # 4. Pass the combined data and metrics list to your plotter
+        fig, axs = self.plotter._plot_metric_distributions(combined_df, metrics)
+        
+        return fig, axs
+
 
 # ----------------------------------------------------------------------
 # Single-step
@@ -517,8 +521,8 @@ class SingleStepEvaluator(Evaluator):
             plot_type=plot_type, bins=bins, alpha=alpha, density=density, ax=ax,
         )
 
-    def plot_filter_bin_cdf(self):
-        return self.plotter.plot_filter_bin_cdf(self.data.expert_df, self.data.errors_df)
+    def plot_cdf_pointing_error(self, per_filter=False, use_bin=False):
+        return self.plotter.plot_cdf_pointing_error(self.data.expert_df, self.data.errors_df, per_filter=per_filter, use_bin=use_bin)
 
     def plot_quiver(self, feature_x, feature_y, ax=None):
         self._check_input_features(feature_x, feature_y)
@@ -785,16 +789,70 @@ class MultiStepEvaluator(Evaluator):
             density=density, bins=bins, use_weights=use_weights, ax=ax,
         )
         
-    def plot_2dhist_res(self, feature_x, feature_y, bins=25):
+    def plot_2dhist_res(self, feature_x, feature_y, bins=25, label_fontsize=20, normalization='counts'):
         return self.plotter.plot_2dhist_res(
             feature_x, feature_y,
             self.data.expert_df[feature_x], self.data.expert_df[feature_y],
             self.data.agent_df[feature_x],  self.data.agent_df[feature_y],
             bins=bins,
+            label_fontsize=label_fontsize,
+            normalization=normalization
         )
         
     def _calculate_performance_metrics(self):
         """Placeholder for episode-level metrics (reward, coverage, etc.)."""
         metrics = {}
-        
+
         pass
+
+
+# ----------------------------------------------------------------------
+# Cross-evaluator plots
+# ----------------------------------------------------------------------
+
+def plot_metric_distributions_with_ss_overlay(
+    ms_evaluator: 'MultiStepEvaluator',
+    ss_evaluator: 'SingleStepEvaluator',
+):
+    """Plot MS metric distributions, overlaying SS distributions as black dashed lines (no fill).
+
+    Metrics absent from either SS dataframe are skipped on the overlay (e.g.
+    'ha' is not populated on the SS agent_df by default).
+    """
+    import seaborn as sns
+    from matplotlib.lines import Line2D
+
+    fig, axs = ms_evaluator.plot_metric_distributions()
+
+    metrics = ['airmass', 'ha', 'slew_dist']
+    ss_agent_df  = ss_evaluator.data.agent_df.copy()
+
+    if 'ha' in ss_agent_df.columns:
+        ss_agent_df['ha'] = ss_agent_df['ha'] / units.deg
+    if 'slew_dist' in ss_agent_df.columns:
+        ss_agent_df['slew_dist']  = ss_agent_df['slew_dist'].where(ss_agent_df['slew_dist']  < 10, np.nan)
+
+    SS_COLOR = 'black'
+    SS_STYLE = 'solid'
+    SS_LW = 2
+    for ax, metric in zip(axs, metrics):
+        if metric not in ss_agent_df.columns or ss_agent_df[metric].dropna().empty:
+            continue
+        sns.kdeplot(
+            data=ss_agent_df, x=metric,
+            color=SS_COLOR, linestyle=SS_STYLE, fill=False, linewidth=SS_LW,
+            cut=0, bw_adjust=0.8, ax=ax,
+        )
+        # ax.axvline(
+        #     ss_agent_df[metric].median(),
+        #     color=SS_COLOR, linestyle='--', linewidth=1.0, alpha=0.8,
+        # )
+        ax.set_xlabel('')  # Keeping x-axis clear as the metric title explains the values
+        
+
+    existing = axs[0].get_legend()
+    handles = list(existing.legend_handles) if existing else []
+    handles.append(Line2D([0], [0], color=SS_COLOR, linestyle=SS_STYLE, linewidth=SS_LW, label='Single Step'))
+    axs[0].legend(handles=handles, fontsize=20*(3/4), framealpha=0.9, loc='upper right')
+
+    return fig, axs
