@@ -23,7 +23,7 @@ def main():
     )
     parser.add_argument(
         "-o", "--out_parent_dir", type=Path, default=DES_DATA_DIR,
-        help="Directory to save the generated lookup tables",
+        help="Directory to save the generated lookup tables. Defaults to WORKSPACE / 'data' / 'train' / 'des')",
     )
     parser.add_argument(
         '-p', '--save_plots', action="store_true",
