@@ -41,6 +41,7 @@ from blancops.data.features.glob_features import (
     compute_global_pointing_features,
     calc_urgency,
     compute_global_tracker_features,
+    project_fwhm,
 )
 from blancops.data.features.normalizations import StateNormalizer, apply_cyclical_features, build_normalizer_kwargs, normalize_timestamp, setup_feature_names
 from blancops.environment.survey_tracker import SurveyProgressTracker
@@ -208,6 +209,16 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._last_glob_nan_mas: np.ndarray | None = None
         self._last_bin_nan_mask: np.ndarray | None = None
 
+        # Seeing (FWHM) reference for closed-loop estimation in the
+        # forward-sim envs: live anchors this triple on the last real
+        # telemetry reading, offline on a seed. None until anchored, so
+        # `_project_fwhm` is a no-op for envs that don't use it. The historic
+        # env ignores these entirely and overrides `_get_fwhm` with measured
+        # per-night splines.
+        self._fwhm_ref: float | None = None
+        self._fwhm_ref_airmass: float = ZENITH_AIRMASS
+        self._fwhm_ref_wave: float = FWHM_REF_WAVELENGTH
+
         # Survey progress tracker - built once at construction so that concrete subclasses can validate it
         target_counts = self.lookups.target_fidfilt_counts if self.do_filt else self.lookups.target_fid_counts
         self._survey_progress_tracker = SurveyProgressTracker(target_counts=target_counts)
@@ -320,9 +331,34 @@ class BaseBlancoEnv(gym.Env, ABC):
         """Time-since-survey-start in units of days (discrete), or None if not provided."""
         return None
 
-    def _get_fwhm(self, timestamp: float) -> Optional[float]:
-        """Seeing FWHM at the given timestamp, or None."""
+    def _get_fwhm(
+        self, timestamp: float, airmass: Optional[float] = None,
+        filter_idx: Optional[int] = None,
+    ) -> Optional[float]:
+        """Seeing FWHM at the current pointing, or None.
+
+        ``airmass`` and ``filter_idx`` describe the pointing being evaluated
+        (already resolved by ``_calculate_global_features``); the forward-sim
+        envs use them to rescale a reference seeing via ``_project_fwhm``,
+        while the historic env evaluates a measured spline by timestamp alone.
+        """
         return None
+
+    def _project_fwhm(
+        self, airmass: float, filter_idx: int,
+    ) -> Optional[float]:
+        """Closed-loop seeing estimate from the anchored reference triple.
+
+        Shared by the live and offline envs. Returns None when no reference
+        has been anchored (``_fwhm_ref is None``), so envs that don't request
+        the fwhm feature are unaffected.
+        """
+        if self._fwhm_ref is None:
+            return None
+        return project_fwhm(
+            self._fwhm_ref, self._fwhm_ref_airmass, self._fwhm_ref_wave,
+            airmass_now=airmass, filter_idx_now=filter_idx,
+        )
 
     def _get_raw_survey_progress(self) -> Optional[np.ndarray]:
         """Per-filter survey-wide visit counts (mutable), or None."""
@@ -606,7 +642,9 @@ class BaseBlancoEnv(gym.Env, ABC):
                 new_features[f'is_filter_{filt}'] = filt_str == filt
 
         # 5. Hook-derived features — only populated if their source is available.
-        fwhm = self._get_fwhm(timestamp)
+        #    airmass/filter_idx are passed so forward-sim envs can rescale a
+        #    reference seeing to the pointing being evaluated.
+        fwhm = self._get_fwhm(timestamp, airmass=new_features['airmass'], filter_idx=self._filter_idx)
         if fwhm is not None:
             new_features['fwhm'] = fwhm
         t_survey = self._get_t_survey()
