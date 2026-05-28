@@ -9,6 +9,7 @@ import numpy as np
 from blancops.environment.base import StateSnapshot
 from blancops.environment.offline_base import BaseBlancoOfflineEnv
 from blancops.data.features.glob_features import calc_twilight, get_night_boundaries
+from blancops.configs.constants import ZENITH_AIRMASS, FWHM_REF_WAVELENGTH
 
 import logging
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         initial_counts: Optional[np.ndarray] = None,
         initial_last_visit_ot: Optional[np.ndarray] = None,
         initial_ot_at_sunset: float = 0.0,
+        initial_fwhm: Optional[float] = None,
     ):
         # Parse before super so max_nights is known in time.
         self._night_info = self._parse_night_strs(observing_night_strs)
@@ -53,9 +55,26 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         self._initial_last_visit_ot = initial_last_visit_ot
         self._initial_ot_at_sunset = float(initial_ot_at_sunset)
 
-        # Cache prevents double-advancement if _get_night_config 
+        # Seed seeing for the forward simulation. There is no measured
+        # seeing in a date-string sim, so `initial_fwhm` is interpreted as the
+        # assumed zenith seeing (airmass=1) at the reference wavelength and is
+        # projected to each pointing's airmass/filter by `_get_fwhm`. Base
+        # atmospheric seeing is held constant across the run.
+        if initial_fwhm is not None:
+            self._fwhm_ref = float(initial_fwhm)
+            self._fwhm_ref_airmass = ZENITH_AIRMASS
+            self._fwhm_ref_wave = FWHM_REF_WAVELENGTH
+
+        # Cache prevents double-advancement if _get_night_config
         # is re-entered for a night that's already been started.
         self._night_cfg_cache: dict[int, dict] = {}
+
+        if "fwhm" in self.global_feature_names and self._fwhm_ref is None:
+            raise ValueError(
+                "OfflineBlancoEnv: 'fwhm' is a configured global feature but "
+                "initial_fwhm=None. Pass initial_fwhm (assumed zenith seeing, "
+                "arcsec) so the forward sim can project seeing per pointing."
+            )
 
         self._validate_feature_config()
 
@@ -183,3 +202,14 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         # _last_visit_ot carry forward via _apply_state_snapshot's
         # None-skip behaviour.
         return StateSnapshot(timestamp=cfg["start_ts"])
+
+    # -----------------------------------------------------------------------
+    # Feature-context hook overrides
+    # -----------------------------------------------------------------------
+
+    def _get_fwhm(
+        self, timestamp: float, airmass: Optional[float] = None,
+        filter_idx: Optional[int] = None,
+    ) -> Optional[float]:
+        # Project the seeded zenith seeing onto the current pointing.
+        return self._project_fwhm(airmass, filter_idx)
