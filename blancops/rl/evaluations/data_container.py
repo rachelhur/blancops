@@ -33,10 +33,10 @@ from .helpers import (
 
 # Time-gap thresholds for masking "next states" that aren't actually adjacent.
 # Expert: small gaps mean a real cadence break we should drop from comparisons.
-EXPERT_MAX_GAP_MIN = 5
+EXPERT_MAX_GAP = 5 # minutes
 # Agent: larger window because the offline runner may emit longer apparent gaps
 # across wait-actions. Kept explicit + named so the discrepancy is visible.
-AGENT_MAX_GAP_MIN = 60
+AGENT_MAX_GAP = 60 * 5 # minutes
 
 
 # Substrings (within underscore-tokenized column names) that imply a radian
@@ -316,15 +316,33 @@ class SingleStepDataContainer(DataContainer):
         for col in ('moon_phase', 'fwhm', 'sun_az', 'sun_el', 'moon_az', 'moon_el'):
             df[col] = self.expert_df[col].values if col in self.expert_df.columns else np.nan
 
-        bin_radecs      = df[['bin_ra', 'bin_dec']].to_numpy()
-        prev_bin_radecs = self.prev_expert_df[['bin_ra', 'bin_dec']].to_numpy() * units.deg
-        # ^ prev_expert_df was already converted to deg; we want rad for slew calc.
-
+        bin_radecs = df[['bin_ra', 'bin_dec']].to_numpy()
         df['bin_moon_distance'] = calc_moon_dist(bin_radecs, timestamps)
-        # Also compute moon_distance against the (unknown) pointing - falls back
-        # to bin position since agent doesn't pick a sub-bin field in SS mode.
-        df['moon_distance']     = df['bin_moon_distance']
-        df['bin_slew_dist']     = calc_slew_distance(prev_bin_radecs, bin_radecs)
+
+        # Slew distance
+        # Both endpoints need to be consecutive agent predictions
+        valid = self._get_valid_state_mask(timestamps, max_time_diff_min=EXPERT_MAX_GAP)
+        bin_slew = calc_slew_distance(bin_radecs[:-1], bin_radecs[1:])
+        bin_slew = np.insert(bin_slew, 0, np.nan)
+        bin_slew[~valid] = np.nan
+        df['bin_slew_dist'] = bin_slew
+
+        if field_ids is not None:
+            ra, dec, az, el = self._get_field_coords(field_ids, timestamps)
+            df['ra'], df['dec'], df['az'], df['el'] = ra, dec, az, el
+            df['airmass'] = calc_airmass(el)
+            df['ha'] = np.fromiter(
+                (ephemerides.equatorial_to_hour_angle(ra=r, dec=d, time=float(t))
+                 for r, d, t in zip(ra, dec, timestamps)),
+                dtype=float, count=len(timestamps),
+            )
+            radecs = np.column_stack([ra, dec])
+            df['moon_distance'] = calc_moon_dist(radecs, timestamps)
+            slew = calc_slew_distance(radecs[:-1], radecs[1:])
+            slew = np.insert(slew, 0, np.nan)
+            slew[~valid] = np.nan
+            df['slew_dist'] = slew
+            df['field_id'] = field_ids
 
         self.agent_df = df
 
@@ -348,7 +366,7 @@ class MultiStepDataContainer(DataContainer):
     def _populate_expert_df(self) -> None:
         self.expert_df = self._extract_expert_data(self.dataset.state_idxs)
         self.expert_valid_mask = self._get_valid_state_mask(
-            self.expert_df['timestamp'].values, max_time_diff_min=EXPERT_MAX_GAP_MIN,
+            self.expert_df['timestamp'].values, max_time_diff_min=EXPERT_MAX_GAP,
         )
         self._populate_expert_derived(self.expert_df, prev_expert_df=None)
 
@@ -392,7 +410,7 @@ class MultiStepDataContainer(DataContainer):
 
         # Compute valid-state mask BEFORE we use it on slew distances.
         self.agent_valid_mask = self._get_valid_state_mask(
-            df['timestamp'].values, max_time_diff_min=AGENT_MAX_GAP_MIN,
+            df['timestamp'].values, max_time_diff_min=AGENT_MAX_GAP,
         )
 
         bin_slew = calc_slew_distance(bin_radecs[:-1], bin_radecs[1:])
