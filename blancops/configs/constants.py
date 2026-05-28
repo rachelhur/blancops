@@ -326,6 +326,12 @@ FILTERWAVENORM = 1000.
 FILTER2IDX = {k: i for i, k in enumerate(FILTER2WAVE.keys())}
 IDX2FILTER = {v: k for k, v in FILTER2IDX.items()}
 
+# Reference wavelength (nm) for seeing (FWHM) projection. Used when a pointing
+# carries no filter (zenith / WAIT) so the wavelength term drops out, and as the
+# default band for seeding forward-sim seeing in OfflineBlancoEnv. r-band by
+# convention (matches the obztak seeing reference above).
+FWHM_REF_WAVELENGTH = FILTER2WAVE['r']
+
 
 # SIN_NORM_FEATURE_NAMES = []
 # LOG_NORM_FEATURE_NAMES = ["fwhm", "urgency"]
