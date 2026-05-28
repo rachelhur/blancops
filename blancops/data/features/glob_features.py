@@ -41,7 +41,8 @@ from blancops.ephemerides import ephemerides
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
 from blancops.configs.constants import (
     BLANCO_LON, IDX2FILTER, ZENITH_BIN_NUM, ZENITH_FIELD_ID, ZENITH_WAVELENGTH,
-    FILTER2WAVE, FILTERWAVENORM, FILTER2IDX, ZENITH_FILTER,
+    FILTER2WAVE, FILTERWAVENORM, FILTER2IDX, ZENITH_FILTER, IDX2WAVE,
+    FWHM_REF_WAVELENGTH,
     ZENITH_AZ, ZENITH_EL, ZENITH_AIRMASS, ZENITH_ZD, ZENITH_HA, ZENITH_OBJECT
 )
 
@@ -786,4 +787,23 @@ def estimate_fwhm(fwhm, airmass, wavelength, airmass_new, wavelength_new):
     C_air = (airmass_new / airmass) ** .6
     C_wave = (wavelength / wavelength_new) ** .2
     fwhm_new = fwhm * C_air * C_wave
-    return fwhm_new 
+    return fwhm_new
+
+
+def project_fwhm(fwhm_ref, airmass_ref, wavelength_ref, airmass_now, filter_idx_now):
+    """Project a reference seeing measurement onto the current pointing.
+
+    Anchors on a known ``(fwhm, airmass, wavelength)`` triple and rescales it to
+    the current airmass and filter wavelength via the obztak Kolmogorov model
+    (``estimate_fwhm``: FWHM ∝ airmass**0.6 · wavelength**-0.2). Filterless
+    pointings (zenith / WAIT, i.e. ``filter_idx_now`` not in ``IDX2WAVE``) keep
+    the reference wavelength so only the airmass term applies.
+
+    This is the single source of truth for closed-loop seeing estimation in the
+    forward-simulation envs: the live env anchors the triple on the last real
+    telemetry reading, the offline env on a seed.
+    """
+    wavelength_now = IDX2WAVE.get(int(filter_idx_now), wavelength_ref)
+    return estimate_fwhm(
+        fwhm_ref, airmass_ref, wavelength_ref, airmass_now, wavelength_now
+    )
