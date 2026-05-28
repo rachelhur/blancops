@@ -23,7 +23,10 @@ import numpy as np
  
 from blancops.environment.base import BaseBlancoEnv, StateSnapshot
 from blancops.data.features.glob_features import get_night_boundaries
-from blancops.configs.constants import WAIT_SIGNAL, ZENITH_FILTER_IDX, FILTER2IDX
+from blancops.ephemerides import ephemerides
+from blancops.configs.constants import (
+    WAIT_SIGNAL, ZENITH_FILTER_IDX, FILTER2IDX, IDX2WAVE, FWHM_REF_WAVELENGTH,
+)
  
 logger = logging.getLogger(__name__)
  
@@ -83,16 +86,41 @@ class LiveBlancoEnv(BaseBlancoEnv):
             `self._telemetry.read()`.
         """
         if telemetry is not None:
+            filter_idx = telemetry.get(
+                "filter_idx", FILTER2IDX.get(telemetry.get("filter"), ZENITH_FILTER_IDX)
+            )
             snap = StateSnapshot(
                 timestamp=telemetry["timestamp"],
                 field_id=self._match_pointing_to_fid(ra=telemetry["ra"], dec=telemetry["dec"]),
-                filter_idx=telemetry.get("filter_idx", FILTER2IDX.get(telemetry.get("filter"), ZENITH_FILTER_IDX)),
+                filter_idx=filter_idx,
                 # counts_cur intentionally omitted — preserve running history.
             )
             self._apply_state_snapshot(snap)
-            
+
+            # Re-anchor the closed-loop seeing estimate on the real reading.
+            # Each chunk rollout then projects forward from this last-telemetry
+            # FWHM (see `_get_fwhm`). Syncs without 'fwhm' preserve the prior
+            # anchor, mirroring the counts_cur=None visit-history behaviour.
+            if telemetry.get("fwhm") is not None:
+                self._set_fwhm_reference(
+                    fwhm=telemetry["fwhm"],
+                    ra=telemetry["ra"],
+                    dec=telemetry["dec"],
+                    timestamp=telemetry["timestamp"],
+                    filter_idx=filter_idx,
+                )
+
         self._refresh_night_boundaries()
- 
+
+        # Fail fast with an actionable message rather than letting the missing
+        # feature surface as a downstream NaN in _calculate_global_features.
+        if "fwhm" in self.global_feature_names and self._fwhm_ref is None:
+            raise ValueError(
+                "LiveBlancoEnv: 'fwhm' is a configured global feature but no "
+                "telemetry reading has supplied an 'fwhm' value to anchor the "
+                "closed-loop estimate. Include 'fwhm' in telemetry_init."
+            )
+
         # Recompute observation arrays so downstream agents see fresh
         # state even if no `step` is called between the sync and the
         # next decision.
@@ -236,10 +264,31 @@ class LiveBlancoEnv(BaseBlancoEnv):
         return self._sunrise_ts
 
 
+    def _set_fwhm_reference(self, fwhm, ra, dec, timestamp, filter_idx) -> None:
+        """Anchor the closed-loop seeing estimate on a real telemetry reading.
+
+        Stores the measured FWHM together with the airmass and filter
+        wavelength it was observed at, so in-chunk pointings can be rescaled by
+        `_project_fwhm`. Airmass uses the same plane-parallel convention as
+        `compute_global_pointing_features` (1/sin(el), elevation clipped).
+        """
+        _, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=timestamp)
+        el = max(min(el, np.pi / 2), 0.0)
+        self._fwhm_ref = float(fwhm)
+        self._fwhm_ref_airmass = 1.0 / np.cos(np.pi / 2 - el)
+        self._fwhm_ref_wave = IDX2WAVE.get(int(filter_idx), FWHM_REF_WAVELENGTH)
+
     # -----------------------------------------------------------------------
     # Feature-context hook overrides
     # -----------------------------------------------------------------------
- 
+
+    def _get_fwhm(
+        self, timestamp: float, airmass: Optional[float] = None,
+        filter_idx: Optional[int] = None,
+    ) -> Optional[float]:
+        # Project the last-telemetry seeing onto the pointing being evaluated.
+        return self._project_fwhm(airmass, filter_idx)
+
     def _get_t_survey(self) -> Optional[float]:
         s_night_idx = self._get_survey_night_idx()
         s_night_tot = self._get_survey_nights_total()
