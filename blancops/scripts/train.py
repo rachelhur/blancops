@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib
+import torch
 
 from blancops.data.lookup_tables import TrainLookupTables
 matplotlib.use('Agg')
@@ -192,6 +193,10 @@ def main():
     
     logger.info("Plotting metrics...")
     plot_train_metrics(outdir, dataset=train_dataset)
+    
+    if device == 'cuda':
+        max_memory = torch.cuda.max_memory_allocated() / (1024 ** 3)
+        logger.info(f"\n Peak GPU Memory Used: {max_memory:.2f} GB")
 
 if __name__ == "__main__":
     main()
