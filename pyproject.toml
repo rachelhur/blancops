@@ -18,6 +18,7 @@ run-train = "blancops.scripts.train:main"
 run-validate = "blancops.scripts.validate:main"
 run-offline-scheduler = "blancops.scripts.run_offline_scheduler:main"
 run-live-scheduler = "blancops.scripts.run_live_scheduler:main"
+precompute-train-features = "blancops.scripts.precompute_features:main"
 
 [tool.setuptools.package-data]
 "blancops" = ["configs/*.json", "configs/*.yaml"]
