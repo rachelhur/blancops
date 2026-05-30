@@ -413,9 +413,6 @@ class SingleStepEvaluator(Evaluator):
         score_outputs  = []
 
         dataset = self.data.dataset
-        has_active_mask = getattr(dataset, 'active_bin_mask', None) is not None
-        # Track which transitions had an inactive expert action (data quality issue)
-        active_expert_mask_parts = []
 
         for i in range(n_slices):
             sl = slice(i * chunk, None if i == n_slices - 1 else (i + 1) * chunk)
@@ -428,10 +425,6 @@ class SingleStepEvaluator(Evaluator):
                 if self.field_choice_method == 'interp':
                     score_outputs.append(self.policy.core_net(glob, bins).cpu())
 
-            if has_active_mask:
-                active_bin_c = dataset.active_bin_mask[idxs]  # (chunk, n_bins)
-                active_expert_mask_parts.append(active_bin_c.any(dim=-1).cpu())
-
         bin_idxs = torch.cat(action_outputs).cpu().detach().numpy()
         if 'filter' in self.data.action_space:
             filter_idxs = bin_idxs % _NUM_FILTERS
@@ -439,13 +432,12 @@ class SingleStepEvaluator(Evaluator):
         else:
             filter_idxs = None
 
-        # Store active-bin diagnostic for callers
-        if has_active_mask:
-            self._active_expert_mask = torch.cat(active_expert_mask_parts).numpy()
-            active_frac = float(dataset.active_bin_mask.float().mean())
-            logger.debug(f"Active bin coverage (fraction of bins active per state): {active_frac:.3f}")
-        else:
-            self._active_expert_mask = None
+        # Log active-bin coverage diagnostic (fraction of bins with no sentinel features)
+        active_bin_mask = getattr(dataset, 'active_bin_mask', None)
+        if active_bin_mask is not None:
+            logger.debug(
+                f"Active bin coverage: {float(active_bin_mask.float().mean()):.3f}"
+            )
 
         if self.field_choice_method != 'interp':
             return bin_idxs, filter_idxs, None
