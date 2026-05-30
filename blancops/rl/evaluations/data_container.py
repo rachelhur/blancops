@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from blancops.configs.constants import FILTER2IDX, IDX2FILTER, DES_DATA_DIR
-from blancops.data.dataset import OfflineDataset
+from blancops.data.dataset import TransitionDataset
 from blancops.data.features.normalizations import StateNormalizer, inverse_cyclical_norm
 from blancops.data.lookup_tables import LookupTables
 from blancops.ephemerides import ephemerides
@@ -65,7 +65,7 @@ def _convert_df_to_deg(df: pd.DataFrame) -> pd.DataFrame:
 class DataContainer(ABC):
     """Base class. Subclasses populate `expert_df` and `agent_df`."""
 
-    def __init__(self, val_dataset: OfflineDataset, action_space: str, lookups: LookupTables,
+    def __init__(self, val_dataset, action_space: str, lookups: LookupTables,
                  global_normalizer: StateNormalizer):
         self.dataset = val_dataset
         self.hpGrid = val_dataset.hpGrid
@@ -277,7 +277,7 @@ class DataContainer(ABC):
 class SingleStepDataContainer(DataContainer):
     """Expert vs agent on one-step-ahead predictions from the validation set."""
 
-    def __init__(self, val_dataset: OfflineDataset, action_space: str, lookups: LookupTables,
+    def __init__(self, val_dataset, action_space: str, lookups: LookupTables,
                  global_normalizer: StateNormalizer):
         self.prev_expert_df: pd.DataFrame = pd.DataFrame()
         super().__init__(val_dataset, action_space, lookups, global_normalizer)
@@ -354,7 +354,7 @@ class SingleStepDataContainer(DataContainer):
 class MultiStepDataContainer(DataContainer):
     """Expert vs agent across whole-episode rollouts from the offline runner."""
 
-    def __init__(self, val_dataset: OfflineDataset, action_space: str, lookups: LookupTables, z_score_stats: dict, rel_norm_stats: dict,
+    def __init__(self, val_dataset, action_space: str, lookups: LookupTables, z_score_stats: dict, rel_norm_stats: dict,
                  global_normalizer: StateNormalizer):
         self.expert_valid_mask: np.ndarray = np.array([], dtype=bool)
         self.agent_valid_mask:  np.ndarray = np.array([], dtype=bool)

@@ -1,21 +1,23 @@
 import numpy as np
-import pandas as pd
 import matplotlib
 import torch
 
-from blancops.data.lookup_tables import TrainLookupTables
 matplotlib.use('Agg')
 import time
 
 from blancops.rl.trainer import Trainer
 from blancops.utils.sys_utils import get_system_device, seed_everything
 from blancops.io.logger_utils import configure_logger
-from blancops.data.preprocessing import load_and_process_historic_data 
-from blancops.data.dataset import OfflineDataset
-from blancops.plotting.training_viz import plot_bin_feature_distributions, plot_bin_membership, plot_global_feature_distributions, plot_train_metrics
+from blancops.data.dataset import TransitionDataset, OfflineDataset
+from blancops.data.feature_cache import RawFeatureCache, ValDatasetCache
+from blancops.data.lookup_tables import TrainLookupTables
+from blancops.plotting.training_viz import (
+    plot_bin_feature_distributions, plot_bin_membership,
+    plot_global_feature_distributions, plot_train_metrics,
+)
 from blancops.rl.registry import build_algorithm
 from blancops.configs.rl_schema import ExperimentConfig, load_and_validate, resolve_and_save
-from blancops.configs.constants import DES_DATA_DIR, DES_FITS_PATH, WORKSPACE
+from blancops.configs.constants import DES_DATA_DIR, WORKSPACE
 from blancops.configs.enums import Algorithm, CheckpointMetric
 
 import argparse
@@ -23,19 +25,26 @@ import logging
 logger = logging.getLogger(__name__)
 
 from pathlib import Path
-    
-def get_args():
-    parser = argparse.ArgumentParser()
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-c', '--cfg', type=str, default=None, required=True, help="Path to config file. If passed, all other arguments are ignored")
-    parser.add_argument('-l', '--logging_level', type=str, default='info', help='Logging level. Options: info, debug')
-    parser.add_argument('--resume_from_checkpoint', action='store_true', help='Whether to resume training from a checkpoint.')
-    parser.add_argument('--overwrite', action='store_true', help='Whether to ignore existing history but keep files.')
-    parser.add_argument('--hard_overwrite', action='store_true', help='Whether to completely overwrite existing results.')
-    parser.add_argument('--top_k', type=int, default=1, help='Number of top runs to keep. Default is 1.')
 
-    args = parser.parse_args()
-    return args
+
+def get_args():
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-c', '--cfg', type=str, default=None, required=True,
+                        help="Path to config file.")
+    parser.add_argument('--data_dir', type=str, default=str(DES_DATA_DIR),
+                        help="Data directory containing lookups/ and the feature cache.")
+    parser.add_argument('-l', '--logging_level', type=str, default='info',
+                        help='Logging level.')
+    parser.add_argument('--resume_from_checkpoint', action='store_true',
+                        help='Resume training from a checkpoint.')
+    parser.add_argument('--overwrite', action='store_true',
+                        help='Ignore existing history but keep files.')
+    parser.add_argument('--hard_overwrite', action='store_true',
+                        help='Completely overwrite existing results.')
+    parser.add_argument('--top_k', type=int, default=1,
+                        help='Number of top runs to keep.')
+    return parser.parse_args()
+
 
 def setup_result_outdirs(cfg: ExperimentConfig):
     parent = Path(cfg.parent_dir)
@@ -50,109 +59,112 @@ def setup_result_outdirs(cfg: ExperimentConfig):
         outdir = parent / cfg.experiment_name
 
     outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / 'figures').mkdir(parents=True, exist_ok=True)
-    (outdir / 'checkpoints').mkdir(parents=True, exist_ok=True)
-    (outdir / 'metrics').mkdir(parents=True, exist_ok=True)
-    (outdir / 'configs').mkdir(parents=True, exist_ok=True)
-    (outdir / 'logs').mkdir(parents=True, exist_ok=True)
+    for subdir in ('figures', 'checkpoints', 'metrics', 'configs', 'logs'):
+        (outdir / subdir).mkdir(parents=True, exist_ok=True)
 
     cfg.outdir = str(outdir)
-    
     return outdir
 
-def main():
 
-    # --- SETUP EXPERIMENT FROM ARGS AND CONFIG --- #
+def _cache_dir(data_dir: Path, nside: int, is_azel: bool) -> Path:
+    coord = 'azel' if is_azel else 'radec'
+    return data_dir / f"feature_cache_nside{nside}_{coord}"
+
+
+def main():
     args = get_args()
     cfg = load_and_validate(args.cfg)
-    outdir = setup_result_outdirs(cfg)    
-    # ---------------------- #
+    outdir = setup_result_outdirs(cfg)
 
-    # --- SET UP LOGGER --- #
-    # logger = setup_logger_old(save_dir=outdir / "logs", logging_filename='train.log')
     logger = configure_logger(
         level=args.logging_level,
         log_to_stdout=True,
         log_to_file=True,
         outdir=outdir / "logs",
         filename="train.log",
-        use_tqdm=True
+        use_tqdm=True,
     )
-    # ---------------------- #
 
-    # --- SEED AND GET DEVICE --- #
     seed_everything(cfg.train.seed)
     device = get_system_device()
-    # ---------------------- #
 
-    # --- LOAD DATA AND CONSTRUCT DATASET --- #
-    start_date = pd.Timestamp(cfg.data.start_date) if cfg.data.start_date is not None else None
-    end_date = pd.Timestamp(cfg.data.end_date) if cfg.data.end_date is not None else None
-    df = load_and_process_historic_data(
-        fits_path=DES_FITS_PATH,
-        start_date=start_date,
-        end_date=end_date,
-        valid_years=cfg.data.years,
-        valid_months=cfg.data.months,
-        valid_days=cfg.data.days,
-        valid_filters=cfg.data.filters,
-    )
-    train_lookups = TrainLookupTables.load_from_dir(DES_DATA_DIR / "lookups")
-    train_dataset = OfflineDataset(
-        mode='train',
-        df=df,
-        cfg=cfg,
-        lookups=train_lookups
+    # --- LOAD FEATURE CACHE --- #
+    data_dir = Path(args.data_dir)
+    is_azel = 'azel' in cfg.data.action_space
+    cache_dir = _cache_dir(data_dir, cfg.data.nside, is_azel)
+
+    if not RawFeatureCache.exists(cache_dir):
+        raise FileNotFoundError(
+            f"Feature cache not found at {cache_dir}. "
+            f"Run `precompute-features --outdir {cache_dir} ...` first."
         )
-    logger.info("Finished constructing train_dataset.")
-    logger.info(f"Train dataset has {train_dataset.n_nights} nights and {train_dataset.num_transitions} transitions")
-    # ---------------------- #
+    logger.info(f"Loading feature cache from {cache_dir}")
+    cache = RawFeatureCache.load(cache_dir)
+    train_lookups = TrainLookupTables.load_from_dir(data_dir / "lookups")
 
-    #  --- DEFAULT PLOTS --- #
+    # --- CONSTRUCT TRAIN DATASET --- #
+    train_dataset = TransitionDataset(
+        mode='train',
+        cache=cache,
+        cfg=cfg,
+        lookups=train_lookups,
+    )
+    logger.info(
+        f"Train dataset: {train_dataset.n_nights} nights, "
+        f"{train_dataset.num_transitions} transitions"
+    )
+
+    # --- BUILD VAL DATASET CACHE --- #
+    val_nights = train_dataset.val_nights
+    val_raw_cache = cache.filter_nights(val_nights)
+    val_dataset = TransitionDataset(
+        mode='test',
+        cache=val_raw_cache,
+        cfg=cfg,
+        lookups=train_lookups,
+        z_score_stats=train_dataset.get_norm_stats()['z_score'],
+        rel_norm_stats=train_dataset.get_norm_stats()['rel_norm'],
+    )
+    val_cache_path = outdir / "checkpoints" / "val_dataset_cache.pt"
+    ValDatasetCache.from_transition_dataset(val_dataset).save(val_cache_path)
+    logger.info(f"Val dataset cache saved to {val_cache_path}")
+
+    # --- DEFAULT PLOTS --- #
     plot_bin_membership(train_dataset, outdir / "figures")
     plot_global_feature_distributions(train_dataset, outdir / "figures")
     plot_bin_feature_distributions(train_dataset, outdir / "figures")
-    #  ---------------------- #
 
     # --- DATALOADERS --- #
-    trainloader, valloader = train_dataset.get_dataloader(cfg.train.batch_size, num_workers=cfg.train.num_workers, pin_memory=True if device.type == 'cuda' else False, \
-                                                              random_seed=cfg.train.seed)
-    #  ---------------------- #
-    
-    # --- SAVE VAL DATA FOR VALIDATION --- #
-    # cache_path = outdir / "val_cache.pt"
-    # val_data_list = []
-    # for batch in valloader:
-    #     val_data_list.append(batch)
-        # torch.save(val_data_list, cache_path)
-        # logger.info(f"Validation cache saved to {cache_path}")
-    # ---------------------- #
-    
-    # --- GET COSINE ANNEALING SCHEDULER Kwargs --- #
-    def get_cosine_annealing_scheduler_kwargs(cfg, train_dataset):
-        steps_per_epoch = np.max([int(len(train_dataset) // cfg.train.batch_size), 1])
-        num_lr_scheduler_steps = np.int32(np.max([1, int(cfg.train.lr_sched_epoch_duration * steps_per_epoch)]))
-        lr_scheduler_kwargs = {'T_max': int(num_lr_scheduler_steps), 'eta_min': float(cfg.train.lr_final)} if cfg.train.lr_scheduler == 'cosine_annealing' else {}
-        return lr_scheduler_kwargs
-    
-    lr_scheduler_kwargs = get_cosine_annealing_scheduler_kwargs(cfg, trainloader.dataset)
-    # ---------------------- #
-    
+    offline_dataset = OfflineDataset(
+        dataset=train_dataset,
+        batch_size=cfg.train.batch_size,
+        num_workers=cfg.train.num_workers,
+        pin_memory=(device.type == 'cuda'),
+        seed=cfg.train.seed,
+    )
+    trainloader = offline_dataset.train_loader
+    valloader = offline_dataset.val_loader
+
+    # --- COSINE ANNEALING SCHEDULER KWARGS --- #
+    steps_per_epoch = max(int(len(train_dataset) // cfg.train.batch_size), 1)
+    num_lr_steps = int(max(1, int(cfg.train.lr_sched_epoch_duration * steps_per_epoch)))
+    lr_scheduler_kwargs = (
+        {'T_max': num_lr_steps, 'eta_min': float(cfg.train.lr_final)}
+        if cfg.train.lr_scheduler == 'cosine_annealing'
+        else {}
+    )
+
     # --- BUILD TRAINER --- #
-    cfg = resolve_and_save(cfg=cfg, dataset_dims=train_dataset.dataset_dims, dataset_feature_names=train_dataset.dataset_feature_names, 
-                           lr_scheduler_kwargs=lr_scheduler_kwargs, val_nights=train_dataset.val_nights, outdir=outdir / "configs")
+    cfg = resolve_and_save(
+        cfg=cfg,
+        dataset_dims=train_dataset.dataset_dims,
+        dataset_feature_names=train_dataset.dataset_feature_names,
+        lr_scheduler_kwargs=lr_scheduler_kwargs,
+        val_nights=train_dataset.val_nights,
+        outdir=outdir / "configs",
+    )
     algorithm = build_algorithm(cfg, device=device)
-
     latest_ckpt_path = outdir / "checkpoints" / "latest_checkpoint.pt"
-
-    # _ALGO_CKPT_METRIC = {
-    #     Algorithm.BC:   CheckpointMetric.VAL_LOSS,
-    #     Algorithm.DQN:  CheckpointMetric.ANGULAR_SEPARATION,
-    #     Algorithm.DDQN: CheckpointMetric.ANGULAR_SEPARATION,
-    #     Algorithm.CQL:  CheckpointMetric.ANGULAR_SEPARATION,
-    #     Algorithm.IQL:  CheckpointMetric.MAX_Q_POLICY,
-    # }
-    # ckpt_metric = _ALGO_CKPT_METRIC.get(cfg.model.algorithm, CheckpointMetric.VAL_LOSS)
 
     trainer = Trainer(
         algorithm=algorithm,
@@ -160,21 +172,17 @@ def main():
         top_k=args.top_k,
         overwrite=args.overwrite,
         hard_overwrite=args.hard_overwrite,
-        ckpt_metric=cfg.train.checkpoint_metric
+        ckpt_metric=cfg.train.checkpoint_metric,
     )
-    
+
     if latest_ckpt_path.exists() and args.resume_from_checkpoint:
         start_epoch = trainer.resume_from_checkpoint(latest_ckpt_path)
     else:
         start_epoch = 0
-        
-    # ---------------------- #
 
-    logger.info("Starting training...")
-
-    # Train agent
+    logger.info("Starting training…")
     start_time = time.time()
-    
+
     trainer.fit(
         start_epoch=start_epoch,
         num_epochs=cfg.train.max_epochs,
@@ -186,47 +194,17 @@ def main():
         norm_stats=train_dataset.get_norm_stats(),
     )
     end_time = time.time()
-    logger.info(f'Total train time = {end_time - start_time}s on {device}')
+    logger.info(f"Total train time = {end_time - start_time:.1f}s on {device}")
     logger.info("Training complete.")
-    
-    logger.info(f'Results saved in {outdir}')
-    
-    logger.info("Plotting metrics...")
+    logger.info(f"Results saved in {outdir}")
+
+    logger.info("Plotting metrics…")
     plot_train_metrics(outdir, dataset=train_dataset)
-    
-    if device == 'cuda':
+
+    if device.type == 'cuda':
         max_memory = torch.cuda.max_memory_allocated() / (1024 ** 3)
-        logger.info(f"\n Peak GPU Memory Used: {max_memory:.2f} GB")
+        logger.info(f"Peak GPU memory: {max_memory:.2f} GB")
+
 
 if __name__ == "__main__":
     main()
-    
-    
-# from torch.optim.lr_scheduler import LinearLR, ConstantLR, SequentialLR
-
-# # 1. Setup Optimizer
-# optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
-
-# # 2. Define the "Waiting Period" Scheduler (Factor=1.0 means don't change the LR)
-# delay_epochs = 5
-# waiting_scheduler = ConstantLR(optimizer, factor=1.0, total_iters=delay_epochs)
-
-# # 3. Define your actual active scheduler (e.g., decay the LR over the next 10 epochs)
-# active_epochs = 10
-# decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=0.1, total_iters=active_epochs)
-
-# # 4. Chain them together!
-# # It will wait for 5 epochs, then decay for 10 epochs.
-# main_scheduler = SequentialLR(
-#     optimizer, 
-#     schedulers=[waiting_scheduler, decay_scheduler], 
-#     milestones=[delay_epochs] # The epoch where it switches from waiting to decaying
-# )
-
-# # 5. Pass it to your radically simplified trainer
-# trainer = BehaviorCloning(
-#     policy_net=policy, 
-#     optimizer=optimizer,
-#     lr_scheduler=main_scheduler, 
-#     device='cuda'
-# )

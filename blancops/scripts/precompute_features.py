@@ -1,0 +1,90 @@
+"""Precompute all raw features from a FITS file and save to disk.
+
+Run this once before training to populate the feature cache that
+``run-train`` and ``run-validate`` load from.
+
+Usage::
+
+    precompute-features \\
+        --fits_path  <path/to/fits>       \\
+        --lookups_dir <path/to/lookups>   \\
+        --outdir     <cache_dir>          \\
+        --nside      16                   \\
+        --action_space_type [radec|azel]
+"""
+import argparse
+import logging
+from pathlib import Path
+
+from blancops.configs.constants import DES_DATA_DIR, DES_FITS_PATH
+from blancops.data.feature_cache import RawFeatureCache
+from blancops.data.lookup_tables import TrainLookupTables
+from blancops.data.preprocessing import load_and_process_historic_data
+from blancops.ephemerides import ephemerides
+from blancops.io.logger_utils import configure_logger
+
+logger = logging.getLogger(__name__)
+
+
+def get_args():
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Precompute all raw features from a FITS file and save to disk.",
+    )
+    parser.add_argument(
+        '--fits_path', type=str, default=str(DES_FITS_PATH),
+        help='Path to the FITS observations file.'
+    )
+    parser.add_argument(
+        '--data_dir', type=str, default=DES_DATA_DIR,
+        help='Data directory containing lookups and output dir for feature cache.'
+    )
+    parser.add_argument(
+        '--nside', type=int, default=16,
+        help='HEALPix nside parameter.'
+    )
+    parser.add_argument(
+        '--action_space_type', type=str, default='radec',
+        choices=['radec', 'azel'],
+        help='Coordinate frame for the HEALPix grid.'
+    )
+    parser.add_argument(
+        '-l', '--logging_level', type=str, default='info',
+        help='Logging level (info or debug).'
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = get_args()
+    configure_logger(
+        level=args.logging_level,
+        log_to_stdout=True,
+        log_to_file=False,
+        use_tqdm=True,
+    )
+
+    fits_path = Path(args.fits_path)
+    lookups_dir = Path(args.data_dir) / "lookups"
+    outdir = Path(args.data_dir) / f"feature_cache_nside_{args.nside}_{args.action_space_type}"
+    is_azel = args.action_space_type == 'azel'
+
+    logger.info(f"Loading and processing historical data from {fits_path}")
+    df = load_and_process_historic_data(fits_path=fits_path)
+
+    logger.info(f"Loading lookup tables from {lookups_dir}")
+    lookups = TrainLookupTables.load_from_dir(lookups_dir)
+
+    logger.info(f"Building HEALPix grid  nside={args.nside}  is_azel={is_azel}")
+    hpGrid = ephemerides.HealpixGrid(nside=args.nside, is_azel=is_azel)
+
+    logger.info("Computing feature cache…")
+    cache = RawFeatureCache.compute(df=df, lookups=lookups, hpGrid=hpGrid)
+
+    logger.info(f"Saving feature cache to {outdir}")
+    cache.save(outdir)
+    logger.info("Done.")
+
+
+if __name__ == '__main__':
+    main()
