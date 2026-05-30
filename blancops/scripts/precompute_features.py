@@ -66,8 +66,8 @@ def main():
 
     fits_path = Path(args.fits_path)
     lookups_dir = Path(args.data_dir) / "lookups"
-    outdir = Path(args.data_dir) / f"feature_cache_nside_{args.nside}_{args.action_space_type}"
-    is_azel = args.action_space_type == 'azel'
+    outdir = Path(args.data_dir) / f"feature_cache_nside{args.nside}_{args.action_space_type}"
+    is_azel = 'azel' in args.action_space_type
 
     logger.info(f"Loading and processing historical data from {fits_path}")
     df = load_and_process_historic_data(fits_path=fits_path)
