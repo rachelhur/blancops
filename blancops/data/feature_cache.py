@@ -76,7 +76,7 @@ def _compute_slew_distances(df, current_state_idxs, next_state_idxs, hpGrid):
         z_df_idxs = current_state_idxs[z_idxs]
         z_timestamps = df.iloc[z_df_idxs]['timestamp'].values
         for i, t in zip(z_idxs, z_timestamps):
-            z_ra, z_dec = _eph.topographic_to_equatorial(lon=0, lat=np.pi / 2, time=t)
+            z_ra, z_dec = _eph.topographic_to_equatorial(az=0, el=np.pi / 2, time=t)
             curr_bids[i] = hpGrid.ang2idx(lon=z_ra, lat=z_dec)
 
     curr_coords = np.array((hpGrid.lon[curr_bids], hpGrid.lat[curr_bids]))
