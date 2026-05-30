@@ -36,10 +36,10 @@ from blancops.configs.constants import (
 from blancops.ephemerides import ephemerides as _ephemerides
 from blancops.math.interpolate import interpolate_on_sphere
 from blancops.configs.rl_schema import ActionConstraints, load_and_validate
-from blancops.data.dataset import OfflineDataset
+from blancops.data.dataset import TransitionDataset
+from blancops.data.feature_cache import RawFeatureCache, ValDatasetCache
 from blancops.data.features.normalizations import build_normalizer
 from blancops.data.lookup_tables import LookupTables, TrainLookupTables
-from blancops.data.preprocessing import load_and_process_historic_data
 from blancops.environment.historic_env import HistoricBlancoEnv
 from blancops.rl.agent_factory import AgentFactory
 from blancops.rl.checkpointer import get_checkpoint
@@ -65,6 +65,7 @@ def build_evaluators(
     style: PlotStyle = None,
     save_movie=False,
     save_mollweide=False,
+    data_dir=None,
 ) -> Tuple['SingleStepEvaluator', 'MultiStepEvaluator']:
     """Build SS and MS evaluators for the validation set from a config."""
     cfg = (
@@ -78,21 +79,35 @@ def build_evaluators(
     ss_outdir = outdir / eval_outdir / 'ss'
     ms_outdir = outdir / eval_outdir / 'ms'
 
-    # Data
-    lookups = TrainLookupTables.load_from_dir(DES_DATA_DIR / "lookups")
-    df = load_and_process_historic_data(DES_FITS_PATH)
-    val_nights = [date.fromisoformat(n) if isinstance(n, str) else n for n in cfg.data.val_nights]
-    df_val = df[df['night'].isin(val_nights)]
-
     # Checkpoint + normalizers
     checkpoint = get_checkpoint(outdir, device=device)
     zscore_stats = checkpoint['norm_stats'].get('z_score', {})
     rel_norm_stats = checkpoint['norm_stats'].get('rel_norm', {})
 
-    val_dataset = OfflineDataset(
-        df=df_val, cfg=cfg, lookups=lookups,
-        z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats, mode='test',
-    )
+    # Load val dataset from cache or reconstruct from feature cache
+    lookups = TrainLookupTables.load_from_dir(DES_DATA_DIR / "lookups")
+    val_cache_path = outdir / "checkpoints" / "val_dataset_cache.pt"
+    _data_dir = Path(data_dir) if data_dir is not None else DES_DATA_DIR
+    is_azel = 'azel' in cfg.data.action_space
+    coord = 'azel' if is_azel else 'radec'
+    feature_cache_dir = _data_dir / f"feature_cache_nside{cfg.data.nside}_{coord}"
+
+    if ValDatasetCache.exists(val_cache_path):
+        val_dataset = ValDatasetCache.load(val_cache_path)
+    else:
+        if not RawFeatureCache.exists(feature_cache_dir):
+            raise FileNotFoundError(
+                f"Neither val dataset cache ({val_cache_path}) nor feature cache "
+                f"({feature_cache_dir}) found."
+            )
+        full_cache = RawFeatureCache.load(feature_cache_dir)
+        val_nights = cfg.data.val_nights
+        val_raw_cache = full_cache.filter_nights(val_nights)
+        val_dataset = TransitionDataset(
+            mode='test', cache=val_raw_cache, cfg=cfg, lookups=lookups,
+            z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats,
+        )
+        ValDatasetCache.from_transition_dataset(val_dataset).save(val_cache_path)
 
     # Build with the dataset's expanded names so filter-dependent features
     # (sky_brightness_g, urgency_r, ...) appear in active_features and can be inverted.
@@ -392,20 +407,30 @@ class SingleStepEvaluator(Evaluator):
 
     def _batch_single_step(self):
         n_slices = self.N_INFERENCE_SLICES
-        chunk = len(self.data.dataset.curr_compact_idxs) // n_slices
+        compact_idxs = self.data.dataset.curr_compact_idxs
+        chunk = len(compact_idxs) // n_slices
         action_outputs = []
         score_outputs  = []
 
+        dataset = self.data.dataset
+        has_active_mask = getattr(dataset, 'active_bin_mask', None) is not None
+        # Track which transitions had an inactive expert action (data quality issue)
+        active_expert_mask_parts = []
+
         for i in range(n_slices):
             sl = slice(i * chunk, None if i == n_slices - 1 else (i + 1) * chunk)
-            idxs = self.data.dataset.curr_compact_idxs[sl]
-            glob  = self.data.dataset.states[idxs].to(self.device)
-            bins  = self.data.dataset.bin_states[idxs].to(self.device)
-            masks = self.data.dataset.action_masks[idxs].to(self.device)
+            idxs = compact_idxs[sl]
+            glob  = dataset.states[idxs].to(self.device)
+            bins  = dataset.bin_states[idxs].to(self.device) if dataset.include_bin_features else None
+            masks = dataset.action_masks[idxs].to(self.device)
             with torch.no_grad():
                 action_outputs.append(self.policy.select_action(glob, bins, masks))
                 if self.field_choice_method == 'interp':
                     score_outputs.append(self.policy.core_net(glob, bins).cpu())
+
+            if has_active_mask:
+                active_bin_c = dataset.active_bin_mask[idxs]  # (chunk, n_bins)
+                active_expert_mask_parts.append(active_bin_c.any(dim=-1).cpu())
 
         bin_idxs = torch.cat(action_outputs).cpu().detach().numpy()
         if 'filter' in self.data.action_space:
@@ -413,6 +438,14 @@ class SingleStepEvaluator(Evaluator):
             bin_idxs    = bin_idxs // _NUM_FILTERS
         else:
             filter_idxs = None
+
+        # Store active-bin diagnostic for callers
+        if has_active_mask:
+            self._active_expert_mask = torch.cat(active_expert_mask_parts).numpy()
+            active_frac = float(dataset.active_bin_mask.float().mean())
+            logger.debug(f"Active bin coverage (fraction of bins active per state): {active_frac:.3f}")
+        else:
+            self._active_expert_mask = None
 
         if self.field_choice_method != 'interp':
             return bin_idxs, filter_idxs, None
