@@ -22,8 +22,9 @@ class BehaviorCloning(AlgorithmBase):
         
     
     def _unpack_batch(self, batch):
-        (state, expert_actions_flat, rewards, next_state, 
-         dones, action_masks, next_action_masks, bin_states, next_bin_states, slew_dists) = batch
+        (state, expert_actions_flat, rewards, next_state,
+         dones, action_masks, next_action_masks, bin_states, next_bin_states,
+         slew_dists) = batch
 
         batch_dict = {
             'state': state.to(device=self.device, dtype=torch.float32),

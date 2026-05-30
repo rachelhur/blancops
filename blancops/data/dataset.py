@@ -517,12 +517,6 @@ class TransitionDataset(torch.utils.data.Dataset):
         bin_n = (self.bin_states[n_idx] if not is_done else _zero_bin) \
             if (self.include_bin_features and self.bin_states is not None) else torch.as_tensor(0)
 
-        active_bin_c = (
-            self.active_bin_mask[c_idx]
-            if self.active_bin_mask is not None
-            else torch.ones(self.nbins, dtype=torch.bool)
-        )
-
         return (
             self.states[c_idx],
             self.actions[idx],
@@ -534,7 +528,6 @@ class TransitionDataset(torch.utils.data.Dataset):
             bin_c,
             bin_n,
             self.slew_distances[idx],
-            active_bin_c,
         )
 
     def get_norm_stats(self) -> dict:
