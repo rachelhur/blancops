@@ -132,7 +132,7 @@ def build_evaluators(
 
     # Environment for MS evaluator
     nightgroup = val_dataset._df.groupby('night')
-    nightgroup = nightgroup.apply(lambda x: x.iloc[1:]).reset_index(drop=True).groupby('night')
+    nightgroup = nightgroup.apply(lambda x: x.iloc[1:], include_groups=False).reset_index(drop=True).groupby('night')
 
     night_start_bin_states = None
     if cfg.data.bin_state_dim > 0:
