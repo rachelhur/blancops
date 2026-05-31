@@ -794,16 +794,18 @@ def project_fwhm(fwhm_ref, airmass_ref, wavelength_ref, airmass_now, filter_idx_
     """Project a reference seeing measurement onto the current pointing.
 
     Anchors on a known ``(fwhm, airmass, wavelength)`` triple and rescales it to
-    the current airmass and filter wavelength via the obztak Kolmogorov model
-    (``estimate_fwhm``: FWHM ∝ airmass**0.6 · wavelength**-0.2). Filterless
+    the current airmass and filter wavelength via Kolmogorov model. Filterless
     pointings (zenith / WAIT, i.e. ``filter_idx_now`` not in ``IDX2WAVE``) keep
-    the reference wavelength so only the airmass term applies.
-
-    This is the single source of truth for closed-loop seeing estimation in the
-    forward-simulation envs: the live env anchors the triple on the last real
-    telemetry reading, the offline env on a seed.
+    a reference wavelength (currently set to i-band) so only the airmass term applies.
     """
-    wavelength_now = IDX2WAVE.get(int(filter_idx_now), wavelength_ref)
+    if np.ndim(filter_idx_now) == 0:
+        wavelength_now = IDX2WAVE.get(int(filter_idx_now), wavelength_ref)
+    else:
+        filter_idx_arr = np.asarray(filter_idx_now)
+        wavelength_ref_arr = np.broadcast_to(np.asarray(wavelength_ref), filter_idx_arr.shape)
+        wavelength_now = np.array([
+            IDX2WAVE.get(int(i), wr) for i, wr in zip(filter_idx_arr, wavelength_ref_arr)
+        ])
     return estimate_fwhm(
         fwhm_ref, airmass_ref, wavelength_ref, airmass_now, wavelength_now
     )
