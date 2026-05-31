@@ -21,6 +21,7 @@ from blancops.configs.constants import DES_DATA_DIR, WORKSPACE
 from blancops.configs.enums import Algorithm, CheckpointMetric
 
 import argparse
+import gc
 import logging
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ def main():
             f"Run `precompute-features --outdir {cache_dir} ...` first."
         )
     logger.info(f"Loading feature cache from {cache_dir}")
-    cache = RawFeatureCache.load(cache_dir)
+    cache = RawFeatureCache.load(cache_dir, mmap_bin=True)
     train_lookups = TrainLookupTables.load_from_dir(data_dir / "lookups")
 
     # --- CONSTRUCT TRAIN DATASET --- #
@@ -128,6 +129,10 @@ def main():
     val_cache_path = outdir / "checkpoints" / "val_dataset_cache.pt"
     ValDatasetCache.from_transition_dataset(val_dataset).save(val_cache_path)
     logger.info(f"Val dataset cache saved to {val_cache_path}")
+
+    del cache, val_raw_cache, val_dataset
+    gc.collect()
+    logger.info("Released feature cache from memory.")
 
     # --- DEFAULT PLOTS --- #
     plot_bin_membership(train_dataset, outdir / "figures")
