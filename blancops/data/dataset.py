@@ -145,7 +145,9 @@ class TransitionDataset(torch.utils.data.Dataset):
 
         if self.include_bin_features:
             bin_indices = [cache.bin_feature_names.index(f) for f in self.bin_feature_names]
-            self._prenorm_bin_states = cache.bin_features[:, :, bin_indices]
+            _state_bin = cache.bin_features[cache.state_idxs]
+            self._prenorm_bin_states = _state_bin[:, :, bin_indices]
+            del _state_bin
         else:
             self._prenorm_bin_states = None
 
@@ -216,9 +218,7 @@ class TransitionDataset(torch.utils.data.Dataset):
 
     def _construct_states(self, df, bin_states, include_bin_features, state_idxs):
         global_states = self._construct_global_features(df=df, state_idxs=state_idxs)
-        if include_bin_features:
-            bin_states = bin_states[state_idxs]
-        else:
+        if not include_bin_features:
             bin_states = None
         return global_states, bin_states
 
