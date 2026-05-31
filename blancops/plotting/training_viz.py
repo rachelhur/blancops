@@ -135,8 +135,9 @@ def plot_bin_feature_distributions(dataset, fig_outdir):
         feat = bs_np[..., i].copy()
         feat[sm_np[..., i]] = np.nan  # mask sentinels
         
-        means = np.nanmean(feat, axis=1)                     # (T,)
-        stds  = np.nanstd(feat,  axis=1)                     # (T,)
+        with np.errstate(all='ignore'):
+            means = np.nanmean(feat, axis=1)                 # (T,)
+            stds  = np.nanstd(feat,  axis=1)                 # (T,)
         
         # Optional: hide timestamps where every bin is sentinel (means is NaN)
         keep = np.isfinite(means)
