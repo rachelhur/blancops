@@ -30,11 +30,7 @@ def main():
     # Load config and device
     # ------------------------------
     
-    if args.cfg_path is None:
-        cfg_path = Path('./experiments/bc/TEST_FULL_FEATURE_SET/run_20260517_203006/configs/resolved_config.yaml')
-        # cfg_path = '/home/hurra/Projects/blancops/experiments/bc/TEST_FULL_FEATURE_SET/run_20260517_162420/configs/resolved_config.yaml'
-    else:
-        cfg_path = args.cfg_path
+    cfg_path = args.cfg_path
 
     cfg = load_and_validate(cfg_path)
     device = get_system_device()
