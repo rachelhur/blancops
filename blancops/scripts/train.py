@@ -114,10 +114,11 @@ def main():
         f"Train dataset: {train_dataset.n_nights} nights, "
         f"{train_dataset.num_transitions} transitions"
     )
+    cache.log_transition_filter_stats(train_dataset.train_nights, label='Train')
 
     # --- BUILD VAL DATASET CACHE --- #
     val_nights = train_dataset.val_nights
-    val_raw_cache = cache.filter_nights(val_nights)
+    val_raw_cache = cache.filter_nights(val_nights, label='Val')
     val_dataset = TransitionDataset(
         mode='test',
         cache=val_raw_cache,

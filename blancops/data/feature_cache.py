@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # imports — dataset.py will be the caller, not the callee)
 # ---------------------------------------------------------------------------
 
-def _get_state_indices(df: pd.DataFrame, max_time_diff_min: int = 5):
+def _get_state_indices(df: pd.DataFrame, max_time_diff_min: int = 5, label: str = ''):
     """Return transition index arrays from a timestamp-sorted DataFrame.
 
     Returns (state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact).
@@ -54,9 +54,10 @@ def _get_state_indices(df: pd.DataFrame, max_time_diff_min: int = 5):
     state_idxs = np.unique(np.concatenate([current_state_idxs, next_state_idxs]))
     df_idx_to_compact = {int(idx): i for i, idx in enumerate(state_idxs)}
     n_removed = int(np.sum(~keep))
+    prefix = f"{label} " if label else ""
     logger.info(
-        f"Removing {n_removed} transitions with time diff > {max_time_diff_min} min. "
-        f"Total transitions: {len(next_state_idxs)}"
+        f"Removing {n_removed} {prefix}transitions with time diff > {max_time_diff_min} min. "
+        f"Total {prefix}transitions: {len(next_state_idxs)}"
     )
     return state_idxs, current_state_idxs, next_state_idxs, df_idx_to_compact
 
@@ -96,12 +97,12 @@ class RawFeatureCache:
     across training runs that differ only in normalization scheme, reward
     type, or feature subset.
 
-    Disk layout (under ``cache_dir/``)::
+    Disk layout (under ``cache_dir/``):
 
-        metadata.json       – nside, is_azel, feature name lists, n_rows, n_bins
-        global_df.parquet   – enriched DataFrame with ALL global feature columns
-        bin_features.npy    – (n_rows, n_bins, n_bin_feats) float32; memmap-friendly
-        transitions.npz     – compressed arrays: state_idxs, current_state_idxs,
+        metadata.json: nside, is_azel, feature name lists, n_rows, n_bins
+        global_df.parquet: enriched DataFrame with ALL global feature columns
+        bin_features.npy: (n_rows, n_bins, n_bin_feats) float32; memmap-friendly
+        transitions.npz: compressed arrays: state_idxs, current_state_idxs,
                               next_state_idxs, slew_distances
     """
 
@@ -209,7 +210,14 @@ class RawFeatureCache:
     # Night filtering
     # ------------------------------------------------------------------
 
-    def filter_nights(self, nights) -> 'RawFeatureCache':
+    def log_transition_filter_stats(self, nights, label: str = '') -> None:
+        """Log how many transitions would be removed by the time-diff filter for ``nights``."""
+        nights_set = {str(n) for n in nights}
+        mask = self.global_df['night'].astype(str).isin(nights_set)
+        filtered_df = self.global_df[mask].reset_index(drop=True)
+        _get_state_indices(filtered_df, label=label)
+
+    def filter_nights(self, nights, label: str = '') -> 'RawFeatureCache':
         """Return a new ``RawFeatureCache`` restricted to ``nights``.
 
         All indices in the returned cache are **local** to the filtered
@@ -227,7 +235,7 @@ class RawFeatureCache:
         orig_positions = np.where(mask.values)[0]
 
         # Re-derive transition indices from the filtered df's timestamps
-        state_idxs, current_state_idxs, next_state_idxs, _ = _get_state_indices(filtered_df)
+        state_idxs, current_state_idxs, next_state_idxs, _ = _get_state_indices(filtered_df, label=label)
 
         # Slice bin_features using original positions then re-index to state_idxs
         bin_subset = self.bin_features[orig_positions]  # (n_filtered, n_bins, n_feats)
@@ -300,13 +308,16 @@ class RawFeatureCache:
 
         with open(cache_dir / 'metadata.json') as f:
             meta = json.load(f)
+        logger.info(f"Loading RawFeatureCache metadata from {cache_dir}")
 
         global_df = pd.read_parquet(cache_dir / 'global_df.parquet')
 
         mmap_mode = 'r' if mmap_bin else None
         bin_features = np.load(cache_dir / 'bin_features.npy', mmap_mode=mmap_mode)
+        logger.info(f"Loading RawFeatureCache bin_features from {cache_dir}")
 
         t = np.load(cache_dir / 'transitions.npz')
+        logger.info(f"Loading RawFeatureCache transitions from {cache_dir}")
 
         return cls(
             nside=meta['nside'],
