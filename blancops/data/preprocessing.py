@@ -37,7 +37,7 @@ _DES_SELECTION_CRITERIA = [
     ('propid', '2012B-0001', '=='), 
     ('exptime', 100, '<'),
     ('exptime', 40, '>'),
-    ('datetime', pd.Timestamp("2000-01-01", tz="UTC"), '>='),
+    ('datetime', pd.Timestamp("2013-08-30", tz="UTC"), '>='),
     ('teff', np.nan, '!='),
     ('program', 'supernova', '!='),
     ('program', 'des gw', '!='),
