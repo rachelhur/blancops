@@ -16,7 +16,6 @@ def main():
     # ArgParse
     # ------------------------------
     
-    parser = argparse.ArgumentParser()
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-c', '--cfg_path', type=str, default=None, help="Path to config file. If passed, all other arguments are ignored")
     parser.add_argument('-l', '--logging_level', type=str, default='debug', help='Logging level. Options: info, debug')
@@ -54,7 +53,8 @@ def main():
     s_eval, m_eval = build_evaluators(cfg, device=device, save_movie=args.save_movies, save_mollweide=args.save_mollweides)
     
     logger.info("Running evaluators...")
-    s_eval.run(); m_eval.run(overwrite=args.force_overwrite)
+    s_eval.run()
+    m_eval.run(overwrite=args.force_overwrite)
     
     # ------------------------------
     # Default plots

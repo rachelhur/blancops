@@ -287,6 +287,9 @@ class Trainer:
                 numpy_state = rng.get('numpy', None)
                 if numpy_state is not None:
                     try:
+                        if isinstance(numpy_state[1], list):  # new format: array serialized as list
+                            numpy_state = (numpy_state[0], np.array(numpy_state[1], dtype=np.uint32),
+                                           numpy_state[2], numpy_state[3], numpy_state[4])
                         np.random.set_state(numpy_state)
                     except Exception:
                         logger.debug('Failed to restore NumPy RNG state from checkpoint; skipping.')

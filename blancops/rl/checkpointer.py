@@ -11,6 +11,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _serialize_numpy_rng_state(state):
+    # np.random.get_state() returns ('MT19937', np.array([...], uint32), pos, has_gauss, cached_gaussian)
+    # Storing the numpy array directly breaks weights_only=True; convert to list.
+    return (state[0], state[1].tolist(), state[2], state[3], float(state[4]))
+
+
 class Checkpointer:
     def __init__(self, outdir: Path, top_k: int = 1, mode: str = 'min', overwrite=False, hard_overwrite=False):
         """
@@ -73,7 +80,7 @@ class Checkpointer:
             'rng_states': {
                 'torch': torch.get_rng_state(),
                 'torch_cuda': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
-                'numpy': np.random.get_state(),
+                'numpy': _serialize_numpy_rng_state(np.random.get_state()),
                 'python': random.getstate()
             }
         }
