@@ -1,14 +1,10 @@
 import numpy as np
 import torch.nn as nn
 import torch
-from torch.nn import functional as F
 import logging
 
 from blancops.rl.neural_nets.encoders import FlatStateEncoder
 logger = logging.getLogger(__name__)
-
-def setup_network():
-    pass
 
 def build_mlp(in_dim: int, hidden: tuple[int, ...], out_dim: int,
               layernorm: bool = True,
@@ -79,9 +75,9 @@ class ContextualScoreMLP(nn.Module):
             layernorm=layernorm, activation=activation,
         )
  
-    def forward(self, x_glob, x_bin, y_data=None):
+    def forward(self, x_glob, x_bin):
         batch_size, n_bins, _ = x_bin.shape
- 
+
         # encode global state once, then expand across candidates
         g = x_glob if self.global_encoder is None else self.global_encoder(x_glob)
         g = g.unsqueeze(1)                       # (batch, 1, g_dim)
@@ -93,15 +89,12 @@ class ContextualScoreMLP(nn.Module):
  
         x = torch.cat((g_exp, x_bin), dim=-1)    # (batch, n_bins, g_dim + bin_dim)
         scores = self.net(x)
- 
-        # flattens last dim (filter) first:
-        # [bin0filter0, bin0filter1, ... bin1filter0, ...]
         joint_action_scores = scores.view(batch_size, -1)
         return joint_action_scores
 
 
 class DualStreamMLP(nn.Module):
-    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None, use_contextual_gating=False,
+    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None,
                  use_layer_norm=True):
         super().__init__()
         self.activation = nn.LeakyReLU if activation is None else activation
@@ -118,9 +111,9 @@ class DualStreamMLP(nn.Module):
         self.net = build_mlp(hidden_dim * 2, (hidden_dim,), score_dim,
                              layernorm=use_layer_norm, activation=self.activation)
 
-    def forward(self, x_glob, x_bin, y_data=None):
+    def forward(self, x_glob, x_bin):
         batch_size, n_bins, _ = x_bin.shape
-        
+
         # 1. Process independently
         g_emb = self.glob_enc(x_glob) 
         g_emb = g_emb.unsqueeze(1).expand(-1, n_bins, -1) # Shape: (Batch, Bins, Hidden)

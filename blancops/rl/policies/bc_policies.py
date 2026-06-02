@@ -64,20 +64,6 @@ class BCPureJointPolicy(BCPolicyBase):
 
             bin_loss = F.nll_loss(bin_log_probs, expert_bin)
             filter_loss = F.nll_loss(filter_log_probs, expert_filter)
-
-            # batch_size = action_logits.size(0)
-            # n_bins = action_logits.size(1) // self.num_filters
-            # probs = F.softmax(
-            #     action_logits.view(batch_size, n_bins, self.num_filters), dim=-1
-            # )
-            # bin_probs = probs.sum(dim=-1)
-            # filter_probs = probs.sum(dim=-2)
-
-            # expert_bin = expert_flat // self.num_filters
-            # expert_filter = expert_flat % self.num_filters
-
-            # bin_loss = F.nll_loss(torch.log(bin_probs + 1e-9), expert_bin)
-            # filter_loss = F.nll_loss(torch.log(filter_probs + 1e-9), expert_filter)
         return {"bin_loss": bin_loss.item(), "filter_loss": filter_loss.item()}
 
     def select_action(self, x_glob, x_bin, action_mask=None):

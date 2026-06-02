@@ -11,7 +11,7 @@ from blancops.data.lookup_tables import LookupTables
 from blancops.utils.sys_utils import seed_everything
 from blancops.io.logger_utils import configure_logger
 from blancops.utils.sys_utils import get_system_device
-from blancops.configs.constants import *
+from blancops.configs.constants import WORKSPACE
 from blancops.environment.offline_env import OfflineBlancoEnv
 
 import argparse
@@ -75,7 +75,6 @@ def main():
     # ---------------------------------
     # SETUP LOGGER AND OUTDIR
     # ---------------------------------
-    seed_everything(args.seed)
     device = get_system_device()
 
     if args.outdir is None:
@@ -92,6 +91,7 @@ def main():
         filename='offline_schedule.log',
         use_tqdm=True
     )
+    seed_everything(args.seed)
 
     # ---------------------------------
     # LOAD AGENT, MODEL, AND OFFLINE RUNNER

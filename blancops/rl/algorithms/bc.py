@@ -17,10 +17,7 @@ class BehaviorCloning(AlgorithmBase):
             lr_scheduler_num_epochs=lr_scheduler_num_epochs,
             device=device,
         )
-        
-        # optimizer_kwargs = optimizer_kwargs or {}
-        
-    
+
     def _unpack_batch(self, batch):
         (state, expert_actions_flat, rewards, next_state,
          dones, action_masks, next_action_masks, bin_states, next_bin_states,
