@@ -117,9 +117,10 @@ def build_network(cfg: ExperimentConfig) -> nn.Module:
             global_dim=cfg.data.state_dim,
             bin_feat_dim=cfg.data.bin_state_dim,
             score_dim=cfg.data.num_filters,
-            hidden=(cfg.model.hidden_dim,) * cfg.model.nlayers,
-            activation=activation_fn,
+            hidden_dim=cfg.model.hidden_dim,
             nlayers=cfg.model.nlayers,
+            global_enc_dim=cfg.model.global_enc_dim,
+            activation=activation_fn,
             use_contextual_gating=cfg.model.contextual_gating,
         )
     
