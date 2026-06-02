@@ -162,7 +162,15 @@ class BaseAlgConfig(BaseModel):
     loss_function: str
     contextual_gating: bool = False
     activation: str = "relu"
-    
+    global_enc_dim: Optional[int] = 128
+
+    @field_validator('global_enc_dim')
+    @classmethod
+    def validate_global_enc_dim(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError('global_enc_dim must be positive or None')
+        return v
+
     @field_validator('hidden_dim')
     @classmethod
     def validate_hidden_dim(cls, v):

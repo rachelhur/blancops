@@ -43,24 +43,25 @@ class ContextualScoreMLP(nn.Module):
     """
 
     def __init__(self, global_dim: int, bin_feat_dim: int,
-                 hidden: tuple[int, ...] = (256, 256),
+                 hidden_dim: int = 256,
+                 nlayers: int = 2,
                  score_dim: int = 1,
                  global_enc_dim: int | None = 128,
-                 global_enc_hidden: tuple[int, ...] = (128,),
                  use_contextual_gating: bool = False,
                  layernorm: bool = True,
                  activation: type[nn.Module] = nn.LeakyReLU):
         super().__init__()
         self.score_dim = score_dim
         self.use_contextual_gating = use_contextual_gating
- 
+        hidden = (hidden_dim,) * nlayers
+
         # --- global encoder ---------------------------------------------------
         if global_enc_dim is None:
             self.global_encoder = None
             g_dim = global_dim
         else:
             self.global_encoder = build_mlp(
-                global_dim, global_enc_hidden, global_enc_dim,
+                global_dim, (hidden_dim,), global_enc_dim,
                 layernorm=layernorm, activation=activation,
             )
             g_dim = global_enc_dim
