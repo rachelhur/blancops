@@ -55,56 +55,59 @@ _FILTER_DEP_FEATURE_NAMES = [
     ]
 
 _GLOBAL_FEATURES = [
-    "t_night", 
-    "t_survey",  # DO NOT USE loss of generality
-    "lst", 
-    "ha",   # azel: always use
-    "el",   # azel: always use
-    "ra",   # azel: don't use
-    "az",   # azel: don't use
-    "airmass", # always use
-    "dec",  # azel: don't use
-    "sun_ra", "sun_dec", "sun_az", "sun_el",    # azel: don't use source az's
-    "moon_ra", "moon_dec", "moon_az", "moon_el",
-    "moon_distance",
-    # "num_unvisited_fields",
-    # "num_incomplete_fields",
-    # "min_tiling",
-    "filter_wave", "filter_idx", "is_filter", # is_filter one-hot encoded is probably best
-    # "urgency",    #  loss of generality
-    # "survey_progress",   # mostly parallel to mean_tiling
-    "global_mean_tiling",
-    "sky_brightness",
-    "moon_phase",
-    "fwhm",
+        "t_night",    # use, but maybe refactor
+        "t_survey",  # DO NOT USE loss of generality
+        "lst",  # azel: always use
+        "ha",   # azel: always use
+        "el",   # azel: always use
+        "ra",   # never use
+        "az",   # azel: don't use
+        "airmass", # always use
+        "dec",     # never use
+        "sun_ra", "sun_dec",    # don't use ra, dec (season)
+        "sun_az", "sun_el",    # don't use sun_ra, azel: don't use source az's
+        "moon_ra", "moon_dec", 
+        "moon_az", "moon_el",
+        "moon_distance",  # always use
+        # "num_unvisited_fields",
+        # "num_incomplete_fields",
+        # "min_tiling",
+        "filter_wave", "filter_idx", "is_filter", # is_filter one-hot encoded is probably best
+        # "urgency",    #  loss of generality
+        # "survey_progress",   # mostly parallel to mean_tiling
+        "global_mean_tiling",
+        "sky_brightness",
+        "moon_phase",  # always use
+        "fwhm",
 ]
 
 _BIN_FEATURES = [
-    "ha",
-    "airmass",
-    "moon_distance", 
-    "rel_ha", "rel_moon_distance", 
-    "delta_az", 
-    "delta_el", 
-    "az", 
-    "el", 
-    "ra", 
-    "dec",
-    "pointing_distance", 
-    "num_unvisited_fields",
-    "num_incomplete_fields",
-    "min_tiling", 
-    "mean_tiling", 
-    "rel_num_unvisited_fields", 
-    "rel_num_incomplete_fields", 
-    "rel_min_tiling",
-    "rel_t_since_last_visit",
-    "t_until_set",
-    "t_since_last_visit" # use rel_t_since_last_visit instead
-                            # the z-score norm bakes in an assumed survey cadence
-                            # resulting in loss of generality for future surveys
-                            # rel_t_since_last_visit still suffers from a different spread,
-                            # but much better off
+        "ha",
+        "airmass",   # MI shows small dependence with filter and bin choice
+        "moon_distance",     #
+        "rel_ha", "rel_moon_distance",
+        "delta_az",
+        "delta_el",
+        "az",
+        "el",         # never use
+        "ra",     # never use - specific to DES footprint and will likely cause overfitting
+                        # actually, MI shows small dependence
+        "dec",
+        "pointing_distance",
+        "num_unvisited_fields",
+        "num_incomplete_fields",
+        "min_tiling",
+        "mean_tiling",
+        "rel_num_unvisited_fields",
+        "rel_num_incomplete_fields",
+        "rel_min_tiling",
+        "rel_t_since_last_visit",
+        "t_until_set",
+        "t_since_last_visit" # use rel_t_since_last_visit instead
+                                # the z-score norm bakes in an assumed survey cadence
+                                # resulting in loss of generality for future surveys
+                                # rel_t_since_last_visit still suffers from a different spread,
+                                # but much better off
 ]
 
 
