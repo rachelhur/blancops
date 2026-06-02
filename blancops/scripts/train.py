@@ -100,7 +100,11 @@ def main():
             f"Run `precompute-features --outdir {cache_dir} ...` first."
         )
     logger.info(f"Loading feature cache from {cache_dir}")
-    cache = RawFeatureCache.load(cache_dir, mmap_bin=True)
+    cache = RawFeatureCache.load(
+        cache_dir, mmap_bin=True,
+        start_date=cfg.data.start_date,
+        end_date=cfg.data.end_date,
+    )
     train_lookups = TrainLookupTables.load_from_dir(data_dir / "lookups")
 
     # --- CONSTRUCT TRAIN DATASET --- #
