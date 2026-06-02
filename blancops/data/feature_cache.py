@@ -296,13 +296,16 @@ class RawFeatureCache:
         logger.info(f"RawFeatureCache saved to {cache_dir}")
 
     @classmethod
-    def load(cls, cache_dir: Path, mmap_bin: bool = False) -> 'RawFeatureCache':
+    def load(cls, cache_dir: Path, mmap_bin: bool = False,
+             start_date: str | None = None,
+             end_date: str | None = None) -> 'RawFeatureCache':
         """Load from disk.
 
         Args:
-            cache_dir: Directory written by ``save()``.
-            mmap_bin:  If True, ``bin_features`` is memory-mapped (read-only).
-                       Useful when the array is very large (tens of GB).
+            cache_dir:   Directory written by ``save()``.
+            mmap_bin:    If True, ``bin_features`` is memory-mapped (read-only).
+            start_date:  Inclusive lower bound on night (``'YYYY-MM-DD'``).
+            end_date:    Inclusive upper bound on night (``'YYYY-MM-DD'``).
         """
         cache_dir = Path(cache_dir)
 
@@ -319,7 +322,7 @@ class RawFeatureCache:
         t = np.load(cache_dir / 'transitions.npz')
         logger.info(f"Loading RawFeatureCache transitions from {cache_dir}")
 
-        return cls(
+        cache = cls(
             nside=meta['nside'],
             is_azel=meta['is_azel'],
             global_df=global_df,
@@ -331,6 +334,22 @@ class RawFeatureCache:
             next_state_idxs=t['next_state_idxs'],
             slew_distances=t['slew_distances'],
         )
+
+        if start_date is not None or end_date is not None:
+            night_dts = pd.to_datetime(cache.global_df['night'].unique())
+            mask = np.ones(len(night_dts), dtype=bool)
+            if start_date is not None:
+                mask &= night_dts >= pd.to_datetime(start_date)
+            if end_date is not None:
+                mask &= night_dts <= pd.to_datetime(end_date)
+            filtered_nights = night_dts[mask].strftime('%Y-%m-%d').tolist()
+            logger.info(
+                f"Filtering cache to {len(filtered_nights)} nights "
+                f"({start_date} to {end_date})"
+            )
+            cache = cache.filter_nights(filtered_nights, label='date range')
+
+        return cache
 
     @classmethod
     def exists(cls, cache_dir: Path) -> bool:
