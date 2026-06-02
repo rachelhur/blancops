@@ -10,66 +10,94 @@ logger = logging.getLogger(__name__)
 def setup_network():
     pass
 
+def build_mlp(in_dim: int, hidden: tuple[int, ...], out_dim: int,
+              layernorm: bool = True,
+              activation: type[nn.Module] = nn.ReLU) -> nn.Sequential:
+    """MLP with optional LayerNorm per hidden layer (important for RL stability)."""
+    layers: list[nn.Module] = []
+    d = in_dim
+    if len(hidden) < 1:
+        raise ValueError("Number of layers cannot be less than 1")
+    for h in hidden:
+        layers.append(nn.Linear(d, h))
+        if layernorm:
+            layers.append(nn.LayerNorm(h))
+        layers.append(activation())
+        d = h
+    layers.append(nn.Linear(d, out_dim))
+    return nn.Sequential(*layers)
+
 class MLP(nn.Module):
-    """Deep Q-Network mapping observations to action-values.
-    """
-    def __init__(self, input_dim, output_dim, hidden_dim=128, activation=None):
-        super(MLP, self).__init__()
-        self.activation = nn.ReLU if activation is None else activation 
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, hidden_dim),
-            self.activation(),
-            nn.Linear(hidden_dim, output_dim)
-        )
-    def forward(self, x_glob, x_bin=None, y_data=None):
-        return self.net(x_glob)
+    def __init__(self, in_dim: int, hidden: tuple[int, ...], out_dim: int,
+                 layernorm: bool = True,
+                 activation: type[nn.Module] = nn.ReLU):
+        super().__init__()
+        self.net = build_mlp(in_dim, hidden, out_dim, layernorm, activation)
+
+    def forward(self, x):
+        return self.net(x)
 
 class ContextualScoreMLP(nn.Module):
     """
-    Outputs multiple scores for each input
+    Scores each candidate from [encoded global state, candidate features].
     """
-    def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, nlayers=3, use_contextual_gating=False, activation=None):
-        super(ContextualScoreMLP, self).__init__()
+
+    def __init__(self, global_dim: int, bin_feat_dim: int,
+                 hidden: tuple[int, ...] = (256, 256),
+                 score_dim: int = 1,
+                 global_enc_dim: int | None = 128,
+                 global_enc_hidden: tuple[int, ...] = (128,),
+                 use_contextual_gating: bool = False,
+                 layernorm: bool = True,
+                 activation: type[nn.Module] = nn.LeakyReLU):
+        super().__init__()
         self.score_dim = score_dim
-        self.activation = nn.LeakyReLU if activation is None else activation
         self.use_contextual_gating = use_contextual_gating
+ 
+        # --- global encoder ---------------------------------------------------
+        if global_enc_dim is None:
+            self.global_encoder = None
+            g_dim = global_dim
+        else:
+            self.global_encoder = build_mlp(
+                global_dim, global_enc_hidden, global_enc_dim,
+                layernorm=layernorm, activation=activation,
+            )
+            g_dim = global_enc_dim
+ 
+        # --- contextual gating (candidate feats, conditioned on g) ------------
         if use_contextual_gating:
             self.gate_net = nn.Sequential(
-                nn.Linear(global_dim, bin_feat_dim),
-                nn.Sigmoid()
-                )
-        input_dim = global_dim + bin_feat_dim
-        
-        layers = []
-        if nlayers < 0:
-            raise ValueError("Number of layers cannot be less than 1")
-        if nlayers == 1:
-            layers.append(nn.Linear(input_dim, score_dim))
-        else:
-            layers.append(nn.Linear(input_dim, hidden_dim))
-            layers.append(self.activation())
-            for _ in range(nlayers - 2):
-                layers.append(nn.Linear(hidden_dim, hidden_dim))
-                layers.append(self.activation())
-            layers.append(nn.Linear(hidden_dim, score_dim))
-        self.net = nn.Sequential(*layers)
-
+                nn.Linear(g_dim, bin_feat_dim),
+                nn.Sigmoid(),
+            )
+ 
+        # --- shared per-candidate scorer -------------------------------------
+        self.net = build_mlp(
+            g_dim + bin_feat_dim, hidden, score_dim,
+            layernorm=layernorm, activation=activation,
+        )
+ 
     def forward(self, x_glob, x_bin, y_data=None):
         batch_size, n_bins, _ = x_bin.shape
-        x_glob = x_glob.unsqueeze(1) # (batch, 1, glob_dim)
-        x_glob_exp = x_glob.expand(-1, n_bins, -1) # (batch, n_bins, glob_dim)
+ 
+        # encode global state once, then expand across candidates
+        g = x_glob if self.global_encoder is None else self.global_encoder(x_glob)
+        g = g.unsqueeze(1)                       # (batch, 1, g_dim)
+        g_exp = g.expand(-1, n_bins, -1)         # (batch, n_bins, g_dim)
+ 
         if self.use_contextual_gating:
-            gate_mask = self.gate_net(x_glob_exp)
+            gate_mask = self.gate_net(g_exp)
             x_bin = x_bin * gate_mask
-        else:
-            pass
-        x = torch.cat((x_glob_exp, x_bin), dim=-1) # (batch, n_bins, glob_dim + bin_dim)
+ 
+        x = torch.cat((g_exp, x_bin), dim=-1)    # (batch, n_bins, g_dim + bin_dim)
         scores = self.net(x)
-        joint_action_scores = scores.view(batch_size, -1) # flattens last dim (filter) first --> [bin0filter0, bin0filter1, ... bin1filter0, bin1filter1, ... binNfilterM]
-        return joint_action_scores 
-    
+ 
+        # flattens last dim (filter) first:
+        # [bin0filter0, bin0filter1, ... bin1filter0, ...]
+        joint_action_scores = scores.view(batch_size, -1)
+        return joint_action_scores
+
 
 class DualStreamMLP(nn.Module):
     def __init__(self, global_dim, bin_feat_dim, hidden_dim, score_dim=1, activation=None, use_contextual_gating=False,
@@ -86,12 +114,8 @@ class DualStreamMLP(nn.Module):
             nn.LayerNorm(hidden_dim) if use_layer_norm else nn.Identity(),
             self.activation()
         )
-        self.net = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.LayerNorm(hidden_dim) if use_layer_norm else nn.Identity(),
-            self.activation(),
-            nn.Linear(hidden_dim, score_dim) 
-        )
+        self.net = build_mlp(hidden_dim * 2, (hidden_dim,), score_dim,
+                             layernorm=use_layer_norm, activation=self.activation)
 
     def forward(self, x_glob, x_bin, y_data=None):
         batch_size, n_bins, _ = x_bin.shape
