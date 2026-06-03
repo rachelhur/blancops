@@ -20,8 +20,9 @@ def build_normalizer_kwargs(norm_config: NormalizationConfig, do_filt=True) -> d
         'fractional_norm_feature_names': [],
         'z_score_feature_names': [],
         'local_mean_z_score_feature_names': [],
+        'local_z_score_feature_names': [],
     }
-    
+
     name_map = {
         'cyclical': 'cyclical_feature_names',
         'sin': 'sin_norm_feature_names',
@@ -29,23 +30,29 @@ def build_normalizer_kwargs(norm_config: NormalizationConfig, do_filt=True) -> d
         'fractional': 'fractional_norm_feature_names',
         'z_score': 'z_score_feature_names',
         'local_mean_z': 'local_mean_z_score_feature_names',
+        'local_z_score': 'local_z_score_feature_names',
     }
-    
+
     for feature, requested_norms in norm_config.feature_norm_mappings.items():
-        for norm in requested_norms:
-            if norm is not None:
-                target_list = name_map[norm]
-                kwargs[target_list].append(feature)
+        if do_filt and feature in _FILTER_DEP_FEATURE_NAMES:
+            feat_names = [f"{feature}_{filt}" for filt in FILTER2IDX.keys()]
+        else:
+            feat_names = [feature]
+        for feat_name in feat_names:
+            for norm in requested_norms:
+                if norm is not None:
+                    kwargs[name_map[norm]].append(feat_name)
     kwargs['do_cyclical_norm'] = len(kwargs['cyclical_feature_names']) > 0
     kwargs['do_sin_norm'] = len(kwargs['sin_norm_feature_names']) > 0
     kwargs['do_log_norm'] = len(kwargs['log_norm_feature_names']) > 0
     kwargs['do_fractional_norm'] = len(kwargs['fractional_norm_feature_names']) > 0
     kwargs['do_z_score_norm'] = len(kwargs['z_score_feature_names']) > 0
     kwargs['do_local_mean_z_score'] = len(kwargs['local_mean_z_score_feature_names']) > 0
-    
+    kwargs['do_local_z_score'] = len(kwargs['local_z_score_feature_names']) > 0
+
     # Pass through the fix_nans flag
     kwargs['fix_nans'] = norm_config.fix_nans
-    
+
     return kwargs
 
 def expand_feature_set(feature_names, cyclical_feature_names, do_filt=True):
@@ -105,31 +112,34 @@ def apply_cyclical_features(features, base_names, cyclical_names):
             
 class StateNormalizer:
     def __init__(
-        self, 
+        self,
         state_feature_names,
         sin_norm_feature_names,
         log_norm_feature_names,
         fractional_norm_feature_names,
         z_score_feature_names,
         local_mean_z_score_feature_names,
-        do_sin_norm=True, 
-        do_log_norm=True, 
-        do_fractional_norm=True, 
-        do_z_score_norm=True, 
+        local_z_score_feature_names=None,
+        do_sin_norm=True,
+        do_log_norm=True,
+        do_fractional_norm=True,
+        do_z_score_norm=True,
         do_local_mean_z_score=True,
+        do_local_z_score=False,
         fix_nans=True,
         do_cyclical_norm=None,
         cyclical_feature_names=None,
         sentinel_value=-1
     ):
         self.feature_names = state_feature_names
-        
+
         # Config Flags
         self.do_sin = do_sin_norm
         self.do_log = do_log_norm
         self.do_frac = do_fractional_norm
         self.do_z = do_z_score_norm
         self.do_rel = do_local_mean_z_score
+        self.do_local_z = do_local_z_score
         self.do_cyclical_norm = do_cyclical_norm
         self.cyclical_feature_names = cyclical_feature_names
         self.sentinel_value = sentinel_value
@@ -137,46 +147,30 @@ class StateNormalizer:
 
         # Pre-compute masks ONCE during initialization
         self._build_masks(
-            sin_norm_feature_names, 
-            log_norm_feature_names, 
-            fractional_norm_feature_names, 
-            z_score_feature_names, 
-            local_mean_z_score_feature_names
+            sin_norm_feature_names,
+            log_norm_feature_names,
+            fractional_norm_feature_names,
+            z_score_feature_names,
+            local_mean_z_score_feature_names,
+            local_z_score_feature_names or [],
         )
 
-    def _build_masks(self, sin_feats, log_feats, frac_feats, z_feats, rel_feats):
+    def _build_masks(self, sin_feats, log_feats, frac_feats, z_feats, rel_feats, local_z_feats):
         """Build boolean masks for each normalization type."""
         names = self.feature_names
-        
-        
+
         def matches(feat, allowed):
-            base = _base_feature_name(feat)
-            return base in allowed
+            return feat in allowed or _base_feature_name(feat) in allowed
 
-
-        # Base exclusion masks
-        # rel_exclusion = np.array(['rel_' in f for f in names], dtype=bool)
-        # self.masks = {
-        #     'sin': np.array([any(nf == f for nf in sin_feats) for f in names]) & ~rel_exclusion,
-        #     'log': np.array([any(nf == f for nf in log_feats) for f in names]) & ~rel_exclusion,
-        #     'frac': np.array([any(nf == f for nf in frac_feats) for f in names]) & ~rel_exclusion,
-        #     'rel': np.array([any(nf == f for nf in rel_feats) for f in names]),
-        #     'z': np.array([any(f == nf or f.endswith(f"_{nf}") for nf in z_feats) for f in names]) & ~rel_exclusion,
-        # }
-        # Cache active feature names for dictionary building later
-        # self.active_features = {
-        #     name: [f for f, m in zip(names, mask) if m] 
-        #     for name, mask in self.masks.items()
-        # }
-        
         self.masks = {
             'sin': np.array([matches(f, sin_feats) for f in names]),
             'log': np.array([matches(f, log_feats) for f in names]),
             'frac': np.array([matches(f, frac_feats) for f in names]),
             'z': np.array([matches(f, z_feats) for f in names]),
             'rel': np.array([matches(f, rel_feats) for f in names]),
+            'local_z': np.array([matches(f, local_z_feats) for f in names]),
         }
-        
+
         self.active_features = {
             name: [f for f, m in zip(names, mask) if m]
             for name, mask in self.masks.items()
@@ -202,7 +196,7 @@ class StateNormalizer:
         """TRAINING MODE: Calculates stats from training indices, applies them, and returns the stats dictionaries."""
         if train_state_idxs is None:
             raise ValueError("train_state_idxs must be provided in fit_transform mode.")
-            
+
         is_torch, backend, m = self._get_backend(state)
         self._apply_stateless_norms(state, backend, m)
 
@@ -210,27 +204,29 @@ class StateNormalizer:
 
         # 1. Z-Score (Global Mean/Std)
         if self.do_z and m['z'].sum() > 0:
-            # logger.info(f"Performing Z-Score Normalization for {self.active_features['z']}")
             train_data = state[train_state_idxs][..., m['z']]
             train_flat = train_data.reshape(-1, train_data.shape[-1])
-            
+
             mean = backend.nanmean(train_flat, dim=0) if is_torch else np.nanmean(train_flat, axis=0)
             std = self._calc_std(train_flat, mean, backend, is_torch)
-            
+
             state[..., m['z']] = (state[..., m['z']] - mean) / std
             z_stats_out = self._build_stats_dict(self.active_features['z'], mean, std)
 
         # 2. Relative Local Mean Z-Score (Global Std only)
         if self.do_rel and m['rel'].sum() > 0:
-            # logger.info(f"Performing Relative Local Mean Z-Score Normalization for {self.active_features['rel']}")
             train_data = state[train_state_idxs][..., m['rel']]
             train_flat = train_data.reshape(-1, train_data.shape[-1])
-            
+
             mean = backend.nanmean(train_flat, dim=0) if is_torch else np.nanmean(train_flat, axis=0)
             std = self._calc_std(train_flat, mean, backend, is_torch)
-            
+
             state[..., m['rel']] = state[..., m['rel']] / std
             rel_stats_out = self._build_stats_dict(self.active_features['rel'], mean, std)
+
+        # 3. Local Z-Score (per-sample std across bins — no global stats stored)
+        if self.do_local_z and m['local_z'].sum() > 0:
+            self._apply_local_z_score(state, m['local_z'], is_torch)
 
         if self.fix_nans:
             nan_mask = backend.isnan(state)
@@ -254,6 +250,10 @@ class StateNormalizer:
             _, std = self._extract_stats_arrays(rel_stats_dict, self.active_features['rel'], backend, state)
             state[..., m['rel']] = state[..., m['rel']] / std
 
+        # 3. Local Z-Score (per-sample std across bins — no stored stats needed)
+        if self.do_local_z and m['local_z'].sum() > 0:
+            self._apply_local_z_score(state, m['local_z'], is_torch)
+
         nan_mask = backend.isnan(state) if self.fix_nans else None
         if self.fix_nans:
             state[nan_mask] = self.sentinel_value
@@ -263,11 +263,25 @@ class StateNormalizer:
     def _apply_stateless_norms(self, state, backend, m):
         if self.do_sin and m['sin'].sum() > 0:
             state[..., m['sin']] = backend.sin(state[..., m['sin']])
-            # state[..., m['sin']][state[backend.isnan(state[..., m['sin']])]] 
         if self.do_log and m['log'].sum() > 0:
             state[..., m['log']] = backend.log(state[..., m['log']] + 1e-9)
         if self.do_frac and m['frac'].sum() > 0:
             state[..., m['frac']] = 2 * (state[..., m['frac']] - 0.5)
+
+    def _apply_local_z_score(self, state, mask, is_torch):
+        # Only meaningful for 3D bin-feature tensors (N, N_bins, N_feats).
+        # Silently skips for 2D global-feature tensors.
+        if state.ndim != 3:
+            return
+        local_data = state[..., mask]  # (N, N_bins, K)
+        if is_torch:
+            lmean = torch.nanmean(local_data, dim=-2, keepdim=True)  # (N, 1, K)
+            lvar = torch.nanmean((local_data - lmean) ** 2, dim=-2, keepdim=True)
+            lstd = torch.clamp(torch.sqrt(lvar), min=1e-6)
+        else:
+            lmean = np.nanmean(local_data, axis=-2, keepdims=True)
+            lstd = np.clip(np.nanstd(local_data, axis=-2, keepdims=True), a_min=1e-6, a_max=None)
+        state[..., mask] = local_data / lstd
 
     def _calc_std(self, flat_data, mean, backend, is_torch):
         """Population std, NaN-aware, min-clipped to avoid zero-division. Unified across backends."""
@@ -322,6 +336,7 @@ class StateNormalizer:
         Notes:
             - sin inverse is lossy: arcsin only recovers angles in [-pi/2, pi/2].
             - Cyclical (cos, sin) expansion is NOT undone here.
+            - local_z_score is NOT inverted: per-sample stds are not persisted.
             - Assumes each feature appears in at most one norm-type mask.
         """
         is_torch, backend, m = self._get_backend(state)

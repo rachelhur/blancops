@@ -115,9 +115,10 @@ _NORM_TYPES = Literal[
     'cyclical', # cos/sin - this normalization is run before all others
     'sin', # sin only
     'log',
-    'fractional', # for values bound between 0 and 1 -- performs 2*(val - .5) 
+    'fractional', # for values bound between 0 and 1 -- performs 2*(val - .5)
     'z_score', # standard z-score normalization
-    'local_mean_z', # subtracts the mean of features at a timestamp, then divides by *global* std
+    'local_mean_z', # divides by global std (local mean already in rel_ features)
+    'local_z_score', # divides by per-timestamp std across bins (local mean already in rel_ features)
     None
     ]
 
@@ -159,13 +160,13 @@ _ALLOWED_NORMS_PER_FEATURE = {
     'mean_tiling': ['z_score'],
     'min_tiling': ['z_score'],
     
-    'rel_num_unvisited_fields': {'local_mean_z'},
-    'rel_num_incomplete_fields': {'local_mean_z'},
-    'rel_min_tiling': {'local_mean_z'},
-    'rel_mean_tiling': {'local_mean_z'},
-    'rel_t_since_last_visit': {'local_mean_z', 'log'}, 
-    'rel_moon_distance': {'local_mean_z'},
-    'rel_ha': {'local_mean_z'},
+    'rel_num_unvisited_fields': {'local_mean_z', 'local_z_score'},
+    'rel_num_incomplete_fields': {'local_mean_z', 'local_z_score'},
+    'rel_min_tiling': {'local_mean_z', 'local_z_score'},
+    'rel_mean_tiling': {'local_mean_z', 'local_z_score'},
+    'rel_t_since_last_visit': {'local_mean_z', 'log', 'local_z_score'},
+    'rel_moon_distance': {'local_mean_z', 'local_z_score'},
+    'rel_ha': {'local_mean_z', 'local_z_score'},
     
     't_night': {'fractional'},
     't_survey': {'fractional'},
@@ -227,7 +228,6 @@ _DEFAULT_NORM_MAPPING = {
     't_until_set': ['fractional'],
     't_since_last_visit': ['z_score'],
     'global_mean_tiling': ['fractional'],
-    
 }
 
 _DEFAULT_BC_AZEL_GLOB_FEATURES = [
