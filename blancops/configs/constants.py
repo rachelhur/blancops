@@ -203,7 +203,7 @@ _DEFAULT_NORM_MAPPING = {
     'sky_brightness': ['z_score'],
     'delta_az': ['z_score'],
     'delta_el': ['z_score'],
-    'fwhm': ['z_score'],
+    'fwhm': ['log', 'z_score'],
     'urgency': ['z_score'],
     
     # Bin features
