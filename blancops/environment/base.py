@@ -190,6 +190,8 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._field_id: int = ZENITH_FIELD_ID
         self._bin_num: int = ZENITH_BIN_NUM
         self._filter_idx: int = ZENITH_FILTER_IDX
+        self._last_az: float = 0.0        # parked az (zenith default)
+        self._last_el: float = np.pi / 2  # parked el (zenith default)
         self._sunset_ts: float | None = None
         self._sunrise_ts: float | None = None
         self._night_end_ts: float | None = None
@@ -610,6 +612,10 @@ class BaseBlancoEnv(gym.Env, ABC):
         if self._field_id == ZENITH_FIELD_ID:
             blanco = ephemerides.blanco_observer(time=timestamp)
             ra, dec = new_features['lst'], blanco.lat
+        elif self._bin_num == WAIT_SIGNAL:
+            ra, dec = ephemerides.topographic_to_equatorial(
+                self._last_az, self._last_el, time=timestamp
+            )
         else:
             ra = self._ra_arr[self._field_id]
             dec = self._dec_arr[self._field_id]

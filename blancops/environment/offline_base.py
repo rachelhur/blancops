@@ -15,6 +15,7 @@ import numpy as np
  
 from blancops.environment.base import BaseBlancoEnv, StateSnapshot
 from blancops.configs.constants import WAIT_SIGNAL
+from blancops.ephemerides import ephemerides
  
 import logging
 
@@ -73,8 +74,7 @@ class BaseBlancoOfflineEnv(BaseBlancoEnv):
         # than crashing; log so it's visible in evaluation traces.
         if bin_num == WAIT_SIGNAL:
             logger.debug("Offline env received WAIT_SIGNAL; advancing minimal exptime.")
-            # No filter_idx — defaults to the 90 s WAIT fallback.
-            self._ts += self._get_exposure_time(field_id=self._field_id)
+            self._ts = min(self._ts + 90.0, self._night_end_ts)
         else:
             last_field_id = self._field_id
             exptime = float(self._get_exposure_time(field_id=field_id, filter_idx=filter_idx))
@@ -84,7 +84,13 @@ class BaseBlancoOfflineEnv(BaseBlancoEnv):
             # _record_visit() lives on BaseBlancoEnv, and translates the action's filter_idx
             # to None automatically when tracker is field-only (1D)
             self._record_visit(field_id=field_id, filter_idx=filter_idx)
- 
+
+            az, el = ephemerides.equatorial_to_topographic(
+                ra=self._ra_arr[field_id], dec=self._dec_arr[field_id], time=self._ts
+            )
+            self._last_az = float(az)
+            self._last_el = float(el)
+
             self._field_id = field_id
             self._filter_idx = filter_idx
  
