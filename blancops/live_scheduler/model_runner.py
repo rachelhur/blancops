@@ -7,6 +7,7 @@ observations and provides two implementations:
 - AIModelRunner: placeholder for the production ML-backed model.
 """
 
+import logging
 import random
 import pandas as pd
 import numpy as np
@@ -21,6 +22,8 @@ from blancops.data.lookup_tables import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.live_scheduler.inference.helpers import build_env
 from blancops.rl.agent_factory import AgentFactory
+
+logger = logging.getLogger(__name__)
 
 
 class ModelRunner(ABC):
@@ -143,7 +146,7 @@ class MockModelRunner(ModelRunner):
             compatibility with other production model runners.
         """
 
-        print(
+        logger.info(
             "[Model] Generating mock observing chunk based on telemetry and field masks..."
         )
         out = []
@@ -230,7 +233,7 @@ class AIModelRunner(ModelRunner):
         rollout_snapshot = self.env.save_snapshot()
         obs, info = self.env.get_obs(), self.env.get_info()
 
-        print("[Model] Generating state features and running inference...")
+        logger.info("[Model] Generating state features and running inference...")
         proposed_schedule = self._rollout(init_obs=obs, init_info=info, chunk_size=chunk_size)
 
         self.env.restore_snapshot(rollout_snapshot)

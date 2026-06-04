@@ -128,7 +128,7 @@ class CLIInterface(BaseInterface):
                 logger.info("[Interface] Chunk rejected.")
                 return False
             else:
-                print("[Interface] Invalid input, please enter Y or N.")
+                logger.warning("[Interface] Invalid input, please enter Y or N.")
 
     def check_for_replan_signal(self):
         """CLI has no non-blocking soft-interrupt channel; always returns False."""
