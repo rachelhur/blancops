@@ -50,7 +50,6 @@ _SURVEY_PROGRESS_BASE_KEYS = [
         'num_unvisited_fields',
         'num_incomplete_fields',
         'min_tiling',
-        'mean_tiling'
     ]
 _STALENESS_BASE_KEYS = ['t_since_last_visit']
 _INTERNAL_SENTINEL = np.nan
@@ -162,8 +161,8 @@ def compute_bin_progress_features(
     idx2filter: filter idx -> name mapping. Defaults to ``IDX2FILTER``.
     timestamp:
     last_visit_timestamps:
-    t_since_last_visit_divsor: 
-        
+    t_since_last_visit_divisor:
+
  
     Returns:
         dict with ``num_unvisited_fields``,
@@ -289,17 +288,27 @@ def compute_bin_progress_features(
     nfilters = current_counts.shape[1]
     v_cur_ff = current_counts[v_mask]
     v_tgt_ff = target_counts[v_mask]
-    in_ff_plan = v_tgt_ff > 0
+    in_ff_plan = v_tgt_ff > 0                           # (nv, nf) bool
     max_ff_adj = np.maximum(v_cur_ff, v_tgt_ff)
- 
+
     ff_tiling = np.divide(
         v_cur_ff.astype(np.float32),
         max_ff_adj.astype(np.float32),
         out=np.full(v_cur_ff.shape, np.inf, dtype=np.float32),
         where=in_ff_plan,
     )
- 
-    incomplete_ff = v_cur_ff < v_tgt_ff   # (n_visible_fields, nfilters)
+
+    incomplete_ff = v_cur_ff < v_tgt_ff                 # (nv, nf) bool
+    unvisited_ff  = (v_cur_ff == 0) & in_ff_plan        # (nv, nf) bool
+
+    # Batch all three per-filter bincounts into single (nbins, nfilters) passes.
+    bc_all  = np.zeros((nbins, nfilters), dtype=np.float32)
+    unv_all = np.zeros((nbins, nfilters), dtype=np.float32)
+    inc_all = np.zeros((nbins, nfilters), dtype=np.float32)
+    np.add.at(bc_all,  bins_mem, in_ff_plan.astype(np.float32))
+    np.add.at(unv_all, bins_mem, unvisited_ff.astype(np.float32))
+    np.add.at(inc_all, bins_mem, (incomplete_ff & in_ff_plan).astype(np.float32))
+    act_f_all = bc_all > 0                              # (nbins, nf) bool
 
     for f, filt_name in idx2filter.items():
         if timestamp is not None and last_visit_timestamps is not None:
@@ -308,33 +317,17 @@ def compute_bin_progress_features(
                 in_ff_plan[:, f] & incomplete_ff[:, f],
                 f"t_since_last_visit_{filt_name}",
             )
-        bc_f = np.bincount(
-            bins_mem, weights=in_ff_plan[:, f], minlength=nbins
-        )
-        act_f = bc_f > 0
- 
+        act_f = act_f_all[:, f]
+        bc_f  = bc_all[:, f]
+
         unv = np.full(nbins, _INTERNAL_SENTINEL, dtype=np.float32)
-        np.divide(
-            np.bincount(
-                bins_mem,
-                weights=(v_cur_ff[:, f] == 0) & in_ff_plan[:, f],
-                minlength=nbins,
-            ),
-            bc_f, out=unv, where=act_f,
-        )
+        np.divide(unv_all[:, f], bc_f, out=unv, where=act_f)
         features[f"num_unvisited_fields_{filt_name}"] = unv
- 
+
         inc = np.full(nbins, _INTERNAL_SENTINEL, dtype=np.float32)
-        np.divide(
-            np.bincount(
-                bins_mem,
-                weights=(v_cur_ff[:, f] < max_ff_adj[:, f]) & in_ff_plan[:, f],
-                minlength=nbins,
-            ),
-            bc_f, out=inc, where=act_f,
-        )
+        np.divide(inc_all[:, f], bc_f, out=inc, where=act_f)
         features[f"num_incomplete_fields_{filt_name}"] = inc
- 
+
         s_f_mins = np.full(nbins, np.inf, dtype=np.float32)
         np.minimum.at(s_f_mins, bins_mem, ff_tiling[:, f])
         s_f_mins[~act_f | np.isinf(s_f_mins)] = _INTERNAL_SENTINEL
@@ -635,7 +628,7 @@ class BinFeatureEngineer:
         ephemeris_keys = [
             'ra', 'dec', 'az', 'el', 'ha', 'airmass',
             'moon_distance', 'pointing_distance', 'delta_az', 'delta_el',
-            'rel_ha', 'rel_moon_distance', 't_until_set'
+            't_until_set',
         ]
         features = {
             k: np.full(shape, np.nan, dtype=np.float32) for k in ephemeris_keys
@@ -873,26 +866,30 @@ class BinFeatureEngineer:
 
     def _fill_ephemeris_only(self, features, pt_df):
         """Fast path for configs that don't request any history features."""
-        timestamps = pt_df['timestamp'].to_numpy()
-        pointing_ras = pt_df['ra'].to_numpy()
-        pointing_decs = pt_df['dec'].to_numpy()
-        for i, t in tqdm(
-            enumerate(timestamps), total=len(timestamps),
+        i = 0
+        for _, group in tqdm(
+            pt_df.groupby('night', sort=False),
+            total=pt_df['night'].nunique(),
             desc='Computing bin ephemeris',
         ):
             sunset_ts, sunrise_ts = get_night_boundaries(
-                t, sun_el_limit=_SUN_EL_LIMIT_DEG
+                group['timestamp'], sun_el_limit=_SUN_EL_LIMIT_DEG
             )
             night_duration_sec = sunrise_ts - sunset_ts
-            eph = compute_bin_ephemeris_features(
-                timestamp=t,
-                pointing_radec=(pointing_ras[i], pointing_decs[i]),
-                hpGrid=self.hpGrid,
-                night_duration_in_sec=night_duration_sec
-            )
-            for k, v in eph.items():
-                if k in features:
-                    features[k][i] = v
+            ts = group['timestamp'].to_numpy()
+            ras = group['ra'].to_numpy()
+            decs = group['dec'].to_numpy()
+            for j in range(len(group)):
+                eph = compute_bin_ephemeris_features(
+                    timestamp=ts[j],
+                    pointing_radec=(ras[j], decs[j]),
+                    hpGrid=self.hpGrid,
+                    night_duration_in_sec=night_duration_sec,
+                )
+                for k, v in eph.items():
+                    if k in features:
+                        features[k][i] = v
+                i += 1
  
     # ------------------------------------------------------------------
     # Stacking

@@ -50,8 +50,8 @@ _FILTER_DEP_FEATURE_NAMES = [
     'global_mean_tiling',
     'urgency', 'sky_brightness', 'is_filter', 'survey_progress',
     # bin features
-    'min_tiling', 'num_unvisited_fields', 'num_incomplete_fields', 'mean_tiling', 't_since_last_visit',
-    'rel_min_tiling', 'rel_num_unvisited_fields', 'rel_num_incomplete_fields', 'rel_mean_tiling', 'rel_t_since_last_visit',
+    'min_tiling', 'num_unvisited_fields', 'num_incomplete_fields', 't_since_last_visit',
+    'rel_min_tiling', 'rel_num_unvisited_fields', 'rel_num_incomplete_fields', 'rel_t_since_last_visit',
     ]
 
 
@@ -114,7 +114,6 @@ _BIN_FEATURES = [
     "num_unvisited_fields",
     "num_incomplete_fields",
     "min_tiling", 
-    "mean_tiling", 
     "rel_num_unvisited_fields", # The number of univisited fields in this bin divided by total number of fields in this bin
     "rel_num_incomplete_fields",  # The number of incomplete fields in this bin divided by total number of fields in this bin
     "rel_min_tiling",	# The minimum tiling amongst all fields in this bin, divided by that field's target tiling.
@@ -174,13 +173,11 @@ _ALLOWED_NORMS_PER_FEATURE = {
     'pointing_distance': ['z_score'],
     'num_unvisited_fields': ['z_score'],
     'num_incomplete_fields': ['z_score'],
-    'mean_tiling': ['z_score'],
     'min_tiling': ['z_score'],
     
     'rel_num_unvisited_fields': {'local_mean_z', 'local_z_score'},
     'rel_num_incomplete_fields': {'local_mean_z', 'local_z_score'},
     'rel_min_tiling': {'local_mean_z', 'local_z_score'},
-    'rel_mean_tiling': {'local_mean_z', 'local_z_score'},
     'rel_t_since_last_visit': {'local_mean_z', 'log', 'local_z_score'},
     'rel_moon_distance': {'local_mean_z', 'local_z_score'},
     'rel_ha': {'local_mean_z', 'local_z_score'},
@@ -229,7 +226,6 @@ _DEFAULT_NORM_MAPPING = {
     'num_unvisited_fields': ['z_score'],
     'num_incomplete_fields': ['z_score'],
     'min_tiling': ['z_score'],
-    'mean_tiling': ['z_score'],
     
     'rel_num_unvisited_fields': ['local_mean_z'],
     'rel_num_incomplete_fields': ['local_mean_z'],
