@@ -27,14 +27,14 @@ def get_args():
     parser.add_argument('-c', '--field_choice_method', type=str, default='interp', help="Options: random, interp")
 
     # Field and Schedule info
-    parser.add_argument('--field_lookup_dir', type=Path, default=None, required=False, help='Relative path to field lookup dir')
-    parser.add_argument('-d', '--observing_nights', type=str, nargs='*', default=['2026-06-23-half1', '2026-06-24-half1'],
+    parser.add_argument('--field_lookup_dir', type=Path, required=True, help='Relative path to field lookup dir')
+    parser.add_argument('-d', '--observing_nights', type=str, nargs='*', default=['2026-06-23-half2', '2026-06-24-half2'],
                         help="List of observing nights. Format [YY-MM-DD-NIGHT, ...] (e.g. 2026-06-23-full)"
                         )
     parser.add_argument('--obs_history_filename', type=str, default=None, help='If provided, will load historical observations to initialize the first state.')
 
     # Output info
-    parser.add_argument('-o', '--outdir', type=Path, default=None, required=False, help='Relative path to output directory')
+    parser.add_argument('-o', '--outdir', type=Path, default=None, required=True, help='Relative path to output directory')
     parser.add_argument('--schedule_prefix', type=str, default='schedule', help='Base filename prefix for the generated schedule output')
     parser.add_argument('--save_sispi', action='store_true', help='Whether to save SISPI-format json files.')
     parser.add_argument('--save_movie', action='store_true', help='Whether to save gif files.')
@@ -60,26 +60,24 @@ def main():
 
     # Parse args
     args = get_args()
-
+    
     # ------------------------------
     # LOAD TARGET FIELDS
     # ------------------------------
 
-    if args.field_lookup_dir is None:
-        lookup_dir = Path(WORKSPACE / "data" / "test_suite" / "healpix-grid")
-    else:
-        lookup_dir = args.field_lookup_dir
-
+    lookup_dir = Path(args.field_lookup_dir)
     lookups = LookupTables.load_from_dir(data_dir=lookup_dir)
 
     # ---------------------------------
     # SETUP LOGGER AND OUTDIR
     # ---------------------------------
     device = get_system_device()
+    seed_everything(args.seed)
 
     if args.outdir is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        outdir = lookup_dir / "example_schedules" / "initial_tests" / f"{args.schedule_prefix}_run_{timestamp}"
+        outdir = lookup_dir.parents[0].mkdir(parents=True, exist_ok=True)
+        outdir = outdir / f"{args.schedule_prefix}_run_{timestamp}"
     else:
         outdir = Path(args.outdir)
 
@@ -91,7 +89,18 @@ def main():
         filename='offline_schedule.log',
         use_tqdm=True
     )
-    seed_everything(args.seed)
+    
+    logger.info("Arguments:")
+    for key, value in vars(args).items():
+        logger.info(
+            "\t" + f"{key}: {value}"
+            )
+
+    if args.outdir is None:
+        logger.info(f"No output directory specified. Using {outdir} as output directory.")
+    else:
+        logger.info(f"Using {outdir} as output directory.")
+        
 
     # ---------------------------------
     # LOAD AGENT, MODEL, AND OFFLINE RUNNER
