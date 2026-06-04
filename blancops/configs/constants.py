@@ -76,49 +76,50 @@ _GLOBAL_FEATURES = [
     "lst",  # azel: always use
     "ha",   # azel: always use
     "el",   # azel: always use
-    "ra",   # azel: don't use
-    "az",   # azel: don't use
+    "ra",   # azel: don't use - footprint-specific memorization
+    "az",   # azel: don't use - redundant with ha, el
+    "dec",  # azel: don't use - redundant with el, airmass, ha, and also footprint-specific memorization
     "airmass", # always use
-    "dec",  # azel: maybe use, but probably not...
-                    # different decs are susceptible to different levels of galactic extinction
-                    # definitely use in action feature space (per-bin features) as a depth feature
-    "sun_ra", "sun_dec", "sun_az", "sun_el",    # don't use sun_ra; azel: don't use source az's
-    "moon_ra", "moon_dec", "moon_az", "moon_el",    # azel: don't use source az's
+    "sun_ra", "sun_dec",    # always use
+    "sun_az", "sun_el",    # always use
+    "moon_ra", "moon_dec",   # always use
+    "moon_az", "moon_el",       # always use
     "moon_distance",  # always use
+    "sun_distance",  # always use
     # "num_unvisited_fields",
     # "num_incomplete_fields",
     # "min_tiling",
     "filter_wave", "filter_idx", "is_filter", # is_filter one-hot encoded is probably best
     # "urgency",    #  loss of generality
     # "survey_progress",   # mostly parallel to mean_tiling
-    "global_mean_tiling",
-    "sky_brightness",
-    "moon_phase",  # always use
+    "global_mean_tiling",   # always use
+    "sky_brightness",   # always use
+    "moon_phase",     # always use
     "fwhm",
 ]
 
 
 _BIN_FEATURES = [
     "ha",
-    "airmass",   # MI shows small dependence with filter and bin choice
-    "moon_distance",     # 
-    "rel_ha", "rel_moon_distance", 
-    "delta_az", 
-    "delta_el", 
+    "airmass",   # always use
+    "moon_distance",   # always use
+    "sun_distance",   # always use
+    "rel_ha", "rel_moon_distance",
+    "delta_az",    # always use
+    "delta_el",    # always use
     "az", 
     "el", 
     "ra",		# don't use - specific to DES footprint and could cause memorization
-                    # but also, MI shows small dependence
-    "dec",      # don't use - specific to DES footprint and will likely cause memorization
-    "pointing_distance", 
-    "num_unvisited_fields",
-    "num_incomplete_fields",
-    "min_tiling", 
+    "dec",      # test
+    "pointing_distance",       # test
+    "num_unvisited_fields",      # test
+    "num_incomplete_fields",      # test
+    "min_tiling",       # test
     "rel_num_unvisited_fields", # The number of univisited fields in this bin divided by total number of fields in this bin
     "rel_num_incomplete_fields",  # The number of incomplete fields in this bin divided by total number of fields in this bin
     "rel_min_tiling",	# The minimum tiling amongst all fields in this bin, divided by that field's target tiling.
     "rel_t_since_last_visit", # The last time since this bin has been visited in the survey minus the mean "last time since last visit" across all bins at this timestamp 
-    "t_until_set", # 
+    "t_until_set", # always use
     "t_since_last_visit" # use rel_t_since_last_visit instead
                             # the z-score norm bakes in an assumed survey cadence
                             # resulting in loss of generality for future surveys
@@ -158,6 +159,7 @@ _ALLOWED_NORMS_PER_FEATURE = {
     'moon_dec': {'z_score'},
     
     'moon_distance': {'z_score'},
+    'sun_distance': {'z_score'},
     'airmass': {'log', 'z_score'},
     'pointing_distance': {'z_score'},
     'sky_brightness': {'z_score'},
@@ -214,6 +216,7 @@ _DEFAULT_NORM_MAPPING = {
     
     # Image quality
     'moon_distance': ['z_score'],
+    'sun_distance': ['z_score'],
     'airmass': ['log', 'z_score'],
     'sky_brightness': ['z_score'],
     'delta_az': ['z_score'],

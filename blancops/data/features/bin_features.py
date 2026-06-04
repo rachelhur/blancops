@@ -72,8 +72,8 @@ def compute_bin_ephemeris_features(timestamp, pointing_radec, hpGrid, night_dura
     """Per-timestep ephemeris features for all bins on the hpGrid.
  
     Returns a dict with keys: ``ra``, ``dec``, ``az``, ``el``, ``ha``,
-    ``airmass``, ``moon_distance``, ``pointing_distance``, ``delta_az``,
-    ``delta_el`` ``time_till_set`` — each a length-``nbins`` array.
+    ``airmass``, ``moon_distance``, ``sun_distance``, ``pointing_distance``,
+    ``delta_az``, ``delta_el``, ``time_till_set`` — each a length-``nbins`` array.
  
     ``pointing_radec`` is ``(ra, dec)`` in radians. ``delta_az``/``delta_el``
     are always in true topographic coords regardless of ``hpGrid.is_azel``;
@@ -109,6 +109,9 @@ def compute_bin_ephemeris_features(timestamp, pointing_radec, hpGrid, night_dura
     features['airmass'] = hpGrid.get_airmass(timestamp)
     features['moon_distance'] = hpGrid.get_source_angular_separations(
         'moon', time=timestamp
+    )
+    features['sun_distance'] = hpGrid.get_source_angular_separations(
+        'sun', time=timestamp
     )
     features['pointing_distance'] = hpGrid.get_angular_separations(
         lon=pointing_in_grid[0], lat=pointing_in_grid[1]
@@ -627,7 +630,7 @@ class BinFeatureEngineer:
         shape = (ntimestamps, nbins)
         ephemeris_keys = [
             'ra', 'dec', 'az', 'el', 'ha', 'airmass',
-            'moon_distance', 'pointing_distance', 'delta_az', 'delta_el',
+            'moon_distance', 'sun_distance', 'pointing_distance', 'delta_az', 'delta_el',
             't_until_set',
         ]
         features = {
