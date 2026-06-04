@@ -120,6 +120,7 @@ def build_network(cfg: ExperimentConfig) -> nn.Module:
             hidden_dim=cfg.model.hidden_dim,
             nlayers=cfg.model.nlayers,
             global_enc_dim=cfg.model.global_enc_dim,
+            layernorm=cfg.model.layernorm,
             activation=activation_fn,
             use_contextual_gating=cfg.model.contextual_gating,
         )
