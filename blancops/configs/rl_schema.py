@@ -163,6 +163,7 @@ class BaseAlgConfig(BaseModel):
     contextual_gating: bool = False
     activation: str = "relu"
     global_enc_dim: Optional[int] = 128
+    layernorm: bool = True
 
     @field_validator('global_enc_dim')
     @classmethod
