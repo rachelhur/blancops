@@ -822,7 +822,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         if self.bin_normalizer.do_cyclical_norm:
             apply_cyclical_features(
                 features,
-                self.bin_feature_names,
+                self.base_bin_feature_names,
                 self.bin_normalizer.cyclical_feature_names,
             )
         # 5. Validate (NaN-aware). Only meaningful when history features exist.
