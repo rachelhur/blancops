@@ -9,7 +9,7 @@ import numpy as np
 from blancops.environment.base import StateSnapshot
 from blancops.environment.offline_base import BaseBlancoOfflineEnv
 from blancops.data.features.glob_features import calc_twilight, get_night_boundaries
-from blancops.configs.constants import ZENITH_AIRMASS, FWHM_REF_WAVELENGTH
+from blancops.configs.constants import ZENITH_EL, FWHM_REF_FILTER
 
 import logging
 logger = logging.getLogger(__name__)
@@ -57,13 +57,13 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
 
         # Seed seeing for the forward simulation. There is no measured
         # seeing in a date-string sim, so `initial_fwhm` is interpreted as the
-        # assumed zenith seeing (airmass=1) at the reference wavelength and is
-        # projected to each pointing's airmass/filter by `_get_fwhm`. Base
+        # assumed zenith seeing (elevation=ZENITH_EL) in the reference band and
+        # is projected to each pointing's elevation/filter by `_get_fwhm`. Base
         # atmospheric seeing is held constant across the run.
         if initial_fwhm is not None:
             self._fwhm_ref = float(initial_fwhm)
-            self._fwhm_ref_airmass = ZENITH_AIRMASS
-            self._fwhm_ref_wave = FWHM_REF_WAVELENGTH
+            self._fwhm_ref_el = ZENITH_EL
+            self._fwhm_ref_band = FWHM_REF_FILTER
 
         # Cache prevents double-advancement if _get_night_config
         # is re-entered for a night that's already been started.
