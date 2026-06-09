@@ -50,7 +50,7 @@ class ModelRunner(ABC):
         pass
 
     @abstractmethod
-    def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size):
+    def generate_chunk(self, telemetry, available_fields, masked_field, masked_propids, chunk_size):
         """
         Generate a chunk of proposed observations.
 
@@ -61,8 +61,12 @@ class ModelRunner(ABC):
             "pointing_ra" and "pointing_dec".
         available_fields: list
             Candidate field set available for scheduling.
-        masked_fields: list
-            Fields to avoid in this proposal cycle.
+        masked_field: pandas.DataFrame
+            Field-level masks to avoid this cycle; rows carry at least a
+            "field_id" column.
+        masked_propids: set
+            Propids whose fields should be avoided this cycle (resolved to
+            field_ids via the lookup table).
         chunk_size: int
             Number of sequential observations to propose.
 
@@ -213,7 +217,7 @@ class AIModelRunner(ModelRunner):
         return lookups
         
     def generate_chunk(self, telemetry=None, available_fields=None, masked_field=None,
-                       chunk_size=3, new_fields=None, new_lookup_dir=None,
+                       masked_propids=None, chunk_size=3, new_fields=None, new_lookup_dir=None,
                        ) -> pd.DataFrame:
         """Schedules a chunk of size `chunk_size` observations given the current state.
 
@@ -226,6 +230,15 @@ class AIModelRunner(ModelRunner):
         telemetry = self.resolve_rollout_telemetry(telemetry)
 
         self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
+
+        # Resolve operator field masks (field-level DataFrame + propid set) to a
+        # flat set of field ids and apply before any action-mask refresh.
+        masked_ids = set()
+        if masked_field is not None and len(masked_field):
+            masked_ids |= set(int(fid) for fid in masked_field["field_id"].tolist())
+        if masked_propids:
+            masked_ids |= self.lookups.field_ids_for_propids(masked_propids)
+        self.env.set_masked_fields(masked_ids)
 
         # Sync live env with hardware telemetry, save rollout baseline, run rollout,
         # then restore so live state (including record_visit history) is preserved.
@@ -243,6 +256,10 @@ class AIModelRunner(ModelRunner):
     def record_visit(self, obs_row) -> None:
         """Update the live env's visit history after a hardware submission."""
         self.env.record_visit(obs_row)
+
+    def get_maskable_propids(self) -> list:
+        """Propids available for operator masking, for the UI's choice list."""
+        return self.lookups.available_propids()
 
     def resolve_rollout_telemetry(self, telemetry: dict) -> dict:
         """Normalize raw client telemetry to env-canonical form.
