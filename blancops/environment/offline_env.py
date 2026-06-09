@@ -1,7 +1,7 @@
 """Forward-simulation environment driven by explicit date strings."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, date
 from typing import Optional
 
 import numpy as np
@@ -79,15 +79,20 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         self._validate_feature_config()
 
     @staticmethod
-    def _parse_night_strs(night_strs: list[str]) -> list[tuple[datetime, str]]:
-        """Parse strings like '2026-06-23-half1' or '2026-06-23-full'."""
+    def _parse_night_strs(night_strs: list[str]) -> list[tuple[date, str]]:
+        """Parse strings like '2026-06-23-half1' or '2026-06-23-full'.
+
+        Returns a `date` (the evening date), not a `datetime`, so
+        get_night_boundaries uses it as the canonical evening-date instead of
+        treating it as a midnight-UTC instant in the prior local evening.
+        """
         parsed = []
         for s in night_strs:
             parts = s.split("-")
-            dt = datetime.strptime(
+            night_date = datetime.strptime(
                 "-".join(parts[:3]), "%Y-%m-%d"
-            ).replace(tzinfo=timezone.utc)
-            parsed.append((dt, parts[-1]))
+            ).date()
+            parsed.append((night_date, parts[-1]))
         return parsed
 
     # -----------------------------------------------------------------------
