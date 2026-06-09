@@ -314,6 +314,8 @@ class LookupTables:
  
         # Validate per-field columns
         per_field_cols = ["field", "ra", "dec"]
+        if "propid" in df.columns:
+            per_field_cols = per_field_cols + ["propid"]
         for col in per_field_cols:
             counts = df.groupby("field_id")[col].nunique()
             if (counts > 1).any():
@@ -324,8 +326,11 @@ class LookupTables:
                 )
 
         # Construct lookups ---------------------------------------
+        field_cols = ['field_id', 'field', 'ra', 'dec']
+        if "propid" in df.columns:
+            field_cols = field_cols + ['propid']
         fields_lookup = (
-            df[['field_id', 'field', 'ra', 'dec']]
+            df[field_cols]
             .drop_duplicates()
             .sort_values(by='field_id')
             .set_index('field_id')
@@ -409,6 +414,27 @@ class LookupTables:
         object.__setattr__(
             self, "target_filt_counts", self.target_fidfilt_counts.sum(axis=0)
         )
+
+    def field_ids_for_propids(self, propids) -> set[int]:
+        """Resolve a set of propids to the set of field_ids assigned to them.
+
+        Raises ValueError if the fields table has no `propid` column (lookups
+        built from a field list without propid). Rebuild lookups from a field
+        list that includes `propid` to mask by propid.
+        """
+        if "propid" not in self.fields.columns:
+            raise ValueError(
+                "Loaded lookups have no 'propid' column; rebuild lookups from a "
+                "field list that includes 'propid' to mask by propid."
+            )
+        sel = self.fields["propid"].isin(set(propids))
+        return set(int(fid) for fid in self.fields.index[sel])
+
+    def available_propids(self) -> list[str]:
+        """Sorted unique propids, or [] when the fields table has no propid."""
+        if "propid" not in self.fields.columns:
+            return []
+        return sorted(self.fields["propid"].dropna().unique().tolist())
 
 
 @dataclass(frozen=True)
