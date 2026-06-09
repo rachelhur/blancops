@@ -258,7 +258,6 @@ class LookupTables:
         fields_df: Optional[pd.DataFrame] = None,
         fields_path: Optional[str | Path] = None,
         outdir: Optional[Path] = None,
-        survey_ot_total = None,
         write_to_disk: bool = False,
     ) -> "LookupTables":
         """Build a LookupTables from a JSON fields file."""
@@ -345,7 +344,6 @@ class LookupTables:
             target_fidfilt_counts=target_fidfilt_counts,
             fidfilt_exptime=fidfilt_exptime,
             dir=resolved_dir,
-            # total_ot_sec=survey_ot_total
         )
  
         if write_to_disk:
