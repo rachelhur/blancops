@@ -50,7 +50,13 @@ class LiveBlancoEnv(BaseBlancoEnv):
         survey_night_idx=0,
     ):
         self._survey_night_idx = survey_night_idx
-        
+
+        # Operator field masks (set per chunk via set_masked_fields). Initialized
+        # before super().__init__ so any action-mask refresh during base init is
+        # safe; the positional mask is recomputed once _fids exists.
+        self._masked_field_ids = np.array([], dtype=int)
+        self._field_mask_positional = None
+
         super().__init__(
             cfg=cfg,
             constraints_cfg=constraints_cfg,
@@ -168,6 +174,31 @@ class LiveBlancoEnv(BaseBlancoEnv):
         self._global_state = self._calculate_global_features()
         if self.include_bin_features:
             self._bin_state = self._calculate_bin_features()
+
+    def set_masked_fields(self, field_ids) -> None:
+        """Set the operator-masked field ids for subsequent action-mask refreshes.
+
+        Idempotent. Called fresh at the top of each chunk generation. Field ids
+        not present in the catalog are ignored. The masked set is config-like
+        input, not dynamic episode state, so it is not part of save/restore
+        snapshots.
+        """
+        self._masked_field_ids = np.asarray(
+            sorted(set(int(f) for f in field_ids)), dtype=int
+        )
+        self._field_mask_positional = np.isin(self._fids, self._masked_field_ids)
+
+    def _apply_field_mask(self, sel_valid: np.ndarray) -> np.ndarray:
+        """Zero the validity rows for operator-masked fields.
+
+        Works for both the (nfields, nfilters) filtered mask and the (nfields,)
+        unfiltered mask, since field index is axis 0 in both. `sel_valid` here is
+        a fresh array (result of an `&`), so in-place mutation is safe.
+        """
+        if self._field_mask_positional is None or not self._field_mask_positional.any():
+            return sel_valid
+        sel_valid[self._field_mask_positional] = False
+        return sel_valid
 
     # -----------------------------------------------------------------------
     # BaseBlancoEnv lifecycle hooks

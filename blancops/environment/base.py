@@ -943,6 +943,16 @@ class BaseBlancoEnv(gym.Env, ABC):
             ),
         })
  
+    def _apply_field_mask(self, sel_valid: np.ndarray) -> np.ndarray:
+        """Optional hook: drop operator-masked fields from the validity mask.
+
+        Default is identity (no masking). LiveBlancoEnv overrides this to zero
+        the rows of `sel_valid` for fields the operator has masked. Called by
+        `_update_action_masks` after visibility gating so that both the action
+        mask and `_valid_fields_per_bin` reflect the masking consistently.
+        """
+        return sel_valid
+
     def _update_action_masks(self):
         """Construct the action mask based on airmass / horizon / completion."""
         sun_radec = ephemerides.get_source_ra_dec('sun', time=self._ts)
@@ -974,9 +984,12 @@ class BaseBlancoEnv(gym.Env, ABC):
         sel_valid = self._survey_progress_tracker.get_incomplete_mask()
         if self.do_filt:
             sel_valid = sel_valid & mask_visibility[:, np.newaxis]
-            sel_valid_fields = sel_valid.any(axis=1)
         else:
             sel_valid = sel_valid & mask_visibility
+        sel_valid = self._apply_field_mask(sel_valid)
+        if self.do_filt:
+            sel_valid_fields = sel_valid.any(axis=1)
+        else:
             sel_valid_fields = sel_valid
  
         if self.hpGrid.is_azel:
