@@ -55,11 +55,13 @@ _FILTER_DEP_FEATURE_NAMES = [
     ]
 
 
-
 _DEFAULT_BC_AZEL_GLOB_FEATURES = [
-    't_night', 'moon_phase', 'moon_distance', 'airmass', 'ha', 'lst', 'el',
-    'sun_dec', 'sun_el', 'moon_dec', 'moon_el',
+    't_night', 'moon_phase', 'moon_distance',
+    'airmass', 'ha', 'lst', 'el', 'az',
+    'sun_ra', 'sun_dec', 'sun_az', 'sun_el', 
+    'moon_ra', 'moon_dec', 'moon_az', 'moon_el',
     'is_filter', 'sky_brightness', 'global_mean_tiling',
+    'fwhm'
 ]
 _DEFAULT_BC_AZEL_BIN_FEATURES = [
     'moon_distance', 'airmass', 'el',
@@ -332,11 +334,12 @@ FILTERWAVENORM = 1000.
 FILTER2IDX = {k: i for i, k in enumerate(FILTER2WAVE.keys())}
 IDX2FILTER = {v: k for k, v in FILTER2IDX.items()}
 
-# Reference wavelength (nm) for seeing (FWHM) projection. Used when a pointing
-# carries no filter (zenith / WAIT) so the wavelength term drops out, and as the
-# default band for seeding forward-sim seeing in OfflineBlancoEnv. r-band by
-# convention (matches the obztak seeing reference above).
-FWHM_REF_WAVELENGTH = FILTER2WAVE['r']
+# Reference band for seeing (FWHM) projection. Used when a pointing carries no
+# filter (zenith / WAIT) so the wavelength term drops out, and as the default
+# band for seeding forward-sim seeing in OfflineBlancoEnv. r-band by convention
+# (matches the obztak seeing reference above).
+FWHM_REF_FILTER = 'r'
+FWHM_REF_WAVELENGTH = FILTER2WAVE[FWHM_REF_FILTER]
 
 
 # SIN_NORM_FEATURE_NAMES = []

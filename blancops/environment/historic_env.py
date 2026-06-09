@@ -7,7 +7,7 @@ import numpy as np
  
 from blancops.environment.base import StateSnapshot
 from blancops.data.features.glob_features import get_night_boundaries, project_fwhm
-from blancops.configs.constants import IDX2WAVE, FWHM_REF_WAVELENGTH
+from blancops.configs.constants import IDX2FILTER, FWHM_REF_FILTER
  
 import logging
 
@@ -165,11 +165,11 @@ class HistoricBlancoEnv(BaseBlancoOfflineEnv):
         return self._survey_night_idx / total
 
     def _get_fwhm(
-        self, timestamp: float, airmass: Optional[float] = None,
+        self, timestamp: float, el: Optional[float] = None,
         filter_idx: Optional[int] = None,
     ) -> Optional[float]:
         # Find the nearest expert observation to use as the seeing reference.
-        # The recorded fwhm was measured at the expert's airmass/filter; when
+        # The recorded fwhm was measured at the expert's elevation/filter; when
         # the policy visits a different field or filter, we must project from
         # those reference conditions to the policy's current pointing.
         night_key = self._night_keys[self._night_idx]
@@ -185,20 +185,24 @@ class HistoricBlancoEnv(BaseBlancoOfflineEnv):
         ref_idx = int(np.clip(np.searchsorted(ts_valid, timestamp), 0, len(ts_valid) - 1))
 
         # The smoothed spline (if provided) takes precedence for the fwhm
-        # reference value; the raw data always supplies the reference airmass
+        # reference value; the raw data always supplies the reference elevation
         # and filter so the projection is physically grounded.
         if self._fwhm_night_interps is not None:
             fwhm_ref = float(self._fwhm_night_interps[self._night_idx](timestamp))
         else:
             fwhm_ref = float(fwhm_valid[ref_idx])
 
-        if airmass is None or filter_idx is None:
+        if el is None or filter_idx is None:
             return fwhm_ref
 
-        airmass_ref = float(night_df['airmass'].values[valid][ref_idx])
+        el_ref = float(night_df['el'].values[valid][ref_idx])
         filter_ref = int(night_df['filter_idx'].values[valid][ref_idx])
-        ref_wave = IDX2WAVE.get(filter_ref, FWHM_REF_WAVELENGTH)
-        return project_fwhm(fwhm_ref, airmass_ref, ref_wave, airmass_now=airmass, filter_idx_now=filter_idx)
+        from_band = IDX2FILTER.get(filter_ref, FWHM_REF_FILTER)
+        to_band = IDX2FILTER.get(int(filter_idx), from_band)
+        return project_fwhm(
+            fwhm_ref, to_band=to_band, to_el=el,
+            from_band=from_band, from_el=el_ref,
+        )
 
     def _get_survey_nights_total(self) -> Optional[int]:
         return self.lookups.total_nights

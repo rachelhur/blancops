@@ -208,8 +208,8 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
     # -----------------------------------------------------------------------
 
     def _get_fwhm(
-        self, timestamp: float, airmass: Optional[float] = None,
+        self, timestamp: float, el: Optional[float] = None,
         filter_idx: Optional[int] = None,
     ) -> Optional[float]:
         # Project the seeded zenith seeing onto the current pointing.
-        return self._project_fwhm(airmass, filter_idx)
+        return self._project_fwhm(el, filter_idx)

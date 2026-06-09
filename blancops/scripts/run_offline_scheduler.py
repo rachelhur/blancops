@@ -151,6 +151,7 @@ def main():
         initial_counts=initial_counts,
         initial_last_visit_ot=initial_last_visit_ot,
         initial_ot_at_sunset=initial_ot_at_sunset,
+        initial_fwhm=args.initial_fwhm,
     )
 
     # ---------------------------------

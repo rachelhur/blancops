@@ -218,8 +218,8 @@ class BaseBlancoEnv(gym.Env, ABC):
         # env ignores these entirely and overrides `_get_fwhm` with measured
         # per-night splines.
         self._fwhm_ref: float | None = None
-        self._fwhm_ref_airmass: float = ZENITH_AIRMASS
-        self._fwhm_ref_wave: float = FWHM_REF_WAVELENGTH
+        self._fwhm_ref_el: float = ZENITH_EL
+        self._fwhm_ref_band: str = FWHM_REF_FILTER
 
         # Survey progress tracker - built once at construction so that concrete subclasses can validate it
         target_counts = self.lookups.target_fidfilt_counts if self.do_filt else self.lookups.target_fid_counts
@@ -334,32 +334,36 @@ class BaseBlancoEnv(gym.Env, ABC):
         return None
 
     def _get_fwhm(
-        self, timestamp: float, airmass: Optional[float] = None,
+        self, timestamp: float, el: Optional[float] = None,
         filter_idx: Optional[int] = None,
     ) -> Optional[float]:
         """Seeing FWHM at the current pointing, or None.
 
-        ``airmass`` and ``filter_idx`` describe the pointing being evaluated
-        (already resolved by ``_calculate_global_features``); the forward-sim
-        envs use them to rescale a reference seeing via ``_project_fwhm``,
-        while the historic env evaluates a measured spline by timestamp alone.
+        ``el`` (radians) and ``filter_idx`` describe the pointing being
+        evaluated (already resolved by ``_calculate_global_features``); the
+        forward-sim envs use them to rescale a reference seeing via
+        ``_project_fwhm``, while the historic env evaluates a measured spline
+        by timestamp alone.
         """
         return None
 
     def _project_fwhm(
-        self, airmass: float, filter_idx: int,
+        self, el: float, filter_idx: int,
     ) -> Optional[float]:
         """Closed-loop seeing estimate from the anchored reference triple.
 
         Shared by the live and offline envs. Returns None when no reference
         has been anchored (``_fwhm_ref is None``), so envs that don't request
-        the fwhm feature are unaffected.
+        the fwhm feature are unaffected. Reuses the reference band for
+        filterless (zenith / WAIT) pointings so only the airmass term applies.
         """
         if self._fwhm_ref is None:
             return None
+        from_band = self._fwhm_ref_band
+        to_band = IDX2FILTER.get(int(filter_idx), from_band)
         return project_fwhm(
-            self._fwhm_ref, self._fwhm_ref_airmass, self._fwhm_ref_wave,
-            airmass_now=airmass, filter_idx_now=filter_idx,
+            self._fwhm_ref, to_band=to_band, to_el=el,
+            from_band=from_band, from_el=self._fwhm_ref_el,
         )
 
     def _get_raw_survey_progress(self) -> Optional[np.ndarray]:
@@ -648,9 +652,9 @@ class BaseBlancoEnv(gym.Env, ABC):
                 new_features[f'is_filter_{filt}'] = filt_str == filt
 
         # 5. Hook-derived features — only populated if their source is available.
-        #    airmass/filter_idx are passed so forward-sim envs can rescale a
+        #    el/filter_idx are passed so forward-sim envs can rescale a
         #    reference seeing to the pointing being evaluated.
-        fwhm = self._get_fwhm(timestamp, airmass=new_features['airmass'], filter_idx=self._filter_idx)
+        fwhm = self._get_fwhm(timestamp, el=new_features['el'], filter_idx=self._filter_idx)
         if fwhm is not None:
             new_features['fwhm'] = fwhm
         t_survey = self._get_t_survey()

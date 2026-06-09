@@ -39,6 +39,7 @@ from blancops.ephemerides.time_utils import standardize_time, unix_to_datetime
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
+from blancops.data_quality.seeing import convert_seeing, _DECAM_FWHM
 from blancops.configs.constants import (
     BLANCO_LON, IDX2FILTER, ZENITH_BIN_NUM, ZENITH_FIELD_ID, ZENITH_WAVELENGTH,
     FILTER2WAVE, FILTERWAVENORM, FILTER2IDX, ZENITH_FILTER, IDX2WAVE,
@@ -754,18 +755,6 @@ def normalize_times(time_series, sun_el_limit=-10):
     assert all(time_series.values > 0) and all(time_series.values < 1), "Time fractions should be between 0 and 1"
     return time_series
 
-def calc_inst_teff_rate(df, next_state_idxs):
-    next_state_df = df.iloc[next_state_idxs]
-    current_state_df = df.iloc[next_state_idxs-1]
-    t_diff = next_state_df['timestamp'].values - current_state_df['timestamp'].values
-    teff_no_zen = next_state_df[['teff']].values[:, 0]
-
-    teff_inst_rate = teff_no_zen / t_diff
-    min_rate = np.min(teff_inst_rate)
-    max_rate = np.max(teff_inst_rate)
-    rewards = (teff_inst_rate - min_rate)/max_rate
-    return rewards
-
 
 def calculate_sun_rise_and_set_azel(df):
     rise_times, set_times = calc_sun_rise_and_set_times(df)
@@ -790,22 +779,26 @@ def estimate_fwhm(fwhm, airmass, wavelength, airmass_new, wavelength_new):
     return fwhm_new
 
 
-def project_fwhm(fwhm_ref, airmass_ref, wavelength_ref, airmass_now, filter_idx_now):
-    """Project a reference seeing measurement onto the current pointing.
+def project_fwhm(seeing, to_band, to_el, from_band, from_el):
+    """Project a reference seeing onto a new band and elevation.
 
-    Anchors on a known ``(fwhm, airmass, wavelength)`` triple and rescales it to
-    the current airmass and filter wavelength via Kolmogorov model. Filterless
-    pointings (zenith / WAIT, i.e. ``filter_idx_now`` not in ``IDX2WAVE``) keep
-    a reference wavelength (currently set to i-band) so only the airmass term applies.
+    Thin adapter over ``data_quality.seeing.convert_seeing`` (Kolmogorov model:
+    seeing ~ airmass^0.6 / wavelength^0.2, with the DECam instrument PSF carried
+    in quadrature). The env pipeline carries seeing in plain arcsec, so the value
+    is converted to native angle units in and out. Arguments otherwise match
+    ``convert_seeing``: bands are letters ('u'..'Y'), elevations are in radians.
+    Callers reuse ``from_band`` as ``to_band`` for filterless (zenith / WAIT)
+    pointings so only the airmass term applies.
     """
-    if np.ndim(filter_idx_now) == 0:
-        wavelength_now = IDX2WAVE.get(int(filter_idx_now), wavelength_ref)
-    else:
-        filter_idx_arr = np.asarray(filter_idx_now)
-        wavelength_ref_arr = np.broadcast_to(np.asarray(wavelength_ref), filter_idx_arr.shape)
-        wavelength_now = np.array([
-            IDX2WAVE.get(int(i), wr) for i, wr in zip(filter_idx_arr, wavelength_ref_arr)
-        ])
-    return estimate_fwhm(
-        fwhm_ref, airmass_ref, wavelength_ref, airmass_now, wavelength_now
+    seeing_native = float(seeing) * units.arcsec
+    if seeing_native <= _DECAM_FWHM:
+        raise ValueError(
+            f"project_fwhm: reference seeing {seeing} arcsec is at/below the DECam "
+            f"instrument PSF floor (~{_DECAM_FWHM / units.arcsec:.2f} arcsec); "
+            f"delivered FWHM must exceed it."
+        )
+    projected = convert_seeing(
+        seeing_native, to_band=to_band, to_el=to_el,
+        from_band=from_band, from_el=from_el,
     )
+    return projected / units.arcsec
