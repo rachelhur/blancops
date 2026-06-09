@@ -138,7 +138,7 @@ class BaseBlancoOfflineEnv(BaseBlancoEnv):
         logger.info(f"Night {self._night_idx+1}/{self.max_nights}")
         logger.info(f"start={unix_to_datetime(self._ts)}, end={unix_to_datetime(self._night_end_ts)}")
         logger.info(f"sunset={unix_to_datetime(self._sunset_ts)}, sunrise={unix_to_datetime(self._sunrise_ts)}")
-        logger.info(f"ot_at_sunset={unix_to_datetime(self._ot_at_sunset)}")
+        logger.info(f"ot_at_sunset={self._ot_at_sunset/3600:.2f} hours")
 
 
         # logger.info(
