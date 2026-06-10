@@ -14,13 +14,14 @@ import numpy as np
 from pathlib import Path
 from abc import ABC, abstractmethod
 from blancops.configs.constants import IDX2FILTER
+from blancops.configs.rl_schema import ActionConstraints
 from blancops.data.features.glob_features import get_night_boundaries
+from blancops.environment.live_env import LiveBlancoEnv
 from blancops.ephemerides.time_utils import utc_now
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
 from blancops.data.lookup_tables import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
-from blancops.live_scheduler.inference.helpers import build_env
 from blancops.rl.agent_factory import AgentFactory
 
 logger = logging.getLogger(__name__)
@@ -179,34 +180,54 @@ class MockModelRunner(ModelRunner):
 
 
 class AIModelRunner(ModelRunner):
-    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu", 
-                 field_choice_method: str = "interp"):
+    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu",
+                 field_choice_method: str = "interp", mode='test'):
         self.device = device
-        self.TESTING_MODE = True # XXX remove before production
-        
+        self.TESTING_MODE = mode == 'test' # XXX remove before production
+
         # Fields and Lookups
         self.fields_dir = Path(field_lookup_dir)
         self.lookups = self._get_lookups(fields_path, self.fields_dir)
-        
+
+        # Model
+        self._build_agent(model_path_or_alias=model_path_or_alias, field_choice_method=field_choice_method)
+        logger.info(f"[Model] Loaded model weights from {model_path_or_alias} into memory.")
+
+        if self.TESTING_MODE:
+            now_ts = utc_now()
+            sunset_ts, _ = get_night_boundaries(now_ts, -14)
+            init_ts = max(now_ts, sunset_ts + 60*60)
+            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=init_ts)
+            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': init_ts}
+        else:
+            raise NotImplementedError
+
+        self.env = self._build_env(telemetry_now=telemetry)
+        self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
+
+    def _build_agent(self, model_path_or_alias, field_choice_method):
         # Agent and Model
         factory = AgentFactory() # Defaults to WORKSPACE / "deployable_models"
-        self.agent, self.cfg, norm_stats = factory.build_agent(
+        self.agent, self.cfg, self.norm_stats = factory.build_agent(
             model_path_or_alias=model_path_or_alias,
             lookups=self.lookups,
             field_choice_method=field_choice_method,
             device=self.device
         )
-        
-        self.model_dir = factory.resolve_model_dir(model_path_or_alias)
-        if self.TESTING_MODE:
-            sunset_ts, _ = get_night_boundaries(utc_now(), -20)
-            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=sunset_ts)
-            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': sunset_ts}
-            self.env = build_env(cfg=self.cfg, lookups=self.lookups, norm_stats=norm_stats, telemetry_now=telemetry)
-            self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
-            print(f"[Model] Loaded model weights from {model_path_or_alias} into memory.")
-        else:
-            raise NotImplementedError
+
+    def _build_env(self, telemetry_now):
+        constraints_cfg = ActionConstraints()
+        zscore_stats = self.norm_stats.get('z_score', {})
+        rel_norm_stats = self.norm_stats.get('rel_norm', {})
+        env = LiveBlancoEnv(
+            cfg=self.cfg,
+            constraints_cfg=constraints_cfg,
+            lookups=self.lookups,
+            z_score_stats=zscore_stats,
+            rel_norm_stats=rel_norm_stats,
+            telemetry_init=telemetry_now
+        )
+        return env
 
     @staticmethod
     def _get_lookups(fields_path, fields_dir):
