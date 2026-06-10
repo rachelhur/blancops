@@ -94,8 +94,9 @@ class Checkpointer:
         # File path for this candidate
         ckpt_path = self.outdir / f"checkpoint_epoch_{epoch:03d}_metric_{metric_value:.4f}.pt"
 
+        # Store only the basename so the history stays portable across machines.
         entry = {
-            "filepath": str(ckpt_path),
+            "filepath": ckpt_path.name,
             "metric": float(metric_value),
         }
 
@@ -123,8 +124,9 @@ class Checkpointer:
             # New checkpoint is not good enough → discard
             return
 
-        # Replace worst checkpoint
-        worst_path = Path(worst["filepath"])
+        # Replace worst checkpoint. Resolve by basename against outdir so this
+        # tolerates both new basename entries and any legacy absolute paths.
+        worst_path = self.outdir / Path(worst["filepath"]).name
         if worst_path.exists():
             worst_path.unlink()
 
@@ -157,31 +159,54 @@ class Checkpointer:
         torch.save(deployment_package, self.outdir / filename)
         logger.info(f"Deployment model and norm stats saved to {filename}")
     
-def get_checkpoint(trained_model_dir, device):
-    checkpoints_dir = trained_model_dir / 'checkpoints'
+def resolve_weights_path(model_dir: Path, filename: str = None) -> Path:
+    """Resolve which weights file to load for a model directory.
+    Resolution order:
+        1. explicit filename (model_dir/ or model_dir/checkpoints/)
+        2. deployment artifact: model.pt (checkpoints/ then model_dir/)
+        3. best from history: basename of history[0] joined to checkpoints/
+    """
+    model_dir = Path(model_dir)
+    checkpoints_dir = model_dir / "checkpoints"
 
+    # 1. User-specified file.
+    if filename:
+        if (model_dir / filename).exists():
+            return model_dir / filename
+        return checkpoints_dir / filename
+
+    # 2. Deployment artifact (preferred for live/offline scheduling).
+    for model_pt in (checkpoints_dir / "model.pt", model_dir / "model.pt"):
+        if model_pt.exists():
+            return model_pt
+
+    # 3. Best checkpoint from training history (resolve by basename only).
     history_file = checkpoints_dir / "checkpoint_history.json"
-    
     if history_file.exists():
-        with open(history_file, 'r') as f:
+        with open(history_file, "r") as f:
             history = json.load(f)
-            
         if history:
-            # Your Checkpointer sorts the list so the best model is always at index 0
-            best_checkpoint = history[0]
-            weights_path = Path(best_checkpoint['filepath'])
-            logger.info(f"Auto-detected best checkpoint from history: {weights_path.name} (Metric: {best_checkpoint['metric']:.4f})")
-        else:
-            raise ValueError("checkpoint_history.json is empty!")
-    else:
-        logger.info("No checkpoint_history.json found. Falling back to latest_checkpoint.pt")
-        weights_path = checkpoints_dir / 'latest_checkpoint.pt'
+            # Checkpointer keeps the list sorted so index 0 is the best.
+            best = history[0]
+            weights_path = checkpoints_dir / Path(best["filepath"]).name
+            logger.info(
+                f"Auto-detected best checkpoint from history: {weights_path.name} "
+                f"(Metric: {best['metric']:.4f})"
+            )
+            if weights_path.exists():
+                return weights_path
 
-    assert weights_path.exists(), f"Weights file not found at {weights_path}"
+
+    raise FileNotFoundError(f"Could not find any valid weights in {model_dir}")
+
+
+def get_checkpoint(trained_model_dir, device):
+    weights_path = resolve_weights_path(Path(trained_model_dir))
+
     try:
         checkpoint = torch.load(weights_path, map_location=device)
     except Exception as e:
         logger.warning(f"torch.load failed with default settings: {e}. Retrying with weights_only=False (legacy checkpoint support).")
         checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-    
+
     return checkpoint
