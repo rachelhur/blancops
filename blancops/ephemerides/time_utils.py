@@ -1,5 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dateutil.parser import parse
+from pandas import Timedelta
 
 
 def utc_now():
@@ -70,7 +71,6 @@ def standardize_time(t):
     numerical inputs are already in correct format. Parses string inputs using dateutil
     for flexibility. Objects without a clear timezone are assumed to be in UTC.
 
-
     Arguments
     ---------
     t: float, str, datetime
@@ -81,6 +81,7 @@ def standardize_time(t):
     float
         UNIX timestamp in UTC.
     """
+
     # helper function to check if a string can be parsed as a number
     def is_number(s):
         try:
@@ -105,3 +106,43 @@ def standardize_time(t):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
+
+
+def standardize_timedelta(t):
+    """
+    Ensures a time variable is in standard format: float seconds. Assumes that
+    numerical inputs are already in correct format. Attempts to parse string inputs
+    as numerical values first, then as pandas.Timedelta inputs.
+
+    Arguments
+    ---------
+    t: float, str, timedelta
+        Time variable to standardize.
+
+    Returns
+    -------
+    float
+        Time delta in seconds
+    """
+
+    # helper function to check if a string can be parsed as a number
+    def is_number(s):
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+
+    # keep numerical inputs as is, parse strings into numbers if possible else timedelta
+    if isinstance(t, (int, float)):
+        return float(t)
+    elif isinstance(t, str):
+        if is_number(t):
+            return float(t)
+        td = Timedelta(t)
+    elif isinstance(t, timedelta, Timedelta):
+        td = Timedelta(t)
+    else:
+        raise ValueError("Unsupported time format")
+
+    return td.total_seconds()
