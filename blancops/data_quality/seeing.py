@@ -103,12 +103,9 @@ class Seeing:
     - Provide a near-future prediction via a weighted-average heuristic
 
     Usage:
-    add : ingest one or more measurements (DataFrame/Series or scalar/array kwargs).
-        Measurements are converted to i-band zenith on ingest and kept in self.data;
-        originals are preserved in self.raw.
-    predict : return a single predicted observed FWHM (includes
-        instrument contribution) for a requested band/elevation.
-    prune : drop history older than the configured retention window.
+    - add : ingest one or more measurements of seeing
+    - prune : drop history older than a specified retention window to manage memory
+    - predict : return a single predicted observed seeing FWHM
     """
 
     def __init__(
@@ -257,7 +254,7 @@ class Seeing:
         reference_time = standardize_time(now) if now is not None else utc_now()
         recent = (
             self.data.loc[
-                (self.data["date"] <= reference_time)
+                (self.data["date"] < reference_time)
                 & (self.data["date"] >= (reference_time - self.window)),
                 "seeing",
             ]
