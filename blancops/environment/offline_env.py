@@ -8,6 +8,7 @@ import numpy as np
 
 from blancops.environment.base import StateSnapshot
 from blancops.environment.offline_base import BaseBlancoOfflineEnv
+from blancops.environment.field_mask_schedule import resolve_positional_mask
 from blancops.data.features.glob_features import calc_twilight, get_night_boundaries
 from blancops.environment.seeing_model import ConstantSeeingModel
 from blancops.configs.constants import FWHM_REF_FILTER
@@ -41,9 +42,15 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         initial_last_visit_ot: Optional[np.ndarray] = None,
         initial_ot_at_sunset: float = 0.0,
         initial_fwhm: Optional[float] = None,
+        field_mask_schedule=None,
     ):
         # Parse before super so max_nights is known in time.
         self._night_info = self._parse_night_strs(observing_night_strs)
+        # Initialize mask state before super().__init__ so any action-mask
+        # refresh during base init is safe (schedule disabled => identity); the
+        # positional masks are resolved once _fids exists, then enabled below.
+        self._field_mask_schedule = None
+        self._rule_positional_masks: dict = {}
         super().__init__(
             cfg=cfg,
             constraints_cfg=constraints_cfg,
@@ -78,6 +85,17 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
             )
 
         self._validate_feature_config()
+
+        # Resolve the time-windowed mask schedule to one positional boolean mask
+        # per rule (over self._fids), then enable it. Done after super().__init__
+        # so self._fids exists. propids -> field_ids uses the same lookup call as
+        # the live model runner.
+        if field_mask_schedule is not None:
+            for rule in field_mask_schedule.rules():
+                self._rule_positional_masks[rule] = resolve_positional_mask(
+                    rule, self._fids, lookups.field_ids_for_propids
+                )
+            self._field_mask_schedule = field_mask_schedule
 
     @staticmethod
     def _parse_night_strs(night_strs: list[str]) -> list[tuple[date, str]]:
@@ -208,3 +226,18 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         # _last_visit_ot carry forward via _apply_state_snapshot's
         # None-skip behaviour.
         return StateSnapshot(timestamp=cfg["start_ts"])
+
+    def _apply_field_mask(self, sel_valid: np.ndarray) -> np.ndarray:
+        """Zero validity rows for fields masked by the active schedule rule.
+
+        The active rule is selected by the current sim time (self._ts), so the
+        masking tracks the schedule's time windows. Identity when no schedule is
+        set. Works for both the (nfields, nfilters) and (nfields,) mask shapes
+        since field index is axis 0 in both.
+        """
+        if self._field_mask_schedule is None:
+            return sel_valid
+        rule = self._field_mask_schedule.active_rule(self._ts)
+        positional = self._rule_positional_masks[rule]
+        sel_valid[positional] = False
+        return sel_valid

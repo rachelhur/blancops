@@ -17,6 +17,7 @@ from blancops.utils.sys_utils import seed_everything
 from blancops.io.logger_utils import configure_logger
 from blancops.utils.sys_utils import get_system_device
 from blancops.environment.offline_env import OfflineBlancoEnv
+from blancops.environment.field_mask_schedule import FieldMaskSchedule
 
 import argparse
 from pathlib import Path
@@ -60,6 +61,18 @@ def get_args():
 
     # Evaluation hyperparameters
     parser.add_argument('--num_episodes', type=int, default=1, help='Number of evaluation episodes to run')
+
+    # Field masking (time-windowed propid masks). Omit --mask_baseline_propids to disable.
+    parser.add_argument('--mask_baseline_propids', type=str, nargs='*', default=None,
+                        help='Propids masked outside any mask window (baseline). If omitted, no masking is applied.')
+    parser.add_argument('--mask_baseline_mode', type=str, choices=['mask', 'keep_only'], default='mask',
+                        help="Baseline mask mode: 'mask' hides these propids; 'keep_only' hides all others.")
+    parser.add_argument('--mask_window_start', type=float, default=None, help='Unix ts (UTC) start of the mask window.')
+    parser.add_argument('--mask_window_end', type=float, default=None, help='Unix ts (UTC) end of the mask window.')
+    parser.add_argument('--mask_window_propids', type=str, nargs='*', default=None,
+                        help='Propids for the mask window rule.')
+    parser.add_argument('--mask_window_mode', type=str, choices=['mask', 'keep_only'], default='keep_only',
+                        help="Window mask mode: 'keep_only' hides all propids except these during the window.")
 
     return parser.parse_args()
 
@@ -148,6 +161,16 @@ def main():
         initial_last_visit_ot = np.full(shape=lookups.target_fidfilt_counts.shape, fill_value=np.nan)
         initial_ot_at_sunset = 0.0
 
+    # Build the time-windowed field-mask schedule (None when no masking args given).
+    field_mask_schedule = FieldMaskSchedule.build(
+        baseline_propids=args.mask_baseline_propids,
+        baseline_mode=args.mask_baseline_mode,
+        window_start=args.mask_window_start,
+        window_end=args.mask_window_end,
+        window_propids=args.mask_window_propids,
+        window_mode=args.mask_window_mode,
+    )
+
     env = gym.make(
         id=f"gymnasium_env/{env_name}",
         cfg=model_cfg,
@@ -161,6 +184,7 @@ def main():
         initial_last_visit_ot=initial_last_visit_ot,
         initial_ot_at_sunset=initial_ot_at_sunset,
         initial_fwhm=args.initial_fwhm,
+        field_mask_schedule=field_mask_schedule,
     )
 
     # ---------------------------------
