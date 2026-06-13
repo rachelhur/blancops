@@ -140,7 +140,7 @@ def standardize_timedelta(t):
         if is_number(t):
             return float(t)
         td = Timedelta(t)
-    elif isinstance(t, timedelta, Timedelta):
+    elif isinstance(t, (timedelta, Timedelta)):
         td = Timedelta(t)
     else:
         raise ValueError("Unsupported time format")
