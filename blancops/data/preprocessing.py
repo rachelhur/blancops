@@ -18,7 +18,7 @@ from blancops.math import units
 
 import logging
 
-from blancops.survey.des_consts import _VALID_TEFF_THRESHOLD, _DES_SUN_EL_LIMIT
+from blancops.survey.profiles import DES
 logger = logging.getLogger(__name__)
 
 
@@ -314,14 +314,17 @@ def build_DES_lookups(fits_path=None, outdir=None):
     
     num_fields = df["field_id"].nunique()
     nfilters = len(FILTER2IDX)
-    
-    
+
+    # Resolve survey-profile constants once for use below and in the night loop.
+    sun_el_limit = DES.sun_el_limit
+    valid_teff_threshold = DES.valid_teff_threshold
+
     # Quality threshold — only targets and per-night history derive
     # from this set, so completion checks and seeded state agree.
-    valid_df = df[df["teff"] > _VALID_TEFF_THRESHOLD].copy()
+    valid_df = df[df["teff"] > valid_teff_threshold].copy()
     if len(valid_df) == 0:
         raise ValueError(
-            f"No observations with teff > {_VALID_TEFF_THRESHOLD} in "
+            f"No observations with teff > {valid_teff_threshold} in "
             f"{fits_path}; check input data quality."
         )
     
@@ -393,7 +396,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
     cum_ot = 0.0
         
     for i, (night, night_df) in enumerate(df.groupby("night")):
-        sunset_ts, sunrise_ts = get_night_boundaries(night, sun_el_limit=_DES_SUN_EL_LIMIT)
+        sunset_ts, sunrise_ts = get_night_boundaries(night, sun_el_limit=sun_el_limit)
         night2ot_clock_seconds[night] = cum_ot
         night_dur = sunrise_ts - sunset_ts
         # night2idx[night] = i
@@ -410,7 +413,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
         night2fidfilt_last_visit_ot[night] = fidfilt_last_visit_ot.copy()
 
  
-        valid_night = night_df[night_df["teff"] > _VALID_TEFF_THRESHOLD]
+        valid_night = night_df[night_df["teff"] > valid_teff_threshold]
         if len(valid_night):
             # Visit counts
             field_running += np.bincount(

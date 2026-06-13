@@ -9,10 +9,10 @@ from blancops.configs.enums import *
 from blancops.configs.constants import _DEFAULT_NORM_MAPPING, _FILTER_DEP_FEATURE_NAMES, DES_FITS_PATH, _BIN_FEATURES
 from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, _NORM_TYPES
-from blancops.survey.des_consts import _DES_SUN_EL_LIMIT
+from blancops.survey.profiles import DES
 
 class ActionConstraints(BaseModel): 
-    sun_el_limit: float = _DES_SUN_EL_LIMIT
+    sun_el_limit: float = DES.sun_el_limit
     airmass_limit: float = 3.0
     
     @field_validator('sun_el_limit')
