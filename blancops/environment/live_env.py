@@ -22,6 +22,7 @@ import logging
 import numpy as np
  
 from blancops.environment.base import BaseBlancoEnv, StateSnapshot
+from blancops.environment.seeing_model import PredictiveSeeingModel
 from blancops.data.features.glob_features import get_night_boundaries
 from blancops.ephemerides import ephemerides
 from blancops.configs.constants import (
@@ -68,6 +69,11 @@ class LiveBlancoEnv(BaseBlancoEnv):
         # Live sessions always start fresh; offline envs load this from
         # historical snapshots via offline_base.py._apply_state_snapshot.
         self._ot_at_sunset = 0.0
+        # Rolling seeing predictor, fed by real telemetry readings on each
+        # sync. Built before the first sync below so telemetry_init can seed
+        # it. Cold start falls back to the nominal median in Seeing.predict.
+        if "fwhm" in self.global_feature_names:
+            self._seeing_model = PredictiveSeeingModel(cfg.data.seeing)
         self.sync_telemetry(telemetry=telemetry_init)
         self._validate_feature_config()
     # -----------------------------------------------------------------------
@@ -103,27 +109,23 @@ class LiveBlancoEnv(BaseBlancoEnv):
             )
             self._apply_state_snapshot(snap)
 
-            # Re-anchor the closed-loop seeing estimate on the real reading.
-            # Each chunk rollout then projects forward from this last-telemetry
-            # FWHM (see `_get_fwhm`). Syncs without 'fwhm' preserve the prior
-            # anchor
-            if telemetry.get("fwhm") is not None:
-                self._set_fwhm_reference(
-                    fwhm=telemetry["fwhm"],
-                    ra=telemetry["ra"],
-                    dec=telemetry["dec"],
-                    timestamp=telemetry["timestamp"],
-                    filter_idx=filter_idx,
+            # Ingest the real reading into the rolling seeing history. Each
+            # chunk rollout then predicts forward from accumulated history
+            # (see `_get_fwhm` via the SeeingModel). Syncs without 'fwhm'
+            # preserve the prior history.
+            if telemetry.get("fwhm") is not None and self._seeing_model is not None:
+                _, el = ephemerides.equatorial_to_topographic(
+                    ra=telemetry["ra"], dec=telemetry["dec"],
+                    time=telemetry["timestamp"],
+                )
+                el = max(min(el, np.pi / 2), 0.0)
+                band = IDX2FILTER.get(int(filter_idx), FWHM_REF_FILTER)
+                self._seeing_model.add(
+                    date=telemetry["timestamp"], seeing=telemetry["fwhm"],
+                    band=band, el=el,
                 )
 
         self._refresh_night_boundaries()
-
-        if "fwhm" in self.global_feature_names and self._fwhm_ref is None:
-            raise ValueError(
-                "LiveBlancoEnv: 'fwhm' is a configured global feature but no "
-                "telemetry reading has supplied an 'fwhm' value to anchor the "
-                "closed-loop estimate. Include 'fwhm' in telemetry_init."
-            )
 
         # Recompute observation arrays so downstream agents see fresh
         # state even if no `step` is called between the sync and the
@@ -288,30 +290,9 @@ class LiveBlancoEnv(BaseBlancoEnv):
         return self._sunrise_ts
 
 
-    def _set_fwhm_reference(self, fwhm, ra, dec, timestamp, filter_idx) -> None:
-        """Anchor the closed-loop seeing estimate on a real telemetry reading.
-
-        Stores the measured FWHM together with the elevation and filter band it
-        was observed at, so in-chunk pointings can be rescaled by
-        `_project_fwhm`. Elevation is clipped to ``[0, pi/2]`` matching
-        `compute_global_pointing_features`.
-        """
-        _, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=timestamp)
-        el = max(min(el, np.pi / 2), 0.0)
-        self._fwhm_ref = float(fwhm)
-        self._fwhm_ref_el = el
-        self._fwhm_ref_band = IDX2FILTER.get(int(filter_idx), FWHM_REF_FILTER)
-
     # -----------------------------------------------------------------------
     # Feature-context hook overrides
     # -----------------------------------------------------------------------
-
-    def _get_fwhm(
-        self, timestamp: float, el: Optional[float] = None,
-        filter_idx: Optional[int] = None,
-    ) -> Optional[float]:
-        # Project the last-telemetry seeing onto the pointing being evaluated.
-        return self._project_fwhm(el, filter_idx)
 
     def _get_t_survey(self) -> Optional[float]:
         s_night_idx = self._get_survey_night_idx()

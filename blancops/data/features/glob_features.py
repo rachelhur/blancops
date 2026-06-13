@@ -39,11 +39,11 @@ from blancops.ephemerides.time_utils import standardize_time, unix_to_datetime
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.data_quality.sky_brightness import estimate_sky_brightness
-from blancops.data_quality.seeing import convert_seeing, _DECAM_FWHM
+from blancops.data_quality.seeing import Seeing
 from blancops.configs.constants import (
     BLANCO_LON, IDX2FILTER, ZENITH_BIN_NUM, ZENITH_FIELD_ID, ZENITH_WAVELENGTH,
     FILTER2WAVE, FILTERWAVENORM, FILTER2IDX, ZENITH_FILTER, IDX2WAVE,
-    FWHM_REF_WAVELENGTH,
+    FWHM_REF_WAVELENGTH, FWHM_REF_FILTER,
     ZENITH_AZ, ZENITH_EL, ZENITH_AIRMASS, ZENITH_ZD, ZENITH_HA, ZENITH_OBJECT
 )
 
@@ -121,6 +121,7 @@ def compute_global_pointing_features(timestamp, ra, dec, moon_radec) -> dict:
         )
 
     return features
+
 
 def compute_global_mean_tiling_features(running_counts, target_counts) -> dict:
     """Survey-completion scalars from a running visit-count snapshot.
@@ -353,7 +354,7 @@ class GlobalFeatureEngineer:
 
         df['t_night'] = df.groupby('night')['timestamp'].transform(normalize_times, sun_el_limit=-10.0)
         return df
-    
+
     def _add_moon_distance(self, df: pd.DataFrame) -> pd.DataFrame:
         """Angular separation between pointing and Moon. Live env computes
         this per-step in compute_global_pointing_features; offline does it
@@ -410,7 +411,7 @@ class GlobalFeatureEngineer:
                         band=filt,
                     )
         return df
-    
+
     def _add_global_mean_tiling(self, df: pd.DataFrame) -> pd.DataFrame:
         """Per-row survey-completion scalars: `global_mean_tiling` and per-filter
         variants. Survey-agnostic — depends only on visit counts and targets.
@@ -487,7 +488,7 @@ class GlobalFeatureEngineer:
                 df[f'global_mean_tiling_{filt}'] = out_per_filt[filt]
 
         return df
-    
+
     def _ensure_32_bit(self, df):
         for bin_str, np_bit in zip(['float64', 'int64'], [np.float32, np.int32]):
             cols = df.select_dtypes(include=[bin_str]).columns
@@ -531,7 +532,7 @@ def get_night_boundaries(
     datetime, date, pd.Timestamp, str,
     pd.Series
     ],
-    sun_el_limit: float = -14.0,
+    sun_el_limit: float = -10.5,
     observer_lon_rad: float = -70.8065,
 ) -> tuple[float, float]:
     """Compute (sunset_ts, sunrise_ts) UTC unix timestamps for the
@@ -772,33 +773,58 @@ def calculate_sun_rise_and_set_azel(df):
 
     return rise_azels, set_azels
 
-def estimate_fwhm(fwhm, airmass, wavelength, airmass_new, wavelength_new):
-    C_air = (airmass_new / airmass) ** .6
-    C_wave = (wavelength / wavelength_new) ** .2
-    fwhm_new = fwhm * C_air * C_wave
-    return fwhm_new
+def compute_causal_fwhm(night_df, seeing_cfg) -> np.ndarray:
+    """Per-row causal predicted FWHM (arcsec) for one night.
 
+    Builds a Seeing from seeing_cfg, ingests the night's measured
+    (timestamp, fwhm, band, el) rows, then predicts at each row's own
+    (band, el, timestamp) using strictly-past history. Identical logic to
+    PredictiveSeeingModel in the historic env, here predicting at the
+    expert's own pointing for every row. Rows with a NaN measured fwhm are
+    not ingested; predictions for them still resolve from prior history (or
+    the nominal fallback when none exists).
 
-def project_fwhm(seeing, to_band, to_el, from_band, from_el):
-    """Project a reference seeing onto a new band and elevation.
+    Args
+    ----
+    night_df : pd.DataFrame
+        One night's rows with columns 'timestamp', 'fwhm', 'filter_idx',
+        'el'. Row order is preserved in the output.
+    seeing_cfg : SeeingConfig
+        Predictor parameters.
 
-    Thin adapter over ``data_quality.seeing.convert_seeing`` (Kolmogorov model:
-    seeing ~ airmass^0.6 / wavelength^0.2, with the DECam instrument PSF carried
-    in quadrature). The env pipeline carries seeing in plain arcsec, so the value
-    is converted to native angle units in and out. Arguments otherwise match
-    ``convert_seeing``: bands are letters ('u'..'Y'), elevations are in radians.
-    Callers reuse ``from_band`` as ``to_band`` for filterless (zenith / WAIT)
-    pointings so only the airmass term applies.
+    Returns
+    -------
+    np.ndarray
+        Predicted FWHM in plain arcsec, shape (len(night_df),).
     """
-    seeing_native = float(seeing) * units.arcsec
-    if seeing_native <= _DECAM_FWHM:
-        raise ValueError(
-            f"project_fwhm: reference seeing {seeing} arcsec is at/below the DECam "
-            f"instrument PSF floor (~{_DECAM_FWHM / units.arcsec:.2f} arcsec); "
-            f"delivered FWHM must exceed it."
-        )
-    projected = convert_seeing(
-        seeing_native, to_band=to_band, to_el=to_el,
-        from_band=from_band, from_el=from_el,
+    seeing = Seeing(
+        window=seeing_cfg.window,
+        retention_window=seeing_cfg.retention_window,
+        from_instrument=seeing_cfg.from_instrument * units.arcsec,
+        to_instrument=seeing_cfg.to_instrument * units.arcsec,
     )
-    return projected / units.arcsec
+
+    ts = night_df['timestamp'].to_numpy(dtype=float)
+    fwhm_meas = night_df['fwhm'].to_numpy(dtype=float)
+    filt_idx = night_df['filter_idx'].to_numpy()
+    el = night_df['el'].to_numpy(dtype=float)
+
+    valid = ~np.isnan(fwhm_meas)
+    if valid.any():
+        bands = [IDX2FILTER.get(int(f), FWHM_REF_FILTER) for f in filt_idx[valid]]
+        seeing.add(
+            date=ts[valid],
+            seeing=fwhm_meas[valid] * units.arcsec,
+            band=bands,
+            el=el[valid],
+        )
+
+    out = np.empty(len(night_df), dtype=float)
+    for i in range(len(night_df)):
+        band_i = IDX2FILTER.get(int(filt_idx[i]), FWHM_REF_FILTER)
+        out[i] = float(
+            seeing.predict(band=band_i, el=float(el[i]), now=float(ts[i]))
+        ) / units.arcsec
+    return out
+
+

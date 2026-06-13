@@ -6,7 +6,8 @@ from typing import Optional
 import numpy as np
  
 from blancops.environment.base import StateSnapshot
-from blancops.data.features.glob_features import get_night_boundaries, project_fwhm
+from blancops.environment.seeing_model import PredictiveSeeingModel
+from blancops.data.features.glob_features import get_night_boundaries
 from blancops.configs.constants import IDX2FILTER, FWHM_REF_FILTER
  
 import logging
@@ -36,7 +37,6 @@ class HistoricBlancoEnv(BaseBlancoOfflineEnv):
         rel_norm_stats,
         global_pd_nightgroup,
         night_start_bin_states: Optional[np.ndarray] = None,
-        fwhm_night_interps: Optional[list] = None,
     ):
         super().__init__(
             cfg=cfg,
@@ -51,8 +51,13 @@ class HistoricBlancoEnv(BaseBlancoOfflineEnv):
         self._night_start_bin_states = night_start_bin_states
 
         # Per-night feature context.
-        self._fwhm_night_interps = fwhm_night_interps
         self._survey_night_idx = 0  # set per-night in _get_night_config
+
+        # Seeing predictor. A model is required at construction so feature
+        # validation passes; _start_new_night rebuilds it from each night's
+        # measurements. Empty until then (predict falls back to nominal).
+        if "fwhm" in self.global_feature_names:
+            self._seeing_model = PredictiveSeeingModel(self.cfg.data.seeing)
 
         # Guard rails: features that need full-survey context cannot be
         # served if the lookups don't carry it. Fail loudly at construction
@@ -164,45 +169,33 @@ class HistoricBlancoEnv(BaseBlancoOfflineEnv):
             return None
         return self._survey_night_idx / total
 
-    def _get_fwhm(
-        self, timestamp: float, el: Optional[float] = None,
-        filter_idx: Optional[int] = None,
-    ) -> Optional[float]:
-        # Find the nearest expert observation to use as the seeing reference.
-        # The recorded fwhm was measured at the expert's elevation/filter; when
-        # the policy visits a different field or filter, we must project from
-        # those reference conditions to the policy's current pointing.
+    def _start_new_night(self) -> None:
+        super()._start_new_night()
+        self._rebuild_seeing_model()
+
+    def _rebuild_seeing_model(self) -> None:
+        """Build a fresh seeing predictor from this night's measurements.
+
+        The whole night's measured (timestamp, fwhm, band, el) is ingested
+        up front; predict()'s strict-past window keeps each step causal,
+        and the agent's pointing (band/el) is honored per query via the base
+        _get_fwhm delegate.
+        """
         night_key = self._night_keys[self._night_idx]
         night_df = self._groupbynight.get_group(night_key)
-        fwhm_vals = night_df['fwhm'].values
-        ts_vals = night_df['timestamp'].values
+        model = PredictiveSeeingModel(self.cfg.data.seeing)
+        fwhm_vals = night_df['fwhm'].to_numpy(dtype=float)
         valid = ~np.isnan(fwhm_vals)
-        if not valid.any():
-            return None
-
-        fwhm_valid = fwhm_vals[valid]
-        ts_valid = ts_vals[valid]
-        ref_idx = int(np.clip(np.searchsorted(ts_valid, timestamp), 0, len(ts_valid) - 1))
-
-        # The smoothed spline (if provided) takes precedence for the fwhm
-        # reference value; the raw data always supplies the reference elevation
-        # and filter so the projection is physically grounded.
-        if self._fwhm_night_interps is not None:
-            fwhm_ref = float(self._fwhm_night_interps[self._night_idx](timestamp))
-        else:
-            fwhm_ref = float(fwhm_valid[ref_idx])
-
-        if el is None or filter_idx is None:
-            return fwhm_ref
-
-        el_ref = float(night_df['el'].values[valid][ref_idx])
-        filter_ref = int(night_df['filter_idx'].values[valid][ref_idx])
-        from_band = IDX2FILTER.get(filter_ref, FWHM_REF_FILTER)
-        to_band = IDX2FILTER.get(int(filter_idx), from_band)
-        return project_fwhm(
-            fwhm_ref, to_band=to_band, to_el=el,
-            from_band=from_band, from_el=el_ref,
-        )
+        if valid.any():
+            filt = night_df['filter_idx'].to_numpy()[valid]
+            bands = [IDX2FILTER.get(int(f), FWHM_REF_FILTER) for f in filt]
+            model.add(
+                date=night_df['timestamp'].to_numpy(dtype=float)[valid],
+                seeing=fwhm_vals[valid],
+                band=bands,
+                el=night_df['el'].to_numpy(dtype=float)[valid],
+            )
+        self._seeing_model = model
 
     def _get_survey_nights_total(self) -> Optional[int]:
         return self.lookups.total_nights

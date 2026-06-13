@@ -70,6 +70,20 @@ class NormalizationConfig(BaseModel):
                 )
         return self
 
+class SeeingConfig(BaseModel):
+    """Parameters for the Seeing rolling-history predictor.
+
+    Shared by the offline causal-fwhm feature builder, the historic
+    validation env, and the live env so train and serve agree. Instrument
+    components are in arcsec and converted to native angle units when a
+    Seeing instance is built.
+    """
+    window: str = "15m"
+    retention_window: Optional[str] = None
+    from_instrument: float = 0.5
+    to_instrument: float = 0.5
+
+
 class BaseDataConfig(BaseModel):
     name: str = 'des-data-v0'
     path: str = str(DES_FITS_PATH)
@@ -81,6 +95,9 @@ class BaseDataConfig(BaseModel):
     
     # Normalization configuration
     norm: NormalizationConfig = Field(default_factory=NormalizationConfig)
+
+    # Seeing predictor configuration
+    seeing: SeeingConfig = Field(default_factory=SeeingConfig)
     
     # Configurations calculated after data processing (required for model instantiation)
     state_dim: Optional[int] = None
