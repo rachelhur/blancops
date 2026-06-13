@@ -1,5 +1,5 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
+# Python byte-compiled / optimized / DLL files
+**/__pycache__/
 
 # Package build directories
 *.egg-info/
@@ -7,10 +7,30 @@ __pycache__/
 # macOS files
 .DS_Store
 
-# notebooks
+# Jupyter
+**.ipynb_checkpoints/
+/.virtual_documents/
+# for now, don't include nbs
 *.ipynb
 
-# project root folders
-/models
-/data/.ipynb_checkpoints/
-/experiments
+# Project root folders
+/models/
+/experiments/
+
+# Virtual envs
+/.conda/
+/.venv/
+
+# IDEs
+/.vscode/
+/.idea/
+
+# LLM tool settings
+/.claude/
+**CLAUDE.md
+/.github/*.md
+
+# Testing
+/.pytest_cache/
+
+
