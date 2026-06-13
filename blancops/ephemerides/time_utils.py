@@ -90,17 +90,22 @@ def standardize_time(t):
         except ValueError:
             return False
 
-    # keep numerical inputs as is, parse strings into numbers if possible else datetime
-    if isinstance(t, (int, float)):
-        return t
-    elif isinstance(t, str):
+    # parse strings into numbers if possible else datetime; coerce everything
+    # else numerically.
+    if isinstance(t, str):
         if is_number(t):
             return float(t)
         dt = parse(t)
     elif isinstance(t, datetime):
         dt = t
     else:
-        raise ValueError("Unsupported time format")
+        # Numeric input, including numpy scalars (np.float32 / np.int*) that are
+        # not subclasses of the builtin float. float() coerces them to a native
+        # timestamp and raises TypeError for genuinely unsupported types.
+        try:
+            return float(t)
+        except (TypeError, ValueError):
+            raise ValueError("Unsupported time format")
 
     # assume datetimes without timezone info are in UTC
     if dt.tzinfo is None:
