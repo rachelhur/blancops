@@ -30,52 +30,52 @@ def main():
         help="Whether or not to save plots. (Will be saved to outdir)"
     )
     args = parser.parse_args()
- 
- 
-    # --------------------------------------  
+
+
+    # --------------------------------------
     # SETUP LOGGER
-    # --------------------------------------  
-    
+    # --------------------------------------
+
     logger = configure_logger(
         level="info",
         log_to_stdout=True,
         log_to_file=False
     )
-    
-    # --------------------------------------  
+
+    # --------------------------------------
     # SETUP OUTDIR
-    # --------------------------------------  
+    # --------------------------------------
     out_parent_dir = Path(args.out_parent_dir)
     lookups_outdir = out_parent_dir / "lookups"
     figures_outdir = out_parent_dir / "figures"
     lookups_outdir.mkdir(parents=True, exist_ok=True)
     figures_outdir.mkdir(parents=True, exist_ok=True)
     logger.info("Starting DES lookup table generation...")
-    
-    # --------------------------------------  
+
+    # --------------------------------------
     # BUILD LOOKUPS
     # --------------------------------------
     lookups = build_DES_lookups(fits_path=args.fits_path, outdir=lookups_outdir)
     save = args.save_plots
-    
-    # --------------------------------------  
+
+    # --------------------------------------
     # PLOTTING
-    # --------------------------------------  
+    # --------------------------------------
     if save:
         _FIGSIZE = (6,6)
         _ra = (lookups.fields.ra.values + np.pi) % (2 * np.pi) - np.pi
         _dec = lookups.fields.dec.values
-        
-        # --------------------------------------  
+
+        # --------------------------------------
         # Fields in ra/dec, colored by field id
-        # --------------------------------------  
+        # --------------------------------------
         fig, ax  = plt.subplots(figsize=_FIGSIZE)
         ax.scatter(_ra/units.deg, _dec/units.deg, cmap="plasma", c=lookups.fields.index.values, alpha=.5, s=5)
         ax.set_xlabel('ra (deg)')
         ax.set_ylabel('dec (deg)')
         if save:
             fig.savefig(figures_outdir / "field_radecs.png")
-            
+
         # Plot target counts
         fig, ax = plt.subplots(figsize=_FIGSIZE)
         for filt, fidx in FILTER2IDX.items():
@@ -84,10 +84,10 @@ def main():
         ax.set_ylabel('Counts')
         if save:
             fig.savefig(figures_outdir / "target_counts_per_field_filter.png")
-        
-        # --------------------------------------  
+
+        # --------------------------------------
         # Average Accumulated Visits over bins vs night
-        # --------------------------------------  
+        # --------------------------------------
         fig, ax = plt.subplots(figsize=_FIGSIZE)
         visits = np.array(list(lookups.night2fidfilt_visit_hist.values()))
         mean_visits = visits.mean(axis=1)
@@ -95,7 +95,7 @@ def main():
         for filt, fidx in FILTER2IDX.items():
             ax.plot(np.arange(len(mean_visits)), mean_visits[:, fidx], label=filt, color=f"C{fidx}")
             ax.fill_between(
-                np.arange(len(lookups.night2fidfilt_visit_hist)), 
+                np.arange(len(lookups.night2fidfilt_visit_hist)),
                 y1=mean_visits[:, fidx] - std_visits[:, fidx],
                 y2=mean_visits[:, fidx] + std_visits[:, fidx],
                 alpha=.3,
@@ -106,14 +106,14 @@ def main():
         ax.legend()
         if save:
             fig.savefig(figures_outdir / "average_visits_over_time.png")
-        
-        # --------------------------------------  
+
+        # --------------------------------------
         # Average Time Since Last Visit over bins vs night FOR INCOMPLETE FIELDS ONLY
-        # --------------------------------------  
-        
+        # --------------------------------------
+
         fig, ax = plt.subplots(figsize=_FIGSIZE)
-        last_visit_times = np.array(list(lookups.night2fidfilt_last_visit_ot.values())) / 60 / 60 
-        ot_clock_hour = np.array(list(lookups.night2ot_clock_seconds.values())) / 60 / 60 
+        last_visit_times = np.array(list(lookups.night2fidfilt_last_visit_ot.values())) / 60 / 60
+        ot_clock_hour = np.array(list(lookups.night2ot_clock_seconds.values())) / 60 / 60
         t_since_last_visit = ot_clock_hour[:, None, None] - last_visit_times  # (n_nights, n_fields, n_filters)
 
         visit_hist = np.array(list(lookups.night2fidfilt_visit_hist.values()))   # (n_nights, n_fields, n_filters)
@@ -144,20 +144,20 @@ def main():
             fig.tight_layout()
             fig.savefig(figures_outdir / "average_time_since_last_visit_incomplete.png")
 
-        
-        # --------------------------------------  
+
+        # --------------------------------------
         # Median Time Since Last Visit over bins vs night FOR INCOMPLETE FIELDS ONLY
         # Includes number of (field, filter) pair contributes per night, filter
-        # --------------------------------------  
-        
+        # --------------------------------------
+
         fig, axes = plt.subplots(
             nrows=len(FILTER2IDX), ncols=1,
             figsize=(8, 2 * len(FILTER2IDX)),
             sharex=True,
         )
-                
-        last_visit_times = np.array(list(lookups.night2fidfilt_last_visit_ot.values())) / 60 / 60 
-        ot_clock_hour = np.array(list(lookups.night2ot_clock_seconds.values())) / 60 / 60 
+
+        last_visit_times = np.array(list(lookups.night2fidfilt_last_visit_ot.values())) / 60 / 60
+        ot_clock_hour = np.array(list(lookups.night2ot_clock_seconds.values())) / 60 / 60
         t_since_last_visit = ot_clock_hour[:, None, None] - last_visit_times   # (n_nights, n_fields, n_filters)
 
         # Mask out (field, filter) cells that were already complete at the
@@ -201,10 +201,10 @@ def main():
         axes[-1].set_xlabel("Night of survey")
         fig.suptitle("Time since last visit (incomplete fields only)\nmedian with 10–90 percentile band")
         fig.tight_layout()
-        
+
         if save:
             fig.tight_layout()
             fig.savefig(figures_outdir / "median_time_since_last_visit_incomplete.png")
-            
+
 if __name__ == "__main__":
     main()

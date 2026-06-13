@@ -37,29 +37,33 @@ def _calc_total_survey_ot(observing_nights, sun_el_limit=-10, per_night_overshoo
 @dataclass(frozen=True)
 class LookupTables:
     """Universal container for telescope/survey metadata.
- 
+
     **Shape contract: `*_fidfilt_*` are of shape `(len(fields), len(FILTER2IDX))`,
         indexed by `field_id` along axis 0 and `filter_idx` along axis 1.
         The `fields` index must be `0..N-1` contiguous so array index and `field_id` coincide;
         `__post_init__` enforces this.
         #TODO do I want to change from contiguous to saving an additional fid->idx mapping?
+
+    Identity: `field_id` (the `fields` index) is the sole field identifier. The
+    `field` column is a human-readable label only and may repeat across propids
+    (distinct programs can reuse a name); never use it to identify a field.
     """
     # Required lookup tables
-    fields: pd.DataFrame                # index=field_id; required cols: name, ra, dec
+    fields: pd.DataFrame                # index=field_id (sole identity); cols: field (label), ra, dec
     target_fidfilt_counts: np.ndarray   # (nfields, nfilters) int
     fidfilt_exptime: np.ndarray         # (nfields, nfilters) float
     dir: Path
     # total_ot_sec: float
- 
+
     # Derived marginals — populated in __post_init__, never set by callers.
     target_fid_counts: np.ndarray = field(init=False, default=None, repr=False)
     target_filt_counts: np.ndarray = field(init=False, default=None, repr=False)
 
     # Optional historical counts
     historic_df: Optional[pd.DataFrame] = None
-    
+
     # Total survey time (past and future)
-    
+
     # ------------------------------------------------------------------
     # I/O
     # ------------------------------------------------------------------
@@ -69,14 +73,14 @@ class LookupTables:
         """Helper to parse and load the base attributes shared by all lookup classes."""
         def get_path(key):
             return data_dir / overrides.get(key, key.value)
- 
+
         # Fields DataFrame (canonical per-field data)
         fields = pd.read_json(get_path(LookupKeys.FIELDS))
         if "field_id" in fields.columns:
             fields = fields.set_index("field_id")
         fields = fields.sort_index()
         fields.index.name = "field_id"
-    
+
         # Per-(field, filter) matrices
         with open(get_path(LookupKeys.TARGET_FIDFILT_COUNTS), "rb") as f:
             target_fidfilt_counts = pickle.load(f)
@@ -97,7 +101,7 @@ class LookupTables:
         raise NotImplementedError("On the todo list...")
         # def get_path(key):
         #     return data_dir / overrides.get(key, key.value)
-    
+
         # historic_df = pd.read_json(get_path(LookupKeys.HISTORIC_OBSERVATIONS))
         # required = {"ra", "dec", "filter", "count", "exptime"}
         # missing = required - set(historic_df.columns)
@@ -115,7 +119,7 @@ class LookupTables:
     def _get_required_columns(cls):
         """Allows subclasses to override expected columns based on input data shape."""
         return {"ra", "dec", "filter", "count", "exptime"}
-            
+
     @classmethod
     def load_from_dir(
         cls,
@@ -126,43 +130,44 @@ class LookupTables:
         """Load base lookups from a directory."""
         overrides = overrides or {}
         data_dir = Path(data_dir).resolve()
-        
+
         kwargs = cls._load_base_kwargs(data_dir, overrides)
         if include_historic:
             raise NotImplementedError("On the todo list...")
         return cls(**kwargs)
- 
+
     def write_to_disk(self, outdir: Optional[Path] = None) -> None:
         """Persist non-derived state. Marginals are recomputed on load."""
         outdir = Path(outdir if outdir is not None else self.dir)
         outdir.mkdir(parents=True, exist_ok=True)
-        
+
         # Round-trip the index by resetting it as a column before save.
         self.fields.reset_index().to_json(outdir / LookupKeys.FIELDS.value, orient='records')
- 
+
         # TARGET COUNTS
         with open(outdir / LookupKeys.TARGET_FIDFILT_COUNTS.value, "wb") as f:
             pickle.dump(self.target_fidfilt_counts, f)
         # EXPOSURE TIME PER (FIELD, FILTER) PAIR
         with open(outdir / LookupKeys.FIDFILT_EXPTIME.value, "wb") as f:
             pickle.dump(self.fidfilt_exptime, f)
-        # TOTAL SURVEY OBSERVING TIME IN SECONDS 
+        # TOTAL SURVEY OBSERVING TIME IN SECONDS
         # with open(outdir / LookupKeys.TOTAL_OT_SECONDS.value, "w") as f:
             # f.write(f"{self.total_ot_sec}")
 
     # ------------------------------------------------------------------
     # Composition
     # ------------------------------------------------------------------
- 
+
     def _get_merge_base_kwargs(self, new_lookups: "LookupTables", new_dir: Optional[Path] = None) -> dict:
         """Helper to compute merged base attributes."""
         offset = (self.fields.index.max() + 1) if len(self.fields) else 0
- 
+
         new_fields = new_lookups.fields.copy()
         new_fields.index = new_fields.index + offset
         new_fields.index.name = self.fields.index.name
- 
+
         merged_fields = pd.concat([self.fields, new_fields])
+        self._validate_field_names(merged_fields)
         merged_fidfilt_counts = np.vstack([
             self.target_fidfilt_counts,
             new_lookups.target_fidfilt_counts,
@@ -171,7 +176,7 @@ class LookupTables:
             self.fidfilt_exptime,
             new_lookups.fidfilt_exptime,
         ])
- 
+
         return {
             "fields": merged_fields,
             "target_fidfilt_counts": merged_fidfilt_counts,
@@ -187,7 +192,7 @@ class LookupTables:
         """Append new field targets to existing lookup table, returning a new LookupTables."""
         kwargs = self._get_merge_base_kwargs(new_lookups, new_dir)
         return LookupTables(**kwargs)
- 
+
     # ------------------------------------------------------------------
     # Field Lookup Construction Helpers
     # ------------------------------------------------------------------
@@ -213,7 +218,7 @@ class LookupTables:
         pivot_df = pivot_df.fillna(0).astype(int)
         exptime_matrix = pivot_df.reindex(columns=filter_order, fill_value=0).to_numpy()
         return exptime_matrix
-    
+
     @staticmethod
     def _validate_field_ids(df):
         """
@@ -222,11 +227,11 @@ class LookupTables:
         """
         if 'field_id' not in df.columns:
             return False  # No field_id column; caller should assign new contiguous ids.
-            
+
         # Check 1: Does a single (ra, dec) pair map to more than one field_id?
         coord_groups = df.groupby(['ra', 'dec'])['field_id'].nunique()
         invalid_coords = coord_groups[coord_groups > 1]
-        
+
         if not invalid_coords.empty:
             example_coord = invalid_coords.index[0]
             raise ValueError(
@@ -237,21 +242,74 @@ class LookupTables:
         # Check 2: Does a single field_id map to more than one (ra, dec) pair?
         id_groups = df.groupby('field_id')[['ra', 'dec']].nunique()
         invalid_ids = id_groups[(id_groups['ra'] > 1) | (id_groups['dec'] > 1)]
-        
+
         if not invalid_ids.empty:
             example_id = invalid_ids.index[0]
             raise ValueError(
                 f"Data Check Failed: field_id '{example_id}' is assigned to "
                 f"multiple distinct (ra, dec) coordinate pairs."
             )
-            
+
         print("Data Check Passed: field_id uniquely maps 1:1 to all (ra, dec) pairs.")
         return True
-    
+
+    @staticmethod
+    def _validate_field_names(fields_df: pd.DataFrame, tolerance_deg: float = 1e-2) -> None:
+        """Raise if any field name identifies more than one field within a propid.
+
+        `field` is a display label, not an identifier; the same name may repeat
+        across distinct propids and is kept as-is. A name reused for two
+        field_ids in the same propid (or table-wide when no `propid` column is
+        present) is a data error. tolerance_deg only shapes the message:
+        redundant duplicate vs distinct positions.
+        """
+        dup_mask = fields_df["field"].duplicated(keep=False)
+        if not dup_mask.any():
+            return
+
+        # Without propid we cannot tell programs apart, so treat the whole
+        # table as a single program: any same-name field_ids clash.
+        has_propid = "propid" in fields_df.columns
+        tol_rad = tolerance_deg * units.deg
+        for name, grp in fields_df[dup_mask].groupby("field", sort=False):
+            if has_propid:
+                propid_counts = grp["propid"].value_counts()
+                clashing = propid_counts[propid_counts > 1]
+                if clashing.empty:
+                    continue  # distinct propids only: allowed, names kept
+                propid = clashing.index[0]
+                same = grp[grp["propid"] == propid]
+            else:
+                propid = None
+                same = grp
+
+            ra0, dec0 = same.iloc[0][["ra", "dec"]]
+            within = bool(
+                ((same["ra"] - ra0).abs() <= tol_rad).all()
+                and ((same["dec"] - dec0).abs() <= tol_rad).all()
+            )
+            coords = list(zip(same["ra"].tolist(), same["dec"].tolist()))
+            detail = (
+                f"their coordinates agree within {tolerance_deg} deg, which "
+                f"looks like a redundant duplicate; remove the extra entry"
+                if within else
+                f"their coordinates differ by more than {tolerance_deg} deg, "
+                f"so they are distinct positions; give them distinct names"
+            )
+            scope = (
+                f"the same propid {propid!r}" if has_propid
+                else "one program (no propid column to disambiguate)"
+            )
+            raise ValueError(
+                f"Field name {name!r} is assigned to {len(same)} fields under "
+                f"{scope} (field_ids {list(same.index)}, (ra, dec) {coords}); "
+                f"{detail}."
+            )
+
     # ------------------------------------------------------------------
     # Construction from raw fields file
     # ------------------------------------------------------------------
- 
+
     @classmethod
     def build_lookups_from_fields(
         cls,
@@ -264,32 +322,32 @@ class LookupTables:
         # Data and arg checks -------------------------------------------------
         if write_to_disk and outdir is None:
             raise ValueError("Must specify `outdir` if `write_to_disk` is True")
- 
+
         if fields_df is None and fields_path is None:
             raise ValueError("Must specify either `fields_df` or `fields_path`")
-        
+
         if fields_df is not None:
             df = fields_df.copy()
         else:
             fields_path = Path(fields_path)
             df = pd.read_json(fields_path)
- 
+
         # Ensure all columns are lowercase ---------------------------------
         df.columns = df.columns.str.lower()
- 
+
         # Ensure required columns are present ------------------------------
         required = cls._get_required_columns()
         missing = required - set(df.columns)
         if missing:
             raise ValueError(f"Missing columns: {missing}")
- 
+
         # Check RA/Dec values are in radians --------------------------------
         if (df["ra"] > 2 * np.pi).any() or (df["dec"].abs() > np.pi / 2).any():
             raise ValueError(
                 "Data Check Failed: At least one RA/Dec values degrees exceed 2pi); "
                 "please convert to radians before building lookups."
             )
- 
+
         # Resolve name column from common aliases ---------------------------
         if "field_name" in df.columns:
             df = df.rename(columns={"field_name": "field"})
@@ -300,18 +358,18 @@ class LookupTables:
                 "field_"
                 + df.groupby(["ra", "dec"], sort=False).ngroup().astype(str)
             )
- 
+
         # Assign field_id
         has_consistent_fid = cls._validate_field_ids(df)
         if not has_consistent_fid:
             df = cls._get_contiguous_field_ids(df)
- 
+
         # Filter idx
         df["filter_idx"] = df["filter"].map(FILTER2IDX).fillna(-1).astype(int)
         if (df["filter_idx"] == -1).any():
             bad = df.loc[df["filter_idx"] == -1, "filter"].unique()
             raise ValueError(f"Unknown filter(s): {list(bad)}")
- 
+
         # Validate per-field columns
         per_field_cols = ["field", "ra", "dec"]
         if "propid" in df.columns:
@@ -335,31 +393,32 @@ class LookupTables:
             .sort_values(by='field_id')
             .set_index('field_id')
         )
- 
+        cls._validate_field_names(fields_lookup)
+
         target_fidfilt_counts = cls._build_target_count_lookup(df)
         fidfilt_exptime = cls._build_exptime_lookup(df)
-        
+
         resolved_dir = (
             Path(outdir).resolve() if outdir is not None
             else fields_path.parent.resolve()
         )
-        
+
         lookups = cls(
             fields=fields_lookup,
             target_fidfilt_counts=target_fidfilt_counts,
             fidfilt_exptime=fidfilt_exptime,
             dir=resolved_dir,
         )
- 
+
         if write_to_disk:
             lookups.write_to_disk(Path(outdir))
-            
+
         return lookups
 
     # ------------------------------------------------------------------
     # Validation + derived attributes
     # ------------------------------------------------------------------
- 
+
     def __post_init__(self):
         # Coerce arrays to canonical dtype/layout
         object.__setattr__(
@@ -370,7 +429,7 @@ class LookupTables:
             self, "fidfilt_exptime",
             np.ascontiguousarray(self.fidfilt_exptime, dtype=np.float64),
         )
- 
+
         # Validate fields index is 0..N-1 contiguous
         expected_idx = pd.RangeIndex(len(self.fields))
         if not self.fields.index.equals(expected_idx):
@@ -381,7 +440,7 @@ class LookupTables:
                 f"len={len(self.fields)}, "
                 f"unique={self.fields.index.nunique()}"
             )
- 
+
         # Validate matrix shapes
         nfields, nfilters = self.target_fidfilt_counts.shape
         if nfields != len(self.fields):
@@ -400,7 +459,7 @@ class LookupTables:
                 f"match target_fidfilt_counts shape "
                 f"{self.target_fidfilt_counts.shape}"
             )
- 
+
         # Validate per-field columns
         required_cols = {"field", "ra", "dec"}
         missing = required_cols - set(self.fields.columns)
@@ -451,7 +510,7 @@ class TrainLookupTables(LookupTables):
     night2fid_last_visit_ot: Optional[dict] = None
     night2fidfilt_last_visit_ot: Optional[dict] = None
     night2ot_clock_seconds: Optional[dict] = None
- 
+
     # Derived marginals
     night2idx: Optional[dict] = None
     total_nights: Optional[int] = None
@@ -460,7 +519,7 @@ class TrainLookupTables(LookupTables):
     def _get_required_columns(cls):
         # We calculate targets from teff, so 'count' is no longer required in the raw data
         return {"ra", "dec", "filter", "exptime", "teff"}
-    
+
     @classmethod
     def load_from_dir(
         cls,
@@ -470,11 +529,11 @@ class TrainLookupTables(LookupTables):
         """Load lookups from a directory, including historic context."""
         overrides = overrides or {}
         data_dir = Path(data_dir).resolve()
-        
+
         def get_path(key):
             return data_dir / overrides.get(key, key.value)
 
-        # 1. Start with base kwargs 
+        # 1. Start with base kwargs
         kwargs = cls._load_base_kwargs(data_dir, overrides)
 
         # 2. Add historical tables
@@ -488,7 +547,7 @@ class TrainLookupTables(LookupTables):
         # 3. Add last-visit timestamps
         fid_lv_path = get_path(LookupKeys.NIGHT2FID_LAST_VISIT_TS)
         ff_lv_path = get_path(LookupKeys.NIGHT2FIDFILT_LAST_VISIT_TS)
-        
+
         if fid_lv_path.exists():
             with open(fid_lv_path, "rb") as f:
                 kwargs["night2fid_last_visit_ts"] = pickle.load(f)
@@ -498,7 +557,7 @@ class TrainLookupTables(LookupTables):
                 f"t_since_last_visit will start from sentinel for every "
                 f"field. Rebuild lookups to enable staleness seeding."
             )
-            
+
         if ff_lv_path.exists():
             with open(ff_lv_path, "rb") as f:
                 kwargs["night2fidfilt_last_visit_ts"] = pickle.load(f)
@@ -507,11 +566,11 @@ class TrainLookupTables(LookupTables):
                 f"{ff_lv_path.name} not found in {data_dir}; "
                 f"per-filter t_since_last_visit will start from sentinel."
             )
-                
+
         # 4. Add last-visit dicts in ot
         fid_lv_ot_path = get_path(LookupKeys.NIGHT2FID_LAST_VISIT_OT)
         ff_lv_ot_path = get_path(LookupKeys.NIGHT2FIDFILT_LAST_VISIT_OT)
-        
+
         if fid_lv_ot_path.exists():
             with open(fid_lv_ot_path, "rb") as f:
                 kwargs["night2fid_last_visit_ot"] = pickle.load(f)
@@ -521,7 +580,7 @@ class TrainLookupTables(LookupTables):
                 f"t_since_last_visit will start from sentinel for every "
                 f"field. Rebuild lookups to enable staleness seeding."
             )
-            
+
         if ff_lv_ot_path.exists():
             with open(ff_lv_ot_path, "rb") as f:
                 kwargs["night2fidfilt_last_visit_ot"] = pickle.load(f)
@@ -536,9 +595,9 @@ class TrainLookupTables(LookupTables):
     def write_to_disk(self, outdir: Optional[Path] = None) -> None:
         """Persist training state alongside base lookups."""
         super().write_to_disk(outdir)
-        
+
         outdir = Path(outdir if outdir is not None else self.dir)
-        
+
         # VISIT HISTORY
         if self.night2fid_visit_hist is not None:
             with open(outdir / LookupKeys.NIGHT2FID_VISIT_HIST.value, "wb") as f:
@@ -554,7 +613,7 @@ class TrainLookupTables(LookupTables):
         if self.night2fidfilt_last_visit_ts is not None:
             with open(outdir / LookupKeys.NIGHT2FIDFILT_LAST_VISIT_TS.value, "wb") as f:
                 pickle.dump(self.night2fidfilt_last_visit_ts, f)
-        
+
         # LAST VISIT TIME IN UNITS OBSERVING TIME
         if self.night2fid_last_visit_ot is not None:
             with open(outdir / LookupKeys.NIGHT2FID_LAST_VISIT_OT.value, "wb") as f:
@@ -562,7 +621,7 @@ class TrainLookupTables(LookupTables):
         if self.night2fidfilt_last_visit_ot is not None:
             with open(outdir / LookupKeys.NIGHT2FIDFILT_LAST_VISIT_OT.value, "wb") as f:
                 pickle.dump(self.night2fidfilt_last_visit_ot, f)
-        
+
         # TOTAL OBSERVABLE SECONDS IN SURVEY
         if self.night2ot_clock_seconds is not None:
             with open(outdir / LookupKeys.NIGHT2OT_CLOCK_SECONDS.value, "wb") as f:
@@ -575,10 +634,10 @@ class TrainLookupTables(LookupTables):
     ) -> "TrainLookupTables":
         raise NotImplementedError("Merging of TrainLookupTables is not yet implemented.")
         kwargs = self._get_merge_base_kwargs(new_lookups, new_dir)
-        
+
         num_new_fields = len(new_lookups.fields)
         nfilters = len(FILTER2IDX)
-        
+
         def _pad_1d(hist_dict, pad_val=0):
             if hist_dict is None: return None
             return {k: np.pad(v, (0, num_new_fields), constant_values=pad_val) for k, v in hist_dict.items()}
@@ -597,7 +656,7 @@ class TrainLookupTables(LookupTables):
             "night2ot_clock_seconds": self.night2ot_clock_seconds,
         })
         return TrainLookupTables(**kwargs)
-    
+
 
     def __post_init__(self):
         super().__post_init__()
@@ -607,7 +666,7 @@ class TrainLookupTables(LookupTables):
         # Compute child marginals
         if self.night2fidfilt_visit_hist is not None:
             object.__setattr__(
-                self, "night2idx", 
+                self, "night2idx",
                 {night: i for i, night in enumerate(self.night2fidfilt_visit_hist.keys())}
             )
             object.__setattr__(
