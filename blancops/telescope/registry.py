@@ -14,7 +14,7 @@ Adding a new telescope
 from __future__ import annotations
 
 from blancops.telescope.base import TelescopeProfile
-from blancops.telescope.blanco import BLANCO, BLANCO_DECAT
+from blancops.telescope.blanco import BLANCO
 from blancops.telescope.rubin import RUBIN, RUBIN_SIM
 
 # ------------------------------------------------------------------ #
@@ -25,7 +25,6 @@ _ALL_PROFILES: list[TelescopeProfile] = [
     RUBIN,
     RUBIN_SIM,
     BLANCO,
-    BLANCO_DECAT,
 ]
 
 REGISTRY: dict[str, TelescopeProfile] = {p.key: p for p in _ALL_PROFILES}
@@ -48,7 +47,7 @@ def get_telescope(key: str) -> TelescopeProfile:
     ----------
     key : str
         A TelescopeKey enum value or its string equivalent,
-        e.g. "rubin", "rubin_sim", "blanco", "blanco_decat".
+        e.g. "rubin", "rubin_sim", "blanco".
 
     Returns
     -------

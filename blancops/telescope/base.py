@@ -21,10 +21,10 @@ class TelescopeProfile:
     -----
     from blancops.telescope import get_telescope
 
-    profile = get_telescope("rubin")
-    t_slew  = profile.parameters.slew_time(daz=15.0, dalt=5.0)
-    ok      = profile.constraints.is_observable(az, alt, X, moon_sep, wind)
-    loc     = profile.site.earth_location()
+    t_profile = get_telescope("rubin")
+    t_slew  = t_profile.parameters.slew_time(daz=15.0, dalt=5.0)
+    ok      = t_profile.constraints.is_observable(az, alt, X, moon_sep, wind, sun_alt)
+    loc     = t_profile.site.earth_location()
     """
 
     key: str
@@ -49,7 +49,7 @@ class TelescopeProfile:
         Return a copy with selected ConstraintSet fields overridden.
 
         Designed for building simulation variants without duplicating the full
-        profile definition.  The new key is ``{self.key}_{key_suffix}``.
+        t_profile definition.  The new key is ``{self.key}_{key_suffix}``.
 
         Example
         -------

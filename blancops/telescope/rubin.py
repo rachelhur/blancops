@@ -104,6 +104,9 @@ _CONSTRAINTS = _RubinConstraints(
     # Dome wind limit per LSST System Specs; image quality degrades above ~10 m/s
     max_wind_speed_ms=15.0,
 
+    # Sun must be below -12 (nautical) before LSST main-survey visits begin.
+    max_sun_alt_deg=-12.0,
+
     # Physical horizon mask is complex (mountain silhouette + telescope structure);
     # use a scalar floor of 20° as a conservative proxy.
     # To plug in the real mask: _CONSTRAINTS = replace(_CONSTRAINTS, horizon_mask=my_fn)
