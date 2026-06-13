@@ -14,6 +14,7 @@ The per-night OT/counts accumulation mirrors ``build_DES_lookups`` in
 share the same OT frame as the trained model.
 """
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,101 @@ from blancops.data.features.glob_features import get_night_boundaries
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+def build_synthetic_obs_history(
+    lookups,
+    span_nights,
+    end_date,
+    sun_el_limit,
+    *,
+    remaining=1,
+    visits_by_propid=None,
+    seed=42,
+) -> pd.DataFrame:
+    """Synthesize an obs-history frame seeding completed visits per (field, filter).
+
+    Completed-visit counts are read from ``lookups.target_fidfilt_counts``: each
+    targeted (field, filter) is seeded with ``target - remaining`` visits, which
+    leaves every field incomplete (so its bins stay active for the staleness
+    feature). ``visits_by_propid`` overrides this with an absolute completed
+    count for named propids -- e.g. ``0`` to start a time-critical program fresh
+    -- and requires a ``propid`` column on ``lookups.fields``. This reads the
+    merged lookup directly, so a merged multi-program lookup needs no separate
+    history merge: field ids and per-program targets already carry through.
+
+    Each field's most-recent visit night is drawn uniformly across a
+    ``span_nights`` window of consecutive observing nights ending at
+    ``end_date``, and its visits are placed on that night and the preceding ones
+    (per filter). Spreading the most-recent night across fields gives the
+    cross-field staleness spread that ``rel_t_since_last_visit`` is normalized
+    against; the window's total observing time sets that spread's magnitude.
+
+    Visit timestamps are night midpoints (via ``get_night_boundaries``), so every
+    row's night key and last-visit OT resolve consistently in
+    ``load_seed_state_from_obs_history``.
+
+    Args:
+        lookups: LookupTables; supplies field ids, per-(field, filter) targets,
+            and (for overrides) the propid column.
+        span_nights: number of consecutive nights the history spans.
+        end_date: evening-date of the latest history night (str or date-like).
+        sun_el_limit: sun-elevation limit (deg); must match the consuming run.
+        remaining: target-relative shortfall to leave per (field, filter);
+            completed = target - remaining (clamped to [0, target]).
+        visits_by_propid: optional {propid: completed_visits} absolute overrides.
+        seed: RNG seed for per-field recency assignment.
+
+    Returns:
+        DataFrame with columns field_id, filter, timestamp.
+    """
+    if span_nights <= 0:
+        raise ValueError(f"span_nights must be positive; got {span_nights}.")
+
+    targets = lookups.target_fidfilt_counts            # (nfields, nfilters)
+    field_ids = lookups.fields.index.to_numpy()
+    idx2filter = {idx: name for name, idx in FILTER2IDX.items()}
+
+    propids = None
+    if visits_by_propid:
+        if "propid" not in lookups.fields.columns:
+            raise ValueError(
+                "visits_by_propid requires a 'propid' column on lookups.fields."
+            )
+        propids = lookups.fields["propid"].to_numpy()
+
+    end = pd.Timestamp(end_date).date()
+    # Evening-dates, earliest first; index span_nights-1 is the latest night.
+    dates = [end - timedelta(days=span_nights - 1 - k) for k in range(span_nights)]
+    midpoints = np.array(
+        [0.5 * sum(get_night_boundaries(d, sun_el_limit=sun_el_limit)) for d in dates],
+        dtype=np.float64,
+    )
+
+    rng = np.random.default_rng(seed)
+    recent = rng.integers(0, span_nights, size=len(field_ids))
+
+    records = []
+    for row, (fid, r) in enumerate(zip(field_ids, recent)):
+        override = visits_by_propid.get(propids[row]) if propids is not None else None
+        for f in np.nonzero(targets[row] > 0)[0]:
+            target_f = int(targets[row, f])
+            completed = override if override is not None else target_f - remaining
+            completed = int(np.clip(completed, 0, target_f))
+            filt = idx2filter[int(f)]
+            for k in range(completed):
+                j = max(0, int(r) - k)
+                records.append((int(fid), filt, float(midpoints[j])))
+
+    if not records:
+        raise ValueError(
+            "build_synthetic_obs_history produced no visits: every (field, "
+            f"filter) resolved to 0 completed visits. Check that target counts "
+            f"exceed remaining={remaining} (max target in lookups is "
+            f"{int(targets.max())}) and that the visits_by_propid overrides "
+            f"{visits_by_propid or {}} are intended."
+        )
+    return pd.DataFrame(records, columns=["field_id", "filter", "timestamp"])
 
 
 # Candidate column names across the two supported formats. Schedule CSVs use the
