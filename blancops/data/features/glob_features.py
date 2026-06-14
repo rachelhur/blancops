@@ -806,24 +806,29 @@ def compute_causal_fwhm(night_df, seeing_cfg) -> np.ndarray:
 
     ts = night_df['timestamp'].to_numpy(dtype=float)
     fwhm_meas = night_df['fwhm'].to_numpy(dtype=float)
-    filt_idx = night_df['filter_idx'].to_numpy()
+    filt_idx = night_df['filter_idx'].to_numpy(dtype=float)
     el = night_df['el'].to_numpy(dtype=float)
+
+    # Zenith/wait rows carry a NaN filter_idx; fall back to the reference
+    # band so int() never sees a NaN (only the airmass term then matters).
+    bands = [
+        FWHM_REF_FILTER if np.isnan(f) else IDX2FILTER.get(int(f), FWHM_REF_FILTER)
+        for f in filt_idx
+    ]
 
     valid = ~np.isnan(fwhm_meas)
     if valid.any():
-        bands = [IDX2FILTER.get(int(f), FWHM_REF_FILTER) for f in filt_idx[valid]]
         seeing.add(
             date=ts[valid],
             seeing=fwhm_meas[valid] * units.arcsec,
-            band=bands,
+            band=[b for b, v in zip(bands, valid) if v],
             el=el[valid],
         )
 
     out = np.empty(len(night_df), dtype=float)
     for i in range(len(night_df)):
-        band_i = IDX2FILTER.get(int(filt_idx[i]), FWHM_REF_FILTER)
         out[i] = float(
-            seeing.predict(band=band_i, el=float(el[i]), now=float(ts[i]))
+            seeing.predict(band=bands[i], el=float(el[i]), now=float(ts[i]))
         ) / units.arcsec
     return out
 
