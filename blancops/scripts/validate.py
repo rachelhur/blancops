@@ -1,6 +1,7 @@
 #%%
 
 import argparse
+import os
 from pathlib import Path
 from blancops.io.logger_utils import configure_logger
 from blancops.rl.evaluations.evaluator import build_evaluators
@@ -59,11 +60,12 @@ def main():
     # ------------------------------
     # Default plots
     # ------------------------------
-
+    os.makedirs(Path(cfg.outdir) / 'ss', exist_ok=True)
+    os.makedirs(Path(cfg.outdir) / 'ms', exist_ok=True)
     fig, ax = s_eval.plot_2dhist_res('ra', 'dec', normalization='probability')
-    fig.savefig(cfg.outdir / 'ss' / 'ra_vs_dec_res.png')
+    fig.savefig(Path(cfg.outdir) / 'ss' / 'ra_vs_dec_res.png')
     fig, ax =m_eval.plot_2dhist_res('ra', 'dec', normalization='probability')
-    fig.savefig(cfg.outdir / 'ms' / 'ra_vs_dec_res.png')
+    fig.savefig(Path(cfg.outdir) / 'ms' / 'ra_vs_dec_res.png')
 
 
 
