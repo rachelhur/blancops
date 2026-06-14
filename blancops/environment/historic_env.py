@@ -180,7 +180,13 @@ class HistoricBlancoEnv(BaseBlancoOfflineEnv):
         up front; predict()'s strict-past window keeps each step causal,
         and the agent's pointing (band/el) is honored per query via the base
         _get_fwhm delegate.
+
+        No-op when the config does not request the fwhm feature: leaving
+        `_seeing_model` as None keeps `_get_fwhm` a no-op and avoids the
+        predictor's empty-history fallback warning.
         """
+        if "fwhm" not in self.global_feature_names:
+            return
         night_key = self._night_keys[self._night_idx]
         night_df = self._groupbynight.get_group(night_key)
         model = PredictiveSeeingModel(self.cfg.data.seeing)

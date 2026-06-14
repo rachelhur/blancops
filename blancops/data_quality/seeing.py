@@ -146,6 +146,8 @@ class Seeing:
         self.raw = pd.DataFrame(columns=["date", "seeing", "band", "el"])
         self.data = pd.DataFrame(columns=["date", "seeing", "band", "el"])
 
+        self._warned_empty_history = False
+
     def add(self, date, seeing, band, el, prune=False):
         """
         Ingest previous seeing measurements.
@@ -272,11 +274,13 @@ class Seeing:
         # no data: use nominal DECam median seeing value
         xmu = np.log10(np.sqrt(0.9**2 - ((_DECAM_FWHM / units.arcsec) ** 2)))
         if recent.empty and ancient.empty:
-            warnings.warn(
-                "No seeing history available; using the nominal DECam median.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            if not self._warned_empty_history:
+                warnings.warn(
+                    "No seeing history available; using the nominal DECam median.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                self._warned_empty_history = True
             xpred = xmu
 
         # weighted-median heuristic
