@@ -176,8 +176,9 @@ class Seeing:
         )
 
         # append new data to history table
+        combined = new if self.raw.empty else pd.concat([self.raw, new])
         self.raw = (
-            pd.concat([self.raw, new])
+            combined
             .sort_values("date")
             .reset_index(drop=True)
             .convert_dtypes()
