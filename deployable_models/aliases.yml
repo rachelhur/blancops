@@ -1,4 +1,7 @@
 # deployable_models/aliases.yaml
 
-testing_deprecated: bc_v0_simple
-testing: bc_v0
+bc_test: bc_test
+bc_v0: bc_v0_minimal_feature_set
+bc_v0_max: bc_v0_max_feature_set
+bc_v0_max_nofwhm: bc_v0_max_feature_set_nofwhm
+bc_v1: bc_v1_max_feature_set
