@@ -35,6 +35,13 @@ def main():
     cfg = load_and_validate(cfg_path)
     device = get_system_device()
 
+    # Resolve the model dir from where the config was loaded (machine-portable)
+    if cfg.orig_cfg_path:
+        cfg_dir = Path(cfg.orig_cfg_path).parent
+        outdir = cfg_dir.parent if cfg_dir.name == "configs" else cfg_dir
+    else:
+        outdir = Path(cfg.outdir)
+
     # ------------------------------
     # Initialize logger
     # ------------------------------
@@ -42,7 +49,7 @@ def main():
         level=args.logging_level,
         log_to_stdout=True,
         log_to_file=True,
-        outdir=cfg.outdir,
+        outdir=outdir,
         filename='validation.log',
         use_tqdm=True
     )
@@ -60,12 +67,12 @@ def main():
     # ------------------------------
     # Default plots
     # ------------------------------
-    os.makedirs(Path(cfg.outdir) / 'ss', exist_ok=True)
-    os.makedirs(Path(cfg.outdir) / 'ms', exist_ok=True)
+    os.makedirs(outdir / 'ss', exist_ok=True)
+    os.makedirs(outdir / 'ms', exist_ok=True)
     fig, ax = s_eval.plot_2dhist_res('ra', 'dec', normalization='probability')
-    fig.savefig(Path(cfg.outdir) / 'ss' / 'ra_vs_dec_res.png')
+    fig.savefig(outdir / 'ss' / 'ra_vs_dec_res.png')
     fig, ax =m_eval.plot_2dhist_res('ra', 'dec', normalization='probability')
-    fig.savefig(Path(cfg.outdir) / 'ms' / 'ra_vs_dec_res.png')
+    fig.savefig(outdir / 'ms' / 'ra_vs_dec_res.png')
 
 
 
