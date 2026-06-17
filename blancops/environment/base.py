@@ -20,6 +20,8 @@ from einops import rearrange
 import numpy as np
 import gymnasium as gym
 from collections import defaultdict
+from astropy.time import Time
+import astropy.units as au
 from blancops import math
 from blancops.configs.constants import _NUM_FILTERS
 from blancops.configs.rl_schema import ActionConstraints, ExperimentConfig
@@ -47,6 +49,8 @@ from blancops.environment.survey_tracker import SurveyProgressTracker
 from blancops.environment.seeing_model import SeeingModel
 from blancops.math import units
 from blancops.ephemerides import ephemerides
+from blancops.telescope.base import TelescopeProfile
+from blancops.telescope.registry import get_telescope
 from blancops.configs.constants import *
 
 logger = logging.getLogger(__name__)
@@ -128,9 +132,10 @@ class BaseBlancoEnv(gym.Env, ABC):
         self, 
         cfg: ExperimentConfig,
         constraints_cfg: ActionConstraints,
-        lookups, 
-        z_score_stats, 
-        rel_norm_stats
+        lookups,
+        z_score_stats,
+        rel_norm_stats,
+        telescope: TelescopeProfile | None = None,
     ):
         super().__init__()
         # Configuration, Normalizations, and Lookups
@@ -141,6 +146,14 @@ class BaseBlancoEnv(gym.Env, ABC):
         self.airmass_limit = constraints_cfg.airmass_limit
         self.airmass_failsafe = constraints_cfg.airmass_failsafe
         self.sun_el_limit = constraints_cfg.sun_el_limit
+
+        # Telescope profile — single source for site/hardware geometry. The
+        # mount's HA/Dec operational envelope (equatorial_limit) gates the
+        # action mask; it is None for alt-az profiles, in which case the check
+        # is skipped. ActionConstraints still owns the runtime-mutable airmass /
+        # sun limits (see set_constraints).
+        self._telescope = telescope if telescope is not None else get_telescope("blanco")
+        self._equatorial_limit = self._telescope.constraints.equatorial_limit
 
         # Feature Configs
         norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
@@ -510,6 +523,50 @@ class BaseBlancoEnv(gym.Env, ABC):
         # Ensure elevation is valid for airmass calculation
         el = np.clip(elevation_rad, 1e-5, np.pi/2)
         return 1.0 / np.sin(el)
+
+    def _local_sidereal_time(self, timestamp: float) -> float:
+        """Apparent local sidereal time at the telescope site, in radians.
+
+        Mirrors the LST computation in
+        ``glob_features.compute_global_time_only_features`` but reads the
+        longitude from the wired telescope profile.
+
+        Args
+        ----
+        timestamp : Unix timestamp (UTC).
+
+        Returns
+        -------
+        Local apparent sidereal time in radians.
+        """
+        astro_time = Time(timestamp, format="unix", scale="utc")
+        return float(
+            astro_time.sidereal_time(
+                "apparent", longitude=self._telescope.site.lon * au.deg
+            ).radian
+        )
+
+    def _equatorial_envelope_mask(self) -> np.ndarray:
+        """Per-field boolean mask of fields inside the mount's HA/Dec envelope.
+
+        Computes hour angle vectorized as ``wrap_to_pi(LST - RA)`` to avoid a
+        per-field ``ephem`` loop, then tests each (HA, Dec) against
+        ``equatorial_limit``. Returns an all-True mask when the profile has no
+        equatorial limit (alt-az mounts).
+
+        Returns
+        -------
+        Boolean array of shape ``(nfields,)``; True where the field is reachable.
+        """
+        if self._equatorial_limit is None:
+            return np.ones(self.nfields, dtype=bool)
+        lst = self._local_sidereal_time(self._ts)
+        # Wrap to (-pi, pi] to match the ephem hour-angle convention.
+        ha = (lst - self._ra_arr + np.pi) % (2.0 * np.pi) - np.pi
+        return np.asarray(
+            self._equatorial_limit.satisfies(ha, np.degrees(self._dec_arr)),
+            dtype=bool,
+        )
  
     def _get_slew_time(self, last_fid, current_fid, overhead=30.0):
         """Calculates time to move telescope between fields."""
@@ -964,7 +1021,10 @@ class BaseBlancoEnv(gym.Env, ABC):
         airmass[~mask_above_horizon] = 10  # sentinel
         effective_airmass_limit = min(self.airmass_limit, self.airmass_failsafe)
         mask_visibility = airmass < effective_airmass_limit
- 
+
+        # Equatorial mount cannot track past the per-Dec hour-angle envelope.
+        mask_visibility = mask_visibility & self._equatorial_envelope_mask()
+
         sel_valid = self._survey_progress_tracker.get_incomplete_mask()
         if self.do_filt:
             sel_valid = sel_valid & mask_visibility[:, np.newaxis]

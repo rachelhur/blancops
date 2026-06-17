@@ -43,6 +43,7 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         initial_ot_at_sunset: float = 0.0,
         initial_fwhm: Optional[float] = None,
         field_mask_schedule=None,
+        telescope=None,
     ):
         # Parse before super so max_nights is known in time.
         self._night_info = self._parse_night_strs(observing_night_strs)
@@ -57,6 +58,7 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
             lookups=lookups,
             z_score_stats=z_score_stats,
             rel_norm_stats=rel_norm_stats,
+            telescope=telescope,
             max_nights=len(self._night_info),
         )
         self._initial_counts = initial_counts

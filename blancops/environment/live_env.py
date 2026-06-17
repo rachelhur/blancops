@@ -49,6 +49,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
         rel_norm_stats,
         telemetry_init,
         survey_night_idx=0,
+        telescope=None,
     ):
         self._survey_night_idx = survey_night_idx
 
@@ -64,6 +65,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
             lookups=lookups,
             z_score_stats=z_score_stats,
             rel_norm_stats=rel_norm_stats,
+            telescope=telescope,
         )
         # airmass_limit and sun_el_limit are stored on self by base.
         # Live sessions always start fresh; offline envs load this from
