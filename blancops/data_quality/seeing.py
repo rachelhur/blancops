@@ -7,9 +7,10 @@ from blancops.ephemerides.time_utils import (
     standardize_time,
     utc_now,
     standardize_timedelta,
+    unix_to_datetime,
 )
 
-__all__ = ["convert_seeing", "Seeing"]
+__all__ = ["convert_seeing", "Seeing", "DatabaseSeeing"]
 
 # Hardcoded seeing conversion factors between bands
 # Copied from obztak seeing.py, which in turn got them from Eric Neilsen
@@ -177,12 +178,7 @@ class Seeing:
 
         # append new data to history table
         combined = new if self.raw.empty else pd.concat([self.raw, new])
-        self.raw = (
-            combined
-            .sort_values("date")
-            .reset_index(drop=True)
-            .convert_dtypes()
-        )
+        self.raw = combined.sort_values("date").reset_index(drop=True).convert_dtypes()
 
         # convert raw data to i-band at zenith, with no instrument contribution
         self.data = pd.DataFrame(
@@ -308,3 +304,176 @@ class Seeing:
             from_instrument=0.0,
             to_instrument=self.to_instrument,
         )
+
+
+class DatabaseSeeing(Seeing):
+    """Seeing history container backed by DECam QC database queries."""
+
+    def __init__(
+        self,
+        dbname=None,
+        window="15m",
+        retention_window=None,
+        from_instrument=_DECAM_FWHM,
+        to_instrument=_DECAM_FWHM,
+    ):
+        """
+        Initialize the DatabaseSeeing container.
+
+        Arguments
+        ---------
+        dbname : str [None]
+            Database name to connect to; default parses hostname and .desservices.ini
+        window : float, str, Timedelta ["15m"]
+            Time window of recent history to use for prediction. Float values are
+            interpreted as seconds. Str values are parsed as Timedeltas.
+        retention_window : float, str, Timedelta [None]
+            Time window to retain history for; defaults to 2*window.
+        from_instrument : float [0.5 * units.arcsec]
+            Instrument component of measured seeing values, summed in quadrature with
+            the atmospheric component. Default is expected for qc_fwhm values from DECam
+        to_instrument : float [0.5 * units.arcsec]
+            Component of seeing due to the target instrument, summed in quadrature with
+            the atmospheric component. Default is expected for DECam
+        """
+        from blancops.live_scheduler.database import Database
+
+        # initialize parent Seeing container
+        super(DatabaseSeeing, self).__init__(
+            window=window,
+            retention_window=retention_window,
+            from_instrument=from_instrument,
+            to_instrument=to_instrument,
+        )
+
+        # initialize database connection
+        self.database = Database(dbname=dbname)
+
+    def update(self, now=None):
+        """
+        Query for new qc_fwhm values, append them, and prune stale history.
+
+        Arguments
+        ---------
+        now : float, str, datetime [None]
+            Reference time for querying and pruning. Defaults to now.
+
+        Returns
+        -------
+        bool
+            True if there were changes to recent or older seeing history
+        """
+        # format reference time and cutoff for query
+        reference_time = standardize_time(now) if now is not None else utc_now()
+        cutoff_time = reference_time - self.retention_window
+
+        # consider new values since the later of last measurement and cutoff time
+        if self.data.empty:
+            query_start = cutoff_time
+        else:
+            query_start = min(self.data["date"].max(), cutoff_time)
+
+        # build query for valid qc_fwhm values
+        query = """
+        SELECT date, qc_fwhm AS seeing, filter AS band, airmass
+        FROM exposure
+        WHERE
+            flavor = 'object'
+            AND date > '{query_start}'
+            AND date <= '{reference_time}'
+            AND filter != 'VR'
+            AND filter IN ('g', 'r', 'i', 'z', 'Y')
+            AND qc_fwhm IS NOT NULL
+            AND qc_fwhm > 0
+        ORDER BY date ASC
+        """.format(
+            query_start=unix_to_datetime(query_start).isoformat(sep=" "),
+            reference_time=unix_to_datetime(reference_time).isoformat(sep=" "),
+        )
+
+        # execute query and convert to dataframe
+        raw_rows = self.database.execute(query)
+        if raw_rows:
+            candidate = pd.DataFrame(
+                raw_rows, columns=["date", "seeing", "band", "airmass"]
+            )
+            candidate = candidate.dropna(subset=["date", "seeing", "band", "airmass"])
+            candidate = candidate.copy()
+
+            # format columns into standard format
+            candidate["date"] = candidate["date"].apply(standardize_time)
+            candidate["seeing"] = candidate["seeing"].astype(float) * units.arcsec
+            candidate["band"] = candidate["band"].astype(str)
+            candidate["el"] = np.arcsin(
+                1.0 / np.clip(candidate["airmass"].astype(float), 1.0, np.inf)
+            )
+            candidate = candidate[["date", "seeing", "band", "el"]]
+
+            # check for duplicates with existing data to avoid re-adding old data
+            existing = self.raw[["date", "seeing", "band", "el"]].copy()
+            if existing.empty:
+                new_rows = candidate
+            else:
+                merged = candidate.merge(
+                    existing.drop_duplicates(),
+                    on=["date", "seeing", "band", "el"],
+                    how="left",
+                    indicator=True,
+                )
+                new_rows = merged.loc[
+                    merged["_merge"] == "left_only",
+                    [
+                        "date",
+                        "seeing",
+                        "band",
+                        "el",
+                    ],
+                ]
+        else:
+            new_rows = pd.DataFrame(columns=["date", "seeing", "band", "el"])
+
+        # track recent and older measurement times before updating
+        recent_times = set(
+            self.data.loc[
+                (self.data["date"] < reference_time)
+                & (self.data["date"] >= (reference_time - self.window)),
+                "date",
+            ]
+        )
+        ancient_times = set(
+            self.data.loc[
+                (self.data["date"] < (reference_time - self.window))
+                & (self.data["date"] >= (reference_time - self.retention_window)),
+                "date",
+            ]
+        )
+
+        # add new rows to history
+        if len(new_rows) > 0:
+            self.add(
+                date=new_rows["date"].to_numpy(),
+                seeing=new_rows["seeing"].to_numpy(dtype=float),
+                band=new_rows["band"].to_numpy(dtype=str),
+                el=new_rows["el"].to_numpy(dtype=float),
+                prune=False,
+            )
+
+        # prune old history
+        self.prune(now=reference_time)
+
+        # return whether the update resulted in changes to recent or ancient history
+        new_recent_times = set(
+            self.data.loc[
+                (self.data["date"] < reference_time)
+                & (self.data["date"] >= (reference_time - self.window)),
+                "date",
+            ]
+        )
+        new_ancient_times = set(
+            self.data.loc[
+                (self.data["date"] < (reference_time - self.window))
+                & (self.data["date"] >= (reference_time - self.retention_window)),
+                "date",
+            ]
+        )
+        return new_recent_times != recent_times or new_ancient_times != ancient_times
