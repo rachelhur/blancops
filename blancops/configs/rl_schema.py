@@ -11,10 +11,11 @@ from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, _NORM_TYPES
 from blancops.survey.profiles import DES
 
-class ActionConstraints(BaseModel): 
+class ActionConstraints(BaseModel):
     sun_el_limit: float = DES.sun_el_limit
     airmass_limit: float = 3.0
-    
+    airmass_failsafe: float = 1.8
+
     @field_validator('sun_el_limit')
     @classmethod
     def validate_sun_el_limit(cls, v):
@@ -24,13 +25,13 @@ class ActionConstraints(BaseModel):
             raise ValueError('sun_el_limit should be >= -90 degrees')
         return v
         
-    @field_validator('airmass_limit')
+    @field_validator('airmass_limit', 'airmass_failsafe')
     @classmethod
     def validate_airmass_limit(cls, v):
         if v <= 1.0:
-            raise ValueError('airmass_limit should be > 1.0 (minimum airmass at zenith)')
+            raise ValueError('airmass limit should be > 1.0 (minimum airmass at zenith)')
         if v > 10.0:
-            raise ValueError('airmass_limit should be <= 10.0 (extremely high airmass)')
+            raise ValueError('airmass limit should be <= 10.0 (extremely high airmass)')
         return v
 
 class NormalizationConfig(BaseModel):

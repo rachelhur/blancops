@@ -139,6 +139,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._z_score_stats = z_score_stats
         self._rel_norm_stats = rel_norm_stats
         self.airmass_limit = constraints_cfg.airmass_limit
+        self.airmass_failsafe = constraints_cfg.airmass_failsafe
         self.sun_el_limit = constraints_cfg.sun_el_limit
 
         # Feature Configs
@@ -961,7 +962,8 @@ class BaseBlancoEnv(gym.Env, ABC):
             90 * units.deg - fields_el[mask_above_horizon]
         )
         airmass[~mask_above_horizon] = 10  # sentinel
-        mask_visibility = airmass < self.airmass_limit
+        effective_airmass_limit = min(self.airmass_limit, self.airmass_failsafe)
+        mask_visibility = airmass < effective_airmass_limit
  
         sel_valid = self._survey_progress_tracker.get_incomplete_mask()
         if self.do_filt:
