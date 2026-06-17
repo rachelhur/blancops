@@ -82,6 +82,70 @@ def to_lookup_fields_df(
         }
     )
 
+def select_covering_tiles(
+    target_ra: np.ndarray,
+    target_dec: np.ndarray,
+    tile_ra: np.ndarray,
+    tile_dec: np.ndarray,
+    fov: float = 1.1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select the tiles whose FOV covers a set of target positions.
+
+    Each target is matched to its nearest tile center on the sphere. A target
+    is considered covered when that nearest center lies within the tile field
+    of view, i.e. when the angular separation satisfies
+
+        sep <= fov
+
+    The circular (radius) test is conservative: with fov = 1.1 deg it stays
+    inside DECam's real focal-plane footprint, so a "covered" result implies
+    on-sky coverage. The returned tile set is the union of nearest tiles taken
+    over all covered targets.
+
+    Parameters
+    ----------
+    target_ra, target_dec : np.ndarray
+        Target right ascension and declination in degrees, shape (n_targets,).
+    tile_ra, tile_dec : np.ndarray
+        Tiling-center right ascension and declination in degrees, shape
+        (n_tiles,).
+    fov : float, optional
+        Tile field-of-view radius in degrees (default 1.1). A target is covered
+        when within this angular distance of a tile center.
+
+    Returns
+    -------
+    selected_tile_idx : np.ndarray
+        Sorted unique integer indices into the tile arrays for tiles that cover
+        at least one target.
+    uncovered_target_mask : np.ndarray
+        Boolean array, shape (n_targets,), True where the target's nearest tile
+        is farther than fov (no tile covers it).
+    """
+    target_ra = np.asarray(target_ra, dtype=float)
+    target_dec = np.asarray(target_dec, dtype=float)
+    tile_ra = np.asarray(tile_ra, dtype=float)
+    tile_dec = np.asarray(tile_dec, dtype=float)
+
+    if target_ra.size == 0 or tile_ra.size == 0:
+        return (
+            np.empty(0, dtype=int),
+            np.ones(target_ra.size, dtype=bool),
+        )
+
+    targets = SkyCoord(ra=target_ra * au.deg, dec=target_dec * au.deg)
+    tiles = SkyCoord(ra=tile_ra * au.deg, dec=tile_dec * au.deg)
+
+    # Nearest tile center per target (great-circle separation).
+    nearest_tile_idx, sep, _ = targets.match_to_catalog_sky(tiles)
+
+    covered = sep <= fov * au.deg
+    selected_tile_idx = np.unique(nearest_tile_idx[covered])
+    uncovered_target_mask = ~covered
+
+    return selected_tile_idx, uncovered_target_mask
+
+
 def select_in_path(vertices, ra, dec, wrap=180., radius=0.0):
     """
     Checks if a set of (ra, dec) points (in degrees) fall within a given polygon.
