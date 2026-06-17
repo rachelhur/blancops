@@ -14,13 +14,14 @@ import numpy as np
 from pathlib import Path
 from abc import ABC, abstractmethod
 from blancops.configs.constants import IDX2FILTER
+from blancops.configs.rl_schema import ActionConstraints
 from blancops.data.features.glob_features import get_night_boundaries
+from blancops.environment.live_env import LiveBlancoEnv
 from blancops.ephemerides.time_utils import utc_now
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
 from blancops.data.lookup_tables import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
-from blancops.live_scheduler.inference.helpers import build_env
 from blancops.rl.agent_factory import AgentFactory
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ class ModelRunner(ABC):
         pass
 
     @abstractmethod
-    def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size):
+    def generate_chunk(self, telemetry, available_fields, masked_field, masked_propids, chunk_size):
         """
         Generate a chunk of proposed observations.
 
@@ -61,8 +62,12 @@ class ModelRunner(ABC):
             "pointing_ra" and "pointing_dec".
         available_fields: list
             Candidate field set available for scheduling.
-        masked_fields: list
-            Fields to avoid in this proposal cycle.
+        masked_field: pandas.DataFrame
+            Field-level masks to avoid this cycle; rows carry at least a
+            "field_id" column.
+        masked_propids: set
+            Propids whose fields should be avoided this cycle (resolved to
+            field_ids via the lookup table).
         chunk_size: int
             Number of sequential observations to propose.
 
@@ -175,34 +180,54 @@ class MockModelRunner(ModelRunner):
 
 
 class AIModelRunner(ModelRunner):
-    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu", 
-                 field_choice_method: str = "interp"):
+    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu",
+                 field_choice_method: str = "interp", mode='test'):
         self.device = device
-        self.TESTING_MODE = True # XXX remove before production
-        
+        self.TESTING_MODE = mode == 'test' # XXX remove before production
+
         # Fields and Lookups
         self.fields_dir = Path(field_lookup_dir)
         self.lookups = self._get_lookups(fields_path, self.fields_dir)
-        
+
+        # Model
+        self._build_agent(model_path_or_alias=model_path_or_alias, field_choice_method=field_choice_method)
+        logger.info(f"[Model] Loaded model weights from {model_path_or_alias} into memory.")
+
+        if self.TESTING_MODE:
+            now_ts = utc_now()
+            sunset_ts, _ = get_night_boundaries(now_ts, -14)
+            init_ts = max(now_ts, sunset_ts + 60*60)
+            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=init_ts)
+            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': init_ts}
+        else:
+            raise NotImplementedError
+
+        self.env = self._build_env(telemetry_now=telemetry)
+        self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
+
+    def _build_agent(self, model_path_or_alias, field_choice_method):
         # Agent and Model
         factory = AgentFactory() # Defaults to WORKSPACE / "deployable_models"
-        self.agent, self.cfg, norm_stats = factory.build_agent(
+        self.agent, self.cfg, self.norm_stats = factory.build_agent(
             model_path_or_alias=model_path_or_alias,
             lookups=self.lookups,
             field_choice_method=field_choice_method,
             device=self.device
         )
-        
-        self.model_dir = factory.resolve_model_dir(model_path_or_alias)
-        if self.TESTING_MODE:
-            sunset_ts, _ = get_night_boundaries(utc_now(), -20)
-            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=sunset_ts)
-            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': sunset_ts}
-            self.env = build_env(cfg=self.cfg, lookups=self.lookups, norm_stats=norm_stats, telemetry_now=telemetry)
-            self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
-            print(f"[Model] Loaded model weights from {model_path_or_alias} into memory.")
-        else:
-            raise NotImplementedError
+
+    def _build_env(self, telemetry_now):
+        constraints_cfg = ActionConstraints()
+        zscore_stats = self.norm_stats.get('z_score', {})
+        rel_norm_stats = self.norm_stats.get('rel_norm', {})
+        env = LiveBlancoEnv(
+            cfg=self.cfg,
+            constraints_cfg=constraints_cfg,
+            lookups=self.lookups,
+            z_score_stats=zscore_stats,
+            rel_norm_stats=rel_norm_stats,
+            telemetry_init=telemetry_now
+        )
+        return env
 
     @staticmethod
     def _get_lookups(fields_path, fields_dir):
@@ -213,7 +238,7 @@ class AIModelRunner(ModelRunner):
         return lookups
         
     def generate_chunk(self, telemetry=None, available_fields=None, masked_field=None,
-                       chunk_size=3, new_fields=None, new_lookup_dir=None,
+                       masked_propids=None, chunk_size=3, new_fields=None, new_lookup_dir=None,
                        ) -> pd.DataFrame:
         """Schedules a chunk of size `chunk_size` observations given the current state.
 
@@ -226,6 +251,15 @@ class AIModelRunner(ModelRunner):
         telemetry = self.resolve_rollout_telemetry(telemetry)
 
         self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
+
+        # Resolve operator field masks (field-level DataFrame + propid set) to a
+        # flat set of field ids and apply before any action-mask refresh.
+        masked_ids = set()
+        if masked_field is not None and len(masked_field):
+            masked_ids |= set(int(fid) for fid in masked_field["field_id"].tolist())
+        if masked_propids:
+            masked_ids |= self.lookups.field_ids_for_propids(masked_propids)
+        self.env.set_masked_fields(masked_ids)
 
         # Sync live env with hardware telemetry, save rollout baseline, run rollout,
         # then restore so live state (including record_visit history) is preserved.
@@ -243,6 +277,10 @@ class AIModelRunner(ModelRunner):
     def record_visit(self, obs_row) -> None:
         """Update the live env's visit history after a hardware submission."""
         self.env.record_visit(obs_row)
+
+    def get_maskable_propids(self) -> list:
+        """Propids available for operator masking, for the UI's choice list."""
+        return self.lookups.available_propids()
 
     def resolve_rollout_telemetry(self, telemetry: dict) -> dict:
         """Normalize raw client telemetry to env-canonical form.

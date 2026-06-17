@@ -9,10 +9,10 @@ from blancops.configs.enums import *
 from blancops.configs.constants import _DEFAULT_NORM_MAPPING, _FILTER_DEP_FEATURE_NAMES, DES_FITS_PATH, _BIN_FEATURES
 from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, _NORM_TYPES
-from blancops.survey.des_consts import _DES_SUN_EL_LIMIT
+from blancops.survey.profiles import DES
 
 class ActionConstraints(BaseModel): 
-    sun_el_limit: float = _DES_SUN_EL_LIMIT
+    sun_el_limit: float = DES.sun_el_limit
     airmass_limit: float = 3.0
     
     @field_validator('sun_el_limit')
@@ -70,6 +70,20 @@ class NormalizationConfig(BaseModel):
                 )
         return self
 
+class SeeingConfig(BaseModel):
+    """Parameters for the Seeing rolling-history predictor.
+
+    Shared by the offline causal-fwhm feature builder, the historic
+    validation env, and the live env so train and serve agree. Instrument
+    components are in arcsec and converted to native angle units when a
+    Seeing instance is built.
+    """
+    window: str = "15m"
+    retention_window: Optional[str] = None
+    from_instrument: float = 0.5
+    to_instrument: float = 0.5
+
+
 class BaseDataConfig(BaseModel):
     name: str = 'des-data-v0'
     path: str = str(DES_FITS_PATH)
@@ -81,6 +95,9 @@ class BaseDataConfig(BaseModel):
     
     # Normalization configuration
     norm: NormalizationConfig = Field(default_factory=NormalizationConfig)
+
+    # Seeing predictor configuration
+    seeing: SeeingConfig = Field(default_factory=SeeingConfig)
     
     # Configurations calculated after data processing (required for model instantiation)
     state_dim: Optional[int] = None

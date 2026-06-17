@@ -148,6 +148,34 @@ def galactic_to_equatorial(l, b):
     return ra if np.iterable(ra) else ra.item(), dec if np.iterable(dec) else dec.item()
 
 
+def equatorial_to_galactic(ra, dec):
+    """
+    Convert equatorial Ra/Dec to galactic longitude l / latitude b.
+
+    Arguments
+    ---------
+    ra, dec : floats or arrays of floats
+        Right ascension and declination in radians
+
+    Returns
+    -------
+    l, b : floats or arrays of floats
+        Galactic longitude and latitude in radians
+    """
+    from astropy.coordinates import SkyCoord
+
+    icrs = SkyCoord(
+        ra=np.asarray(ra) / units.deg,
+        dec=np.asarray(dec) / units.deg,
+        frame="icrs",
+        unit="deg",
+    )
+    gal = icrs.galactic
+    l, b = gal.l.rad, gal.b.rad
+
+    return l if np.iterable(l) else l.item(), b if np.iterable(b) else b.item()
+
+
 def equatorial_to_hour_angle(ra, dec, time=None, observer=None):
     """
     Compute hour angle of specified RA/Dec coordinate at a specified time. Uses the
@@ -227,6 +255,44 @@ def get_source_ra_dec(source, time=None, observer=None):
         body = ephem.Sun()
     body.compute(observer)
     return float(body.ra), float(body.dec)
+
+
+def get_source_set_time(source, time=None, observer=None, horizon=0):
+    """
+    Get the Unix timestamp of the next setting of a known source.
+
+    Arguments
+    ---------
+    source : str
+        Source name. Options: "moon", "sun".
+    time : float [None]
+        Time (Unix timestamp, in UTC) from which to search forward. Default: now.
+    observer : ephem.Observer [None]
+        Observer object. If not provided, defaults to Blanco observer at chosen time.
+    horizon : float [0]
+        Horizon elevation (deg) defining the set event.
+
+    Returns
+    -------
+    set_time : float
+        Unix timestamp (UTC) of the first setting after `time`.
+    """
+
+    source = source.lower()
+    if source not in {"moon", "sun"}:
+        raise NotImplementedError("Getting set time for invalid source: " + source)
+
+    observer = observer if observer is not None else blanco_observer(time=time)
+    observer.horizon = str(horizon)
+
+    if source == "moon":
+        body = ephem.Moon()
+    elif source == "sun":
+        body = ephem.Sun()
+    body.compute(observer)
+
+    ephem_date = observer.next_setting(body)
+    return ephem_date.datetime().replace(tzinfo=timezone.utc).timestamp()
 
 
 class HealpixGrid:

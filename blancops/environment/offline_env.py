@@ -8,8 +8,10 @@ import numpy as np
 
 from blancops.environment.base import StateSnapshot
 from blancops.environment.offline_base import BaseBlancoOfflineEnv
+from blancops.environment.field_mask_schedule import resolve_positional_mask
 from blancops.data.features.glob_features import calc_twilight, get_night_boundaries
-from blancops.configs.constants import ZENITH_EL, FWHM_REF_FILTER
+from blancops.environment.seeing_model import ConstantSeeingModel
+from blancops.configs.constants import FWHM_REF_FILTER
 
 import logging
 logger = logging.getLogger(__name__)
@@ -40,9 +42,15 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         initial_last_visit_ot: Optional[np.ndarray] = None,
         initial_ot_at_sunset: float = 0.0,
         initial_fwhm: Optional[float] = None,
+        field_mask_schedule=None,
     ):
         # Parse before super so max_nights is known in time.
         self._night_info = self._parse_night_strs(observing_night_strs)
+        # Initialize mask state before super().__init__ so any action-mask
+        # refresh during base init is safe (schedule disabled => identity); the
+        # positional masks are resolved once _fids exists, then enabled below.
+        self._field_mask_schedule = None
+        self._rule_positional_masks: dict = {}
         super().__init__(
             cfg=cfg,
             constraints_cfg=constraints_cfg,
@@ -56,20 +64,20 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         self._initial_ot_at_sunset = float(initial_ot_at_sunset)
 
         # Seed seeing for the forward simulation. There is no measured
-        # seeing in a date-string sim, so `initial_fwhm` is interpreted as the
-        # assumed zenith seeing (elevation=ZENITH_EL) in the reference band and
-        # is projected to each pointing's elevation/filter by `_get_fwhm`. Base
-        # atmospheric seeing is held constant across the run.
+        # seeing in a date-string sim, so `initial_fwhm` is the assumed
+        # delivered zenith seeing in the reference band, projected to each
+        # pointing's elevation/filter by the constant model. Held constant
+        # across the run.
         if initial_fwhm is not None:
-            self._fwhm_ref = float(initial_fwhm)
-            self._fwhm_ref_el = ZENITH_EL
-            self._fwhm_ref_band = FWHM_REF_FILTER
+            self._seeing_model = ConstantSeeingModel(
+                zenith_seeing=float(initial_fwhm), ref_band=FWHM_REF_FILTER,
+            )
 
         # Cache prevents double-advancement if _get_night_config
         # is re-entered for a night that's already been started.
         self._night_cfg_cache: dict[int, dict] = {}
 
-        if "fwhm" in self.global_feature_names and self._fwhm_ref is None:
+        if "fwhm" in self.global_feature_names and self._seeing_model is None:
             raise ValueError(
                 "OfflineBlancoEnv: 'fwhm' is a configured global feature but "
                 "initial_fwhm=None. Pass initial_fwhm (assumed zenith seeing, "
@@ -77,6 +85,17 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
             )
 
         self._validate_feature_config()
+
+        # Resolve the time-windowed mask schedule to one positional boolean mask
+        # per rule (over self._fids), then enable it. Done after super().__init__
+        # so self._fids exists. propids -> field_ids uses the same lookup call as
+        # the live model runner.
+        if field_mask_schedule is not None:
+            for rule in field_mask_schedule.rules():
+                self._rule_positional_masks[rule] = resolve_positional_mask(
+                    rule, self._fids, lookups.field_ids_for_propids
+                )
+            self._field_mask_schedule = field_mask_schedule
 
     @staticmethod
     def _parse_night_strs(night_strs: list[str]) -> list[tuple[date, str]]:
@@ -208,13 +227,17 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         # None-skip behaviour.
         return StateSnapshot(timestamp=cfg["start_ts"])
 
-    # -----------------------------------------------------------------------
-    # Feature-context hook overrides
-    # -----------------------------------------------------------------------
+    def _apply_field_mask(self, sel_valid: np.ndarray) -> np.ndarray:
+        """Zero validity rows for fields masked by the active schedule rule.
 
-    def _get_fwhm(
-        self, timestamp: float, el: Optional[float] = None,
-        filter_idx: Optional[int] = None,
-    ) -> Optional[float]:
-        # Project the seeded zenith seeing onto the current pointing.
-        return self._project_fwhm(el, filter_idx)
+        The active rule is selected by the current sim time (self._ts), so the
+        masking tracks the schedule's time windows. Identity when no schedule is
+        set. Works for both the (nfields, nfilters) and (nfields,) mask shapes
+        since field index is axis 0 in both.
+        """
+        if self._field_mask_schedule is None:
+            return sel_valid
+        rule = self._field_mask_schedule.active_rule(self._ts)
+        positional = self._rule_positional_masks[rule]
+        sel_valid[positional] = False
+        return sel_valid

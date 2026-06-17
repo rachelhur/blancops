@@ -41,10 +41,10 @@ from blancops.data.features.glob_features import (
     compute_global_pointing_features,
     calc_urgency,
     compute_global_tracker_features,
-    project_fwhm,
 )
 from blancops.data.features.normalizations import StateNormalizer, apply_cyclical_features, build_normalizer_kwargs, normalize_timestamp, setup_feature_names
 from blancops.environment.survey_tracker import SurveyProgressTracker
+from blancops.environment.seeing_model import SeeingModel
 from blancops.math import units
 from blancops.ephemerides import ephemerides
 from blancops.configs.constants import *
@@ -87,7 +87,7 @@ _FILTER_NAMES = list(FILTER2IDX.keys())
 # _STALENESS_BIN_REQUIREMENTS = [("attr", "lookups.total_ot_sec")]
 
 _FEATURE_REQUIREMENTS: dict[str, list[tuple[str, str]]] = {
-    "fwhm": [("hook", "_get_fwhm")],
+    "fwhm": [("attr", "_seeing_model")],
     "t_survey": [("hook", "_get_t_survey")],
     # Works in both 1D and 2D tracker modes — only attr check.
     "global_mean_tiling": [("attr", "_survey_progress_tracker")],
@@ -211,15 +211,10 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._last_glob_nan_mas: np.ndarray | None = None
         self._last_bin_nan_mask: np.ndarray | None = None
 
-        # Seeing (FWHM) reference for closed-loop estimation in the
-        # forward-sim envs: live anchors this triple on the last real
-        # telemetry reading, offline on a seed. None until anchored, so
-        # `_project_fwhm` is a no-op for envs that don't use it. The historic
-        # env ignores these entirely and overrides `_get_fwhm` with measured
-        # per-night splines.
-        self._fwhm_ref: float | None = None
-        self._fwhm_ref_el: float = ZENITH_EL
-        self._fwhm_ref_band: str = FWHM_REF_FILTER
+        # Seeing strategy. Subclasses assign a concrete SeeingModel
+        # (constant for the forward sim, predictive for live/historic). None
+        # until set, so `_get_fwhm` is a no-op for envs that don't use it.
+        self._seeing_model: SeeingModel | None = None
 
         # Survey progress tracker - built once at construction so that concrete subclasses can validate it
         target_counts = self.lookups.target_fidfilt_counts if self.do_filt else self.lookups.target_fid_counts
@@ -337,33 +332,20 @@ class BaseBlancoEnv(gym.Env, ABC):
         self, timestamp: float, el: Optional[float] = None,
         filter_idx: Optional[int] = None,
     ) -> Optional[float]:
-        """Seeing FWHM at the current pointing, or None.
+        """Delivered seeing FWHM (arcsec) at the current pointing, or None.
 
-        ``el`` (radians) and ``filter_idx`` describe the pointing being
-        evaluated (already resolved by ``_calculate_global_features``); the
-        forward-sim envs use them to rescale a reference seeing via
-        ``_project_fwhm``, while the historic env evaluates a measured spline
-        by timestamp alone.
+        Delegates to the env's SeeingModel. Returns None when no model is
+        set, so envs that do not request the fwhm feature are unaffected.
+        Filterless / zenith pointings reuse the reference band so only the
+        airmass term applies.
         """
-        return None
-
-    def _project_fwhm(
-        self, el: float, filter_idx: int,
-    ) -> Optional[float]:
-        """Closed-loop seeing estimate from the anchored reference triple.
-
-        Shared by the live and offline envs. Returns None when no reference
-        has been anchored (``_fwhm_ref is None``), so envs that don't request
-        the fwhm feature are unaffected. Reuses the reference band for
-        filterless (zenith / WAIT) pointings so only the airmass term applies.
-        """
-        if self._fwhm_ref is None:
+        if self._seeing_model is None:
             return None
-        from_band = self._fwhm_ref_band
-        to_band = IDX2FILTER.get(int(filter_idx), from_band)
-        return project_fwhm(
-            self._fwhm_ref, to_band=to_band, to_el=el,
-            from_band=from_band, from_el=self._fwhm_ref_el,
+        if el is None or filter_idx is None:
+            return None
+        band = IDX2FILTER.get(int(filter_idx), FWHM_REF_FILTER)
+        return self._seeing_model.fwhm(
+            timestamp=timestamp, band=band, el=el,
         )
 
     def _get_raw_survey_progress(self) -> Optional[np.ndarray]:
@@ -943,6 +925,16 @@ class BaseBlancoEnv(gym.Env, ABC):
             ),
         })
  
+    def _apply_field_mask(self, sel_valid: np.ndarray) -> np.ndarray:
+        """Optional hook: drop operator-masked fields from the validity mask.
+
+        Default is identity (no masking). LiveBlancoEnv overrides this to zero
+        the rows of `sel_valid` for fields the operator has masked. Called by
+        `_update_action_masks` after visibility gating so that both the action
+        mask and `_valid_fields_per_bin` reflect the masking consistently.
+        """
+        return sel_valid
+
     def _update_action_masks(self):
         """Construct the action mask based on airmass / horizon / completion."""
         sun_radec = ephemerides.get_source_ra_dec('sun', time=self._ts)
@@ -974,9 +966,12 @@ class BaseBlancoEnv(gym.Env, ABC):
         sel_valid = self._survey_progress_tracker.get_incomplete_mask()
         if self.do_filt:
             sel_valid = sel_valid & mask_visibility[:, np.newaxis]
-            sel_valid_fields = sel_valid.any(axis=1)
         else:
             sel_valid = sel_valid & mask_visibility
+        sel_valid = self._apply_field_mask(sel_valid)
+        if self.do_filt:
+            sel_valid_fields = sel_valid.any(axis=1)
+        else:
             sel_valid_fields = sel_valid
  
         if self.hpGrid.is_azel:

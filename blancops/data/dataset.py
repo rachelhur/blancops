@@ -22,6 +22,27 @@ from blancops.data.features.normalizations import StateNormalizer, build_normali
 logger = logging.getLogger(__name__)
 
 
+def _overwrite_fwhm_with_causal(df, seeing_cfg):
+    """Replace the raw measured 'fwhm' column with the causal prediction.
+
+    Groups by night and applies compute_causal_fwhm so each row's fwhm is
+    the strictly-past Seeing prediction at that row's own pointing. Matches
+    the historic-eval rollout and live inference fwhm, removing train/serve
+    skew. No-op if 'fwhm' is absent.
+    """
+    from blancops.data.features.glob_features import compute_causal_fwhm
+    if 'fwhm' not in df.columns:
+        return df
+    out = np.empty(len(df), dtype=float)
+    for _, idx in df.groupby('night', sort=False).groups.items():
+        positions = df.index.get_indexer(idx)
+        night_df = df.loc[idx]
+        out[positions] = compute_causal_fwhm(night_df, seeing_cfg)
+    df = df.copy()
+    df['fwhm'] = out
+    return df
+
+
 def _collapse_cyclical_expansions(feature_names, cyclical_names):
     """Collapse ``<name>_cos`` / ``<name>_sin`` pairs back to ``<name>``.
 
@@ -90,6 +111,7 @@ class TransitionDataset(torch.utils.data.Dataset):
     # ------------------------------------------------------------------
 
     def _setup_configuration(self, cfg, norm_kwargs):
+        self._seeing_cfg = cfg.data.seeing
         self.reward = cfg.model.reward
         self.reward_weights = getattr(cfg.model, 'reward_weights', None) or RewardWeights()
         self.reward_norm = getattr(cfg.model, 'reward_norm', 'minmax')
@@ -142,6 +164,9 @@ class TransitionDataset(torch.utils.data.Dataset):
             )
 
         self._df = cache.global_df
+
+        if 'fwhm' in self.global_feature_names:
+            self._df = _overwrite_fwhm_with_causal(self._df, self._seeing_cfg)
 
         if self.include_bin_features:
             bin_indices = [cache.bin_feature_names.index(f) for f in self.bin_feature_names]

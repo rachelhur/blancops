@@ -39,7 +39,7 @@ from blancops.configs.constants import *
  
 import logging
 
-from blancops.survey.des_consts import _DES_SUN_EL_LIMIT
+from blancops.survey.profiles import DES
 logger = logging.getLogger(__name__)
  
  
@@ -59,7 +59,7 @@ _INTERNAL_SENTINEL = np.nan
 # `data/preprocessing `build_DES_lookups()` so that night2ot_clock_seconds 
 # is consistent. This param is used by features:
 # `t_until_set` and *can* be used by `t_since_last_visit` (not advised).
-_SUN_EL_LIMIT_DEG = _DES_SUN_EL_LIMIT
+_SUN_EL_LIMIT_DEG = DES.sun_el_limit
 
  
 # ============================================================================

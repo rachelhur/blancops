@@ -251,12 +251,14 @@ class Evaluator(ABC):
             bins=bins,
         )
 
-    def plot_2dhist_res(self, feature_x, feature_y, bins=25):
+    def plot_2dhist_res(self, feature_x, feature_y, bins=25, label_fontsize=20, normalization='counts'):
         return self.plotter.plot_2dhist_res(
             feature_x, feature_y,
             self.data.expert_df[feature_x], self.data.expert_df[feature_y],
             self.data.agent_df[feature_x],  self.data.agent_df[feature_y],
             bins=bins,
+            label_fontsize=label_fontsize,
+            normalization=normalization,
         )
         
     def plot_2dhist_per_filter(self, feature_x, feature_y, bins=25, density=True):
@@ -812,16 +814,6 @@ class MultiStepEvaluator(Evaluator):
             feature_name, expert_arr=expert_arr,
             agent_arr=self.data.agent_df[feature_name],
             density=density, bins=bins, use_weights=use_weights, ax=ax,
-        )
-        
-    def plot_2dhist_res(self, feature_x, feature_y, bins=25, label_fontsize=20, normalization='counts'):
-        return self.plotter.plot_2dhist_res(
-            feature_x, feature_y,
-            self.data.expert_df[feature_x], self.data.expert_df[feature_y],
-            self.data.agent_df[feature_x],  self.data.agent_df[feature_y],
-            bins=bins,
-            label_fontsize=label_fontsize,
-            normalization=normalization
         )
         
     def _calculate_performance_metrics(self):

@@ -10,6 +10,7 @@ from blancops.configs.enums import Algorithm
 from blancops.configs.rl_schema import ExperimentConfig, load_and_validate
 from blancops.rl.registry import _build_bc_policy, _build_q_adapter, build_network
 from blancops.rl.agent import Agent
+from blancops.rl.checkpointer import resolve_weights_path
 
 import logging
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class AgentFactory:
             base_model_dir (str, optional): _description_. Defaults to WORKSPACE / "deployable_models".
         """
         self.base_dir = Path(base_model_dir)
-        self.alias_file = self.base_dir / "aliases.yaml"
+        self.alias_file = self.base_dir / "aliases.yml"
         self.aliases = self._load_aliases()
 
     def build_agent(
@@ -36,10 +37,8 @@ class AgentFactory:
         weights_filename: str = None # Now defaults to None for auto-detection
     ) -> Tuple[Agent, ExperimentConfig, dict]:
         
-        model_dir = self.resolve_model_dir(model_path_or_alias)
-        
         # If model_path_or_alias is an absolute path or a path that exists, prefer that
-        if isinstance(model_path_or_alias, (str,)) and Path(model_path_or_alias).is_absolute() and Path(model_path_or_alias).exists():
+        if isinstance(model_path_or_alias, str) and Path(model_path_or_alias).is_absolute() and Path(model_path_or_alias).exists():
             model_dir = Path(model_path_or_alias)
         elif isinstance(model_path_or_alias, Path) and model_path_or_alias.exists():
             model_dir = model_path_or_alias
@@ -73,34 +72,8 @@ class AgentFactory:
         return agent, cfg, norm_stats
 
     def _resolve_weights_path(self, model_dir: Path, filename: str = None) -> Path:
-        """Logic to find the best weights file automatically."""
-        # If user explicitly asked for a file, give it to them
-        if filename:
-            # Check root (deployment) or checkpoints/ (training)
-            path = model_dir / filename if (model_dir / filename).exists() else model_dir / "checkpoints" / filename
-            return path
-
-        # Check for deployment model first (Standard for live scheduling)
-        if (model_dir / "model.pt").exists():
-            return model_dir / "model.pt"
-
-        # Auto-detect best from training history (Standard for validation)
-        history_file = model_dir / "checkpoints" / "checkpoint_history.json"
-        if history_file.exists():
-            with open(history_file, 'r') as f:
-                history = json.load(f)
-            if history:
-                # Top-K logic ensures index 0 is the best
-                best_path = Path(history[0]['filepath'])
-                logger.info(f"Auto-detected best weights: {best_path.name}")
-                return best_path
-
-        # Ultimate fallback
-        fallback = model_dir / "checkpoints" / "latest_checkpoint.pt"
-        if fallback.exists():
-            return fallback
-            
-        raise FileNotFoundError(f"Could not find any valid weights in {model_dir}")
+        """Resolve the weights file via the shared, machine-portable resolver."""
+        return resolve_weights_path(model_dir, filename)
 
     @staticmethod
     def load_policy(weights_path: Path, cfg: ExperimentConfig, device: str) -> Tuple[torch.nn.Module, dict]:
@@ -118,19 +91,48 @@ class AgentFactory:
             logger.warning(f"torch.load failed with default settings when loading policy: {e}. Retrying with weights_only=False.")
             checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
 
-        if isinstance(checkpoint, dict) and ('model_state_dict' in checkpoint or 'policy_state_dict' in checkpoint or 'state_dict' in checkpoint):
-            # Support multiple checkpoint key names
-            state_dict = checkpoint.get('model_state_dict') or checkpoint.get('policy_state_dict') or checkpoint.get('state_dict')
-            policy.load_state_dict(state_dict)
+        if isinstance(checkpoint, dict) and any(
+            k in checkpoint for k in ('model_state_dict', 'policy_state_dict', 'state_dict')
+        ):
+            # Support multiple checkpoint key names.
+            for key in ('model_state_dict', 'policy_state_dict', 'state_dict'):
+                if key in checkpoint:
+                    state_dict = checkpoint[key]
+                    break
             norm_stats = checkpoint.get('norm_stats', {})
         else:
-            # If checkpoint is raw state dict
-            policy.load_state_dict(checkpoint)
+            # Raw state dict.
+            state_dict = checkpoint
             norm_stats = {}
-        
-            
+
+        AgentFactory._load_state_dict_tolerant(policy, state_dict, weights_path)
+
         policy.eval()
         return policy.to(device), norm_stats
+
+    @staticmethod
+    def _load_state_dict_tolerant(policy: torch.nn.Module, state_dict: dict, weights_path: Path):
+        """Load a state dict, tolerating a leading 'policy.' key prefix mismatch.
+
+        Deployment artifacts strip the 'policy.' wrapper prefix while some training
+        checkpoints keep it; retry once with the prefix removed before failing.
+        """
+        try:
+            policy.load_state_dict(state_dict)
+            return
+        except RuntimeError:
+            stripped = {
+                (k[len("policy."):] if k.startswith("policy.") else k): v
+                for k, v in state_dict.items()
+            }
+            try:
+                policy.load_state_dict(stripped)
+                return
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"Failed to load weights from {weights_path}: state dict keys do "
+                    f"not match the policy architecture. {e}"
+                ) from e
     
     def _load_aliases(self) -> dict:
         if self.alias_file.exists():

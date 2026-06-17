@@ -56,10 +56,38 @@ class SchedulerOrchestrator:
         # track the state of the current session
         self.session_masked_fields = pd.DataFrame(
             columns=["field_id", "ra", "dec", "filter"]
-        )  # XXX update this logic
+        )  # field-level operator masks (field_id is the only column AIModelRunner reads)
+        self.session_masked_propids = set()  # propid-level operator masks
         self.first_exposure = True
         self.last_submitted_obs = {}
         self.last_telemetry_check = -float("inf")
+
+    def _apply_mask_update(self, to_add, to_remove):
+        """Apply an operator mask add/remove to the session mask state.
+
+        Both arguments are dicts with keys "field_ids" (iterable[int]) and
+        "propids" (iterable[str]). Field masks are stored in
+        `session_masked_fields` (field_id populated; ra/dec/filter left NA since
+        only field_id is consumed downstream); propids in
+        `session_masked_propids`.
+        """
+        add_fids = list(to_add.get("field_ids", []))
+        if add_fids:
+            new_rows = pd.DataFrame({"field_id": add_fids}).reindex(
+                columns=["field_id", "ra", "dec", "filter"]
+            )
+            self.session_masked_fields = pd.concat(
+                [self.session_masked_fields, new_rows], ignore_index=True
+            ).drop_duplicates(subset=["field_id"], ignore_index=True)
+        self.session_masked_propids |= set(to_add.get("propids", set()))
+
+        remove_fids = set(to_remove.get("field_ids", []))
+        if remove_fids:
+            keep = ~self.session_masked_fields["field_id"].isin(remove_fids)
+            self.session_masked_fields = self.session_masked_fields[keep].reset_index(
+                drop=True
+            )
+        self.session_masked_propids -= set(to_remove.get("propids", set()))
 
     def run(self):
         """Run the continuous proposal/approval/submission loop until end condition."""
@@ -79,19 +107,21 @@ class SchedulerOrchestrator:
             # XXX pick up new field files
 
             # combine manually masked fields with already completed fields
+            # NOTE the completed_fields portion is redundant with the env's
+            # SurveyProgressTracker, so it is a safe no-op on the env. Only the
+            # field_id column is consumed by AIModelRunner.
             all_masks = pd.concat(
                 [self.session_masked_fields, self.progress.completed_fields],
                 ignore_index=True,
-            ).convert_dtypes()  # XXX update this logic
+            ).convert_dtypes()
 
             # create the new chunk
-            chunk_df = (
-                self.model.generate_chunk(  # XXX update the call to this function
-                    telemetry=telemetry,
-                    available_fields=[],  # XXX Placeholder
-                    masked_field=all_masks,
-                    chunk_size=self.chunk_size,
-                )
+            chunk_df = self.model.generate_chunk(
+                telemetry=telemetry,
+                available_fields=[],  # XXX Placeholder
+                masked_field=all_masks,
+                masked_propids=self.session_masked_propids,
+                chunk_size=self.chunk_size,
             )
 
             # guard against placeholder/failed model output
