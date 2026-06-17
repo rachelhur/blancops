@@ -3,8 +3,10 @@
 import argparse
 import os
 from pathlib import Path
+
+from matplotlib import pyplot as plt
 from blancops.io.logger_utils import configure_logger
-from blancops.rl.evaluations.evaluator import build_evaluators
+from blancops.rl.evaluations.evaluator import build_evaluators, plot_metric_distributions_with_ss_overlay
 from blancops.configs.rl_schema import load_and_validate
 import logging
 
@@ -73,6 +75,15 @@ def main():
     fig.savefig(outdir / 'ss' / 'ra_vs_dec_res.png')
     fig, ax =m_eval.plot_2dhist_res('ra', 'dec', normalization='probability')
     fig.savefig(outdir / 'ms' / 'ra_vs_dec_res.png')
+
+    m_eval.plot_violin_per_filter('moon_el')
+    plt.savefig(outdir / 'ms' / 'filter_strategy_violins_moon_el.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    plot_metric_distributions_with_ss_overlay(ms_evaluator=m_eval, ss_evaluator=s_eval)
+    plt.savefig(outdir / 'ms' / 'survey_quality_distributions.png', dpi=300, bbox_inches='tight')
+
+
 
 
 
