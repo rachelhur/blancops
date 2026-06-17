@@ -5,6 +5,8 @@ from typing import Literal
 import numpy as np
 import healpy as hp
 import pandas as pd
+from astropy import units as au
+from astropy.coordinates import SkyCoord
 
 from blancops.survey.footprint import galactic_plane_mask
 from blancops.survey.visibility import visible_fields

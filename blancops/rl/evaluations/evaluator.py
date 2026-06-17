@@ -75,7 +75,12 @@ def build_evaluators(
     )
     style = style or PlotStyle()
 
-    outdir = Path(cfg.outdir)
+    # Resolve the model dir from where the config was loaded
+    if cfg.orig_cfg_path:
+        cfg_dir = Path(cfg.orig_cfg_path).parent
+        outdir = cfg_dir.parent if cfg_dir.name == "configs" else cfg_dir
+    else:
+        outdir = Path(cfg.outdir)
     ss_outdir = outdir / eval_outdir / 'ss'
     ms_outdir = outdir / eval_outdir / 'ms'
 
