@@ -42,7 +42,7 @@ def main():
         cfg_dir = Path(cfg.orig_cfg_path).parent
         outdir = cfg_dir.parent if cfg_dir.name == "configs" else cfg_dir
     else:
-        outdir = Path(cfg.outdir)
+        outdir = Path(cfg.outdir) / 'holdout_eval'
 
     # ------------------------------
     # Initialize logger
