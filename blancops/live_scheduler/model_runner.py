@@ -216,7 +216,7 @@ class AIModelRunner(ModelRunner):
         )
 
     def _build_env(self, telemetry_now):
-        constraints_cfg = ActionConstraints()
+        constraints_cfg = ActionConstraints() # Uses default constraints
         zscore_stats = self.norm_stats.get('z_score', {})
         rel_norm_stats = self.norm_stats.get('rel_norm', {})
         env = LiveBlancoEnv(
@@ -236,7 +236,7 @@ class AIModelRunner(ModelRunner):
         else:
             lookups = LookupTables.load_from_dir(fields_dir, include_historic=False)
         return lookups
-        
+
     def generate_chunk(self, telemetry=None, available_fields=None, masked_field=None,
                        masked_propids=None, chunk_size=3, new_fields=None, new_lookup_dir=None,
                        ) -> pd.DataFrame:
@@ -303,13 +303,13 @@ class AIModelRunner(ModelRunner):
         return tel
 
     def update_lookups(self, new_fields_path, new_dir=None):
-        if not new_fields_path: 
+        if not new_fields_path:
             return self.lookups
-        
+
         new_lookups = LookupTables.build_lookups_from_fields(fields_path=new_fields_path, write_to_disk=False)
         self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir) # writes to disk if new_dir is not None
         return self.lookups
-    
+
     def _rollout(self, init_obs: dict, init_info: dict, chunk_size: int) -> pd.DataFrame:
         proposed_schedule = {'bin_idx': [],
                     'field_id': [],
@@ -318,29 +318,29 @@ class AIModelRunner(ModelRunner):
                     'ra': [],
                     'dec': [],
                     }
-        
+
         info = self.env.set_constraints(airmass_limit=2.5, sun_el_limit=-15.0)
 
         obs, info = init_obs, init_info
         for i in range(chunk_size):
             bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, self.hpGrid)
             actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
-            
+
             proposed_schedule['bin_idx'].append(bin_idx)
             proposed_schedule['field_id'].append(field_id)
             proposed_schedule['filter'].append(IDX2FILTER[filter_idx])
             proposed_schedule['timestamp'].append(info.get('timestamp'))
-    
-            
+
+
             ra, dec = self.lookups.fields[["ra", "dec"]].loc[field_id]
 
             proposed_schedule['ra'].append(ra)
             proposed_schedule['dec'].append(dec)
-            
+
             obs, reward, terminated, truncated, info = self.env.step(actions)
             if terminated or truncated: #ie, end of night - orchestrator default stops this, but doesn't hurt to have extra check here
                 break
-            
+
         for key, val in proposed_schedule.items():
             if key in ['bin_idx', 'field_id', 'timestamp']:
                 dtype = np.int64
@@ -349,5 +349,5 @@ class AIModelRunner(ModelRunner):
             elif key == 'filter':
                 dtype = str
             proposed_schedule[key] = np.array(val, dtype=dtype)
-        
+
         return pd.DataFrame(proposed_schedule)
