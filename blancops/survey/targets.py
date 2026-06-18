@@ -88,8 +88,10 @@ def select_covering_tiles(
     tile_ra: np.ndarray,
     tile_dec: np.ndarray,
     fov: float = 1.1,
+    return_indices: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Select the tiles whose FOV covers a set of target positions.
+    """Select the tiles whose FOV covers a set of target positions. Wrapper around astropy's
+    `SkyCoord.match_to_catalog_sky`.
 
     Each target is matched to its nearest tile center on the sphere. A target
     is considered covered when that nearest center lies within the tile field
@@ -112,6 +114,8 @@ def select_covering_tiles(
     fov : float, optional
         Tile field-of-view radius in degrees (default 1.1). A target is covered
         when within this angular distance of a tile center.
+    return_indices : bool, optional
+        Default False, returns mask array over tiles. If True, returns tile indices (default True).
 
     Returns
     -------
@@ -141,6 +145,9 @@ def select_covering_tiles(
 
     covered = sep <= fov * au.deg
     selected_tile_idx = np.unique(nearest_tile_idx[covered])
+    if not return_indices:
+        out = np.zeros(tile_ra.size, dtype=bool)
+        out[selected_tile_idx] = True
     uncovered_target_mask = ~covered
 
     return selected_tile_idx, uncovered_target_mask
@@ -173,8 +180,8 @@ def select_in_path(vertices, ra, dec, wrap=180., radius=0.0):
 
     # Format the test points into an (M, 2) array
     points = np.vstack([ra, dec]).T
-    
+
     # Check which points are inside the path
     sel = path.contains_points(points, radius=radius)
-    
+
     return sel
