@@ -828,7 +828,7 @@ def compute_causal_fwhm(night_df, seeing_cfg) -> np.ndarray:
     out = np.empty(len(night_df), dtype=float)
     for i in range(len(night_df)):
         out[i] = float(
-            seeing.predict(band=bands[i], el=float(el[i]), now=float(ts[i]))
+            seeing.predict(band="i", el=np.pi / 2, now=float(ts[i]))
         ) / units.arcsec
     return out
 

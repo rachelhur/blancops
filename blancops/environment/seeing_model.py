@@ -3,8 +3,9 @@
 `base._get_fwhm` delegates to one of these. The constant model is the
 forward-sim default and the extension point for a future forecast model;
 the predictive model wraps the rolling-history Seeing predictor for the
-live and historic envs. All `fwhm()` returns are plain arcsec (the env
-feature scale).
+live and historic envs. `fwhm()` returns plain arcsec (the env feature
+scale) and defaults to the i-band zenith value, so the feature is
+pointing-independent unless an explicit band/el is requested.
 """
 from __future__ import annotations
 
@@ -29,11 +30,11 @@ class SeeingModel(ABC):
 
 
 class ConstantSeeingModel(SeeingModel):
-    """Constant zenith seeing projected per pointing via convert_seeing.
+    """Constant zenith seeing, returned at i-band zenith by default.
 
-    Reproduces the prior OfflineBlancoEnv initial_fwhm behavior: a fixed
-    delivered zenith seeing in `ref_band` projected to each pointing's
-    band/elevation.
+    Holds a fixed delivered zenith seeing in `ref_band`. `fwhm()` converts
+    it to the requested band/el via convert_seeing, defaulting to i-band at
+    zenith.
     """
 
     def __init__(self, zenith_seeing: float, ref_band: str = "r",
@@ -42,7 +43,7 @@ class ConstantSeeingModel(SeeingModel):
         self._ref_band = ref_band
         self._ref_el = np.pi / 2 if ref_el is None else float(ref_el)
 
-    def fwhm(self, timestamp: float, band: str, el: float) -> float:
+    def fwhm(self, timestamp: float, band: str = "i", el: float = np.pi / 2) -> float:
         projected = convert_seeing(
             self._seeing * units.arcsec,
             to_band=band, to_el=el,
@@ -55,7 +56,8 @@ class PredictiveSeeingModel(SeeingModel):
     """Rolling-history predictor wrapping Seeing.
 
     `add()` ingests real measurements (plain arcsec); `fwhm()` returns the
-    causal prediction (plain arcsec) including the instrument component.
+    causal prediction (plain arcsec) including the instrument component,
+    at i-band zenith by default.
     """
 
     def __init__(self, seeing_cfg):
@@ -77,6 +79,6 @@ class PredictiveSeeingModel(SeeingModel):
     def prune(self, now=None) -> None:
         self._seeing.prune(now=now)
 
-    def fwhm(self, timestamp: float, band: str, el: float) -> float:
+    def fwhm(self, timestamp: float, band: str = "i", el: float = np.pi / 2) -> float:
         predicted = self._seeing.predict(band=band, el=el, now=timestamp)
         return float(predicted) / units.arcsec

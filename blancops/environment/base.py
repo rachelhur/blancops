@@ -185,7 +185,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         
         # Heapix Grid
         self.hpGrid = ephemerides.HealpixGrid(
-            nside=cfg.data.nside, 
+            nside=cfg.data.nside,
             is_azel=('azel' in cfg.data.action_space)
         )
         self.nbins = len(self.hpGrid.idx_lookup)
@@ -199,7 +199,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._dec_arr = lookups.fields["dec"].to_numpy()
         self.nfields = len(self._fids)
 
-        # Mutable runtime state — populated by reset() via _begin_episode        
+        # Mutable runtime state — populated by reset() via _begin_episode
         self._ts: float | None = None
         self._field_id: int = ZENITH_FIELD_ID
         self._bin_num: int = ZENITH_BIN_NUM
@@ -346,21 +346,16 @@ class BaseBlancoEnv(gym.Env, ABC):
         self, timestamp: float, el: Optional[float] = None,
         filter_idx: Optional[int] = None,
     ) -> Optional[float]:
-        """Delivered seeing FWHM (arcsec) at the current pointing, or None.
+        """Zenith reference-band seeing FWHM (arcsec), or None.
 
-        Delegates to the env's SeeingModel. Returns None when no model is
-        set, so envs that do not request the fwhm feature are unaffected.
-        Filterless / zenith pointings reuse the reference band so only the
-        airmass term applies.
+        Delegates to the env's SeeingModel, which returns the i-band zenith
+        prediction independent of the current pointing. Returns None when no
+        model is set. `el`/`filter_idx` are accepted for call-site
+        compatibility but no longer used.
         """
         if self._seeing_model is None:
             return None
-        if el is None or filter_idx is None:
-            return None
-        band = IDX2FILTER.get(int(filter_idx), FWHM_REF_FILTER)
-        return self._seeing_model.fwhm(
-            timestamp=timestamp, band=band, el=el,
-        )
+        return self._seeing_model.fwhm(timestamp=timestamp)
 
     def _get_raw_survey_progress(self) -> Optional[np.ndarray]:
         """Per-filter survey-wide visit counts (mutable), or None."""
