@@ -402,10 +402,12 @@ class LookupTables:
         target_fidfilt_counts = cls._build_target_count_lookup(df)
         fidfilt_exptime = cls._build_exptime_lookup(df)
 
-        resolved_dir = (
-            Path(outdir).resolve() if outdir is not None
-            else fields_path.parent.resolve()
-        )
+        if outdir is not None:
+            resolved_dir = Path(outdir).resolve()
+        elif fields_path is not None:
+            resolved_dir = fields_path.parent.resolve()
+        else:
+            resolved_dir = Path.cwd().resolve()
 
         lookups = cls(
             fields=fields_lookup,
