@@ -18,10 +18,10 @@ _VALID_MODES = ("mask", "keep_only")
 class MaskRule:
     """A single masking rule.
 
-    mode "mask" masks the listed propids; mode "keep_only" masks the complement
-    (every field whose propid is not listed).
+    mode "mask" masks the listed field_ids; mode "keep_only" masks the
+    complement (every field whose id is not listed).
     """
-    propids: frozenset
+    field_ids: frozenset
     mode: str
 
     def __post_init__(self):
@@ -70,42 +70,49 @@ class FieldMaskSchedule:
         return self.baseline
 
     @classmethod
-    def build(cls, baseline_propids, baseline_mode="mask",
+    def build(cls, baseline_field_ids, baseline_mode="mask",
               window_start=None, window_end=None,
-              window_propids=None, window_mode="keep_only"):
+              window_field_ids=None, window_mode="keep_only"):
         """Build a schedule from flat CLI-style args.
 
-        Returns None when no baseline propids are given (no masking). A single
-        window is added when start, end, and propids are all provided.
+        Returns None when no baseline field_ids are given (no masking). A
+        single window is added when start, end, and field_ids are all provided.
         """
-        if not baseline_propids:
+        if not baseline_field_ids:
             return None
-        baseline = MaskRule(propids=frozenset(baseline_propids), mode=baseline_mode)
+        baseline = MaskRule(field_ids=frozenset(int(f) for f in baseline_field_ids),
+                            mode=baseline_mode)
 
         windows = ()
-        if window_start is not None and window_end is not None and window_propids:
+        if window_start is not None and window_end is not None and window_field_ids:
             windows = (
                 MaskWindow(
                     start=float(window_start),
                     end=float(window_end),
                     rule=MaskRule(
-                        propids=frozenset(window_propids), mode=window_mode
+                        field_ids=frozenset(int(f) for f in window_field_ids),
+                        mode=window_mode,
                     ),
                 ),
             )
         return cls(baseline=baseline, windows=windows)
 
 
-def resolve_positional_mask(rule, fids, field_ids_for_propids) -> np.ndarray:
+def resolve_positional_mask(rule, fids) -> np.ndarray:
     """Resolve a MaskRule to a positional boolean mask over `fids`.
 
-    field_ids_for_propids : callable propids -> set[int]
-        Typically `lookups.field_ids_for_propids`. The returned mask is True at
-        the positions of fields to drop: the rule's propid fields for "mask",
-        the complement for "keep_only".
+    Args
+    ----
+    rule : MaskRule
+        Rule carrying the field_ids to act on and the mode.
+    fids : np.ndarray
+        Field-id array (axis 0 of the action mask).
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask, True at positions of fields to drop: the rule's
+        field_ids for "mask", the complement for "keep_only".
     """
-    masked_ids = field_ids_for_propids(rule.propids)
-    positional = np.isin(fids, sorted(masked_ids))
-    if rule.mode == "keep_only":
-        positional = ~positional
-    return positional
+    positional = np.isin(fids, sorted(rule.field_ids))   # [n_fields]
+    return ~positional if rule.mode == "keep_only" else positional
