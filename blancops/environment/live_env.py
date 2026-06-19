@@ -1,11 +1,11 @@
 
 """Live operational environment driven by hardware telemetry.
- 
+
 Branches off `BaseBlancoEnv` directly rather than going through
 `OfflineBlancoEnvBase` because the multi-night scaffolding doesn't
 apply: an online episode is a single open-ended night driven by reality,
 with time and pointing coming from the telescope rather than simulation.
- 
+
 `sync_telemetry` is the public, operator-facing way to align the env
 with hardware state. It can be called any time (mid-step, between
 actions, on recovery from a weather pause) and is idempotent. Internally
@@ -15,32 +15,33 @@ history is preserved across syncs — only `_advance_after_action` (via
 `_record_visit`) accumulates counts in the live setting.
 """
 from __future__ import annotations
- 
+
 from typing import Optional
 import logging
- 
+
 import numpy as np
- 
+
 from blancops.environment.base import BaseBlancoEnv, StateSnapshot
 from blancops.environment.field_mask_schedule import MaskRule, resolve_positional_mask
 from blancops.environment.seeing_model import PredictiveSeeingModel
+from blancops.environment.survey_tracker import SurveyProgressTracker
 from blancops.data.features.glob_features import get_night_boundaries
 from blancops.ephemerides import ephemerides
 from blancops.configs.constants import (
     WAIT_SIGNAL, ZENITH_FILTER_IDX, FILTER2IDX, IDX2FILTER, FWHM_REF_FILTER,
 )
- 
+
 logger = logging.getLogger(__name__)
- 
- 
+
+
 class LiveBlancoEnv(BaseBlancoEnv):
     """Real-time environment for live telescope operation.
- 
+
     Constructor is keyword-only. `observing_night` should be a
     timezone-aware datetime; only the date is consulted — twilights are
     computed from it.
     """
- 
+
     def __init__(
         self,
         cfg,
@@ -81,16 +82,16 @@ class LiveBlancoEnv(BaseBlancoEnv):
     # -----------------------------------------------------------------------
     # Public API: operator-facing telemetry sync
     # -----------------------------------------------------------------------
- 
+
     def sync_telemetry(self, telemetry: Optional[dict] = None) -> None:
         """Align internal state with current hardware state.
- 
-        Idempotent. Safe to call mid-episode whenever the simulator and     
+
+        Idempotent. Safe to call mid-episode whenever the simulator and
         the telescope have drifted (manual override, weather pause,
         operator intervention). Visit counters are NOT reset — the
         running per-night history is preserved by omitting `counts_cur`
         from the snapshot.
- 
+
         Args
         ----
         telemetry : Optional[dict]
@@ -184,6 +185,33 @@ class LiveBlancoEnv(BaseBlancoEnv):
             mode="keep_only",
         )
 
+    def refresh_lookups(self, new_lookups) -> None:
+        """Adopt a merged catalog mid-session, growing field-shaped state.
+
+        Rebinds lookups; rebuilds field arrays and the priority mask; grows the
+        survey tracker and last-visit-OT array to the new field count, zero/NaN
+        padding appended fields; then refreshes derived state. The trained
+        policy is unaffected (action head is bins x filters, not fields).
+        """
+        old_n = self.nfields
+        self.lookups = new_lookups
+        self._set_field_arrays(new_lookups)
+
+        target_counts = (new_lookups.target_fidfilt_counts if self.do_filt
+                         else new_lookups.target_fid_counts)
+        old_counts = self._survey_progress_tracker.raw_counts
+        grown = np.zeros(target_counts.shape, dtype=old_counts.dtype)   # [n_fields(, n_filters)]
+        grown[:old_n] = old_counts
+        self._survey_progress_tracker = SurveyProgressTracker(target_counts=target_counts)
+        self._survey_progress_tracker.set_counts(grown)
+
+        new_ot = np.full(target_counts.shape, np.nan, dtype=np.float64)  # [n_fields(, n_filters)]
+        new_ot[:old_n] = self._last_visit_ot
+        self._last_visit_ot = new_ot
+
+        self._build_priority_mask()
+        self._recompute_derived_state()
+
     def set_priority_trigger(self, active: bool) -> None:
         """Set the operator priority-scheduling flag and refresh derived state.
 
@@ -200,10 +228,10 @@ class LiveBlancoEnv(BaseBlancoEnv):
 
         While the trigger is on and any priority-1 field is still incomplete,
         zero the rows of every non-priority-1 field (keep_only priority-1).
-        Auto-releases (identity) once no incomplete priority-1 field remains, so
+        Auto-releases once no incomplete priority-1 field remains, so
         the rest of the catalog reopens. `sel_valid` is a fresh `&` result, so
         in-place mutation is safe. Works for `(nfields, nfilters)` and
-        `(nfields,)` since field index is axis 0.
+        `(nfields,)`.
         """
         if not self._priority_trigger or not self._priority1_positional.any():
             return sel_valid
@@ -224,7 +252,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
     # -----------------------------------------------------------------------
     # BaseBlancoEnv lifecycle hooks
     # -----------------------------------------------------------------------
- 
+
     def reset(self, **kwargs):
         raise RuntimeError(
             "LiveBlancoEnv.reset() must not be called mid-session. "
@@ -235,12 +263,12 @@ class LiveBlancoEnv(BaseBlancoEnv):
     def _begin_episode(self, ot_at_sunset=0) -> None:
         self._ot_at_sunset = ot_at_sunset
         self.sync_telemetry()
- 
+
     def _advance_after_action(self, action: dict) -> None:
         bin_num = int(action["bin"])
         field_id = int(action["field_id"])
         filter_idx = int(action["filter_idx"])
- 
+
         if bin_num == WAIT_SIGNAL:
             old_ts = self._ts
             self._ts = self._fast_forward()
@@ -252,36 +280,36 @@ class LiveBlancoEnv(BaseBlancoEnv):
             exptime = self._get_exposure_time(field_id=field_id, filter_idx=filter_idx)
             slew_time = self._get_slew_time(last_field_id, field_id)
             self._ts += exptime + slew_time
- 
+
             # _record_visit lives on BaseBlancoEnv and translates the
             # action's filter_idx to None automatically when the tracker
             # is field-only (1D).
             self._record_visit(field_id=field_id, filter_idx=filter_idx)
- 
+
             self._field_id = field_id
             self._filter_idx = filter_idx
- 
+
         self._bin_num = bin_num
         # Online runs a single open-ended night; never set _is_new_night
         # to True after the initial reset.
         self._is_new_night = False
- 
+
     def _episode_terminated(self) -> bool:
         # Open-ended; ends only at sunrise. Operator-driven termination
         # (weather, hardware fault) is handled outside the env.
         return self._ts >= self._sunrise_ts
- 
+
     # -----------------------------------------------------------------------
     # Internal helpers
     # -----------------------------------------------------------------------
- 
+
     def _refresh_night_boundaries(self) -> None:
         """Recompute sunrise/sunset for the configured observing night."""
         self._sunset_ts, self._sunrise_ts = get_night_boundaries(
             self._ts, sun_el_limit=self.sun_el_limit
         )
         self._night_end_ts = self._sunrise_ts
- 
+
     def _match_pointing_to_fid(self, ra: float, dec: float) -> int:
         """Return the field ID closest to the given (ra, dec).
         """
@@ -291,10 +319,10 @@ class LiveBlancoEnv(BaseBlancoEnv):
             * np.cos(self._ra_arr - ra)
         )
         return int(self._fids[int(np.argmax(cos_sep))])
- 
+
     def _fast_forward(self, step_seconds: float = 60.0) -> float:
         """Advance the clock until at least one valid action exists.
- 
+
         Steps in `step_seconds` increments and re-runs the action mask
         until any field becomes observable, capped at sunrise so we
         never wait past the night. `self._ts` is mutated as a side
@@ -317,10 +345,10 @@ class LiveBlancoEnv(BaseBlancoEnv):
         s_night_idx = self._get_survey_night_idx()
         s_night_tot = self._get_survey_nights_total()
         return s_night_idx / s_night_tot
- 
+
     def _get_survey_nights_total(self) -> Optional[int]:
         return 2
- 
+
     def _get_survey_night_idx(self) -> Optional[int]:
         return self._survey_night_idx
 

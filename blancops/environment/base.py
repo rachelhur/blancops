@@ -194,10 +194,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         # per-field DataFrame indexed by field_id. The contract that
         # `field_id` doubles as a 0..N-1 array index is enforced in
         # LookupTables.__post_init__.
-        self._fids = lookups.fields.index.to_numpy(dtype=np.int32)
-        self._ra_arr = lookups.fields["ra"].to_numpy()
-        self._dec_arr = lookups.fields["dec"].to_numpy()
-        self.nfields = len(self._fids)
+        self._set_field_arrays(lookups)
 
         # Mutable runtime state — populated by reset() via _begin_episode
         self._ts: float | None = None
@@ -251,6 +248,17 @@ class BaseBlancoEnv(gym.Env, ABC):
 
         # Validation is NOT called here; concrete subclasses call
         # self._validate_feature_config() at the end of their __init__.
+
+    def _set_field_arrays(self, lookups) -> None:
+        """Populate field-id / RA / Dec arrays from a lookups catalog.
+
+        Shared by construction and by LiveBlancoEnv.refresh_lookups so a
+        mid-session catalog merge updates the same derived arrays.
+        """
+        self._fids = lookups.fields.index.to_numpy(dtype=np.int32)   # [n_fields]
+        self._ra_arr = lookups.fields["ra"].to_numpy()               # [n_fields]
+        self._dec_arr = lookups.fields["dec"].to_numpy()             # [n_fields]
+        self.nfields = len(self._fids)
 
     # -----------------------------------------------------------------------
     # Gym contract — template methods. The shape of step/reset is fixed
