@@ -19,6 +19,8 @@ class ActionConstraints(BaseModel):
     @field_validator('sun_el_limit')
     @classmethod
     def validate_sun_el_limit(cls, v):
+        if v == None:
+            return DES.sun_el_limit
         if v >= 0:
             raise ValueError('sun_el_limit should be negative (degrees below horizon)')
         if v < -90:

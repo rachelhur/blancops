@@ -23,6 +23,7 @@ from blancops.ephemerides import ephemerides
 from blancops.data.lookup_tables import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.rl.agent_factory import AgentFactory
+from blancops.survey.profiles import DES
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,7 @@ class MockModelRunner(ModelRunner):
 class AIModelRunner(ModelRunner):
     def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None,
                  device: str = "cpu", field_choice_method: str = "interp",
-                 mode='test', clock=None, sun_elevation_deg=None):
+                 mode='test', clock=None, sun_elevation_deg=DES.sun_el_limit):
         self.device = device
         self.TESTING_MODE = mode == 'test' # XXX remove before production
         self.clock = clock or Clock()
@@ -197,7 +198,7 @@ class AIModelRunner(ModelRunner):
         else:
             raise NotImplementedError
 
-        self.env = self._build_env(telemetry_now=telemetry)
+        self.env = self._build_env(telemetry_now=telemetry, sun_elevation_deg=sun_elevation_deg)
         self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
 
     def _build_agent(self, model_path_or_alias, field_choice_method):
@@ -210,8 +211,8 @@ class AIModelRunner(ModelRunner):
             device=self.device
         )
 
-    def _build_env(self, telemetry_now):
-        constraints_cfg = ActionConstraints() # Uses default constraints
+    def _build_env(self, telemetry_now, sun_elevation_deg):
+        constraints_cfg = ActionConstraints(sun_el_limit=sun_elevation_deg) # Uses default constraints
         zscore_stats = self.norm_stats.get('z_score', {})
         rel_norm_stats = self.norm_stats.get('rel_norm', {})
         env = LiveBlancoEnv(
