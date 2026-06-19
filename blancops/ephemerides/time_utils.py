@@ -23,7 +23,7 @@ class Clock:
             Number of seconds to offset the clock by. Default is 0 (real current time).
             Use this to simulate running code at a different time for testing purposes.
         """
-        self.offset = float(offset)
+        self.offset_seconds = float(offset)
 
     def now(self, real=False):
         """
@@ -40,7 +40,7 @@ class Clock:
             Current simulated UTC timestamp in seconds.
         """
         current = utc_now()
-        return current if real else current + self.offset
+        return current if real else current + self.offset_seconds
 
     def convert(self, timestamp):
         """
@@ -57,7 +57,7 @@ class Clock:
         float
             Converted UTC timestamp according to the simulated clock.
         """
-        return standardize_time(timestamp) + self.offset
+        return standardize_time(timestamp) + self.offset_seconds
 
 
 def utc_now():
