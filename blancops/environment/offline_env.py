@@ -90,12 +90,11 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
 
         # Resolve the time-windowed mask schedule to one positional boolean mask
         # per rule (over self._fids), then enable it. Done after super().__init__
-        # so self._fids exists. propids -> field_ids uses the same lookup call as
-        # the live model runner.
+        # so self._fids exists. field_ids resolved directly over self._fids.
         if field_mask_schedule is not None:
             for rule in field_mask_schedule.rules():
                 self._rule_positional_masks[rule] = resolve_positional_mask(
-                    rule, self._fids, lookups.field_ids_for_propids
+                    rule, self._fids
                 )
             self._field_mask_schedule = field_mask_schedule
 
