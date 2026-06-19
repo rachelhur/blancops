@@ -192,7 +192,6 @@ class AIModelRunner(ModelRunner):
 
         if self.TESTING_MODE:
             now_ts = self.clock.now()
-            sunset_ts, _ = get_night_boundaries(now_ts, -14)
             zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=now_ts)
             telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': now_ts}
         else:
