@@ -26,7 +26,7 @@ class ActionConstraints(BaseModel):
         if v < -90:
             raise ValueError('sun_el_limit should be >= -90 degrees')
         return v
-        
+
     @field_validator('airmass_limit', 'airmass_failsafe')
     @classmethod
     def validate_airmass_limit(cls, v):
@@ -51,21 +51,21 @@ class NormalizationConfig(BaseModel):
         if isinstance(v, dict):
             # 1. Start with a fresh copy of the default mappings
             merged = {k: val.copy() for k, val in _DEFAULT_NORM_MAPPING.items()}
-            
+
             # 2. Overwrite only the keys the user explicitly provided in the config
             merged.update(v)
-            
+
             # 3. Return the merged dictionary for Pydantic to validate
             return merged
         return v
-        
+
     @model_validator(mode='after')
     def validate_legal_normalizations(self) -> 'NormalizationConfig':
         for feature, requested_norms in self.feature_norm_mappings.items():
             allowed_norms = _ALLOWED_NORMS_PER_FEATURE.get(feature)
             if allowed_norms is None:
                 raise ValueError(f"Feature '{feature}' is not recognized in allowed normalization rules.")
-                
+
             if not set(requested_norms).issubset(allowed_norms): # allowed_norms is already a set!
                 raise ValueError(
                     f"Normalization {requested_norms} is not allowed for feature '{feature}'. "
@@ -91,60 +91,60 @@ class BaseDataConfig(BaseModel):
     name: str = 'des-data-v0'
     path: str = str(DES_FITS_PATH)
     # cache_in_memory: bool = False
-    
+
     # Data configuration
     nside: int = 16
     action_space: str
-    
+
     # Normalization configuration
     norm: NormalizationConfig = Field(default_factory=NormalizationConfig)
 
     # Seeing predictor configuration
     seeing: SeeingConfig = Field(default_factory=SeeingConfig)
-    
+
     # Configurations calculated after data processing (required for model instantiation)
     state_dim: Optional[int] = None
     bin_state_dim: Optional[int] = None
     num_bins: Optional[int] = None
     num_filters: Optional[int] = None
     num_actions: Optional[int] = None
-    
+
     # Features
     global_features: List[str]
     bin_features: List[str]
-    
+
     @model_validator(mode='after')
     def validate_features(self) -> 'TrainDataConfig':
         for bin_feat in self.bin_features:
             if bin_feat not in _BIN_FEATURES:
                 raise ValueError(f"{bin_feat} is not implemented.")
         return self
-    
+
     @model_validator(mode='after')
     def validate_action_space_consistency(self) -> 'TrainDataConfig':
         # Validate that action_space is consistent with features
         has_filter = 'filter' in self.action_space
         has_radec = 'radec' in self.action_space
         has_azel = 'azel' in self.action_space
-        
+
         # Check for invalid combinations
         if has_radec and has_azel:
             raise ValueError("action_space cannot contain both 'radec' and 'azel'")
-            
+
         # Check that filter features are only included when filter action space is used
         if has_filter:
-            filter_features = [f for f in self.global_features + self.bin_features 
+            filter_features = [f for f in self.global_features + self.bin_features
                              if any(filter_str in f for filter_str in ['filter', 'urgency'])]
             if not filter_features:
                 # This is just a warning, not an error - we'll allow it but note it
                 pass
         else:
             # If no filter in action space, we shouldn't have filter-specific features
-            filter_features = [f for f in self.global_features + self.bin_features 
+            filter_features = [f for f in self.global_features + self.bin_features
                              if any(filter_str in f for filter_str in _FILTER_DEP_FEATURE_NAMES)]
             if filter_features:
                 raise ValueError(f"Filter-specific features {filter_features} found but action_space '{self.action_space}' does not include 'filter'")
-                
+
         return self
 
 class TrainDataConfig(BaseDataConfig):
@@ -154,19 +154,19 @@ class TrainDataConfig(BaseDataConfig):
     months: List[int] = [i+1 for i in range(12)]
     days: List[int] = [i+1 for i in range(31)]
     filters: List[str] = [filt for filt in FILTER2IDX.keys()]
-    
+
     # Configurations required for validation
     train_nights: Optional[List[str]] = None
     val_nights: Optional[List[str]] = None
     train_val_split: float  = 0.9
-    
+
     @field_validator('train_val_split')
     @classmethod
     def validate_train_val_split(cls, v):
         if not 0 < v < 1:
             raise ValueError('train_val_split must be between 0 and 1 exclusive')
         return v
-        
+
     @field_validator('years', 'months', 'days', 'filters')
     @classmethod
     def validate_not_empty(cls, v):
@@ -200,7 +200,7 @@ class BaseAlgConfig(BaseModel):
         if v > 4096:
             raise ValueError('hidden_dim is unreasonably large (>4096)')
         return v
-        
+
     @field_validator('nlayers')
     @classmethod
     def validate_nlayers(cls, v):
@@ -209,7 +209,7 @@ class BaseAlgConfig(BaseModel):
         if v > 100:
             raise ValueError('nlayers is unreasonably large (>100)')
         return v
-    
+
     @model_validator(mode='after')
     def validate_autoregressive_net(self) -> "BaseAlgConfig":
         if is_autoregressive(self.network):
@@ -219,7 +219,7 @@ class BaseAlgConfig(BaseModel):
                     f"LossStrategy.AUTOREGRESSIVE, got {self.loss_strategy}"
                 )
         return self
-     
+
     @model_validator(mode='after')
     def validate_activation(self) -> "BaseAlgConfig":
         # Import here to avoid circular import
@@ -254,7 +254,7 @@ class BCAlgConfig(BaseAlgConfig):
     zeta_joint: float | None = None
     reward: RewardStructure | None = None
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
-    
+
     @model_validator(mode="after")
     def validate_strategy_requirements(self) -> "BCAlgConfig":
         # Optional: enforce that focal-loss configs explicitly set gamma_focal,
@@ -264,14 +264,14 @@ class BCAlgConfig(BaseAlgConfig):
             if not 0.0 <= self.alpha <= 1.0:
                 raise ValueError("alpha must be in [0, 1] for focal_loss")
         return self
-    
+
     @field_validator('gamma_focal')
     @classmethod
     def validate_gamma_focal(cls, v):
         if v <= 0:
             raise ValueError('gamma_focal must be positive')
         return v
-        
+
     @field_validator('filter_penalty', 'alpha_bin', 'beta_filter', 'zeta_joint')
     @classmethod
     def validate_optional_float(cls, v):
@@ -286,21 +286,21 @@ class DDQNAlgConfig(BaseAlgConfig):
     reward_norm: str = 'minmax'
     tau: float = 0.005 # DDQN specific parameter
     gamma: float = 0.99 # DDQN specific parameter
-    
+
     @field_validator('tau')
     @classmethod
     def validate_tau(cls, v):
         if not 0 < v <= 1:
             raise ValueError('tau must be between 0 and 1 exclusive')
         return v
-        
+
     @field_validator('gamma')
     @classmethod
     def validate_gamma(cls, v):
         if not 0 <= v <= 1:
             raise ValueError('gamma must be between 0 and 1 inclusive')
         return v
-    
+
     @model_validator(mode="after")
     def validate_reward(self) -> "DDQNAlgConfig":
         assert self.reward in RewardStructure, f"Reward structure {self.reward} is not supported."
@@ -310,7 +310,7 @@ class CQLAlgConfig(DDQNAlgConfig):
     algorithm: Literal[Algorithm.CQL]
     cql_alpha: float = 1.0
     cql_margin: float = 0.0
-    
+
     @field_validator('cql_alpha')
     @classmethod
     def validate_cql_alpha(cls, v):
@@ -323,21 +323,21 @@ class IQLAlgConfig(DDQNAlgConfig):
     expectile: float = 0.7
     awr_beta: float = 3.0
     awr_clip: float = 100.0
-    
+
     @field_validator('expectile')
     @classmethod
     def validate_expectile(cls, v):
         if not 0 < v < 1:
             raise ValueError('expectile must be between 0 and 1 exclusive')
         return v
-        
+
     @field_validator('awr_beta')
     @classmethod
     def validate_awr_beta(cls, v):
         if v <= 0:
             raise ValueError('awr_beta must be positive')
         return v
-        
+
     @field_validator('awr_clip')
     @classmethod
     def validate_awr_clip(cls, v):
@@ -346,7 +346,7 @@ class IQLAlgConfig(DDQNAlgConfig):
         return v
 
 AnyModelConfig = Union[BCAlgConfig, DDQNAlgConfig, CQLAlgConfig, IQLAlgConfig]
-     
+
 class TrainConfig(BaseModel):
     checkpoint_metric: CheckpointMetric = CheckpointMetric.ANGULAR_SEPARATION
     max_epochs: int = 50
@@ -360,9 +360,9 @@ class TrainConfig(BaseModel):
     patience: int = 20
     device:         str   = "cuda"
     seed:           int   = 42
-    
+
     lr_scheduler_kwargs: Optional[dict] = None
-    
+
     @field_validator('max_epochs')
     @classmethod
     def validate_max_epochs(cls, v):
@@ -371,7 +371,7 @@ class TrainConfig(BaseModel):
         if v > 1000:
             raise ValueError('max_epochs is unreasonably large (>1000)')
         return v
-        
+
     @field_validator('batch_size')
     @classmethod
     def validate_batch_size(cls, v):
@@ -380,7 +380,7 @@ class TrainConfig(BaseModel):
         if v > int(10240):
             raise ValueError('batch_size is unreasonably large (>65536)')
         return v
-        
+
     @field_validator('lr_init', 'lr_final')
     @classmethod
     def validate_learning_rate(cls, v):
@@ -389,35 +389,35 @@ class TrainConfig(BaseModel):
         if v > 1:
             raise ValueError('learning rate should be <= 1.0')
         return v
-        
+
     @field_validator('lr_sched_epoch_start', 'lr_sched_epoch_duration')
     @classmethod
     def validate_non_negative(cls, v):
         if v < 0:
             raise ValueError('Value must be non-negative')
         return v
-        
+
     @field_validator('patience')
     @classmethod
     def validate_patience(cls, v):
         if v < 0:
             raise ValueError('patience must be non-negative')
         return v
-        
+
     @field_validator('seed')
     @classmethod
     def validate_seed(cls, v):
         if v < 0:
             raise ValueError('seed must be non-negative')
         return v
-    
+
     @model_validator(mode='after')
     def validate_lr_scheduler(self):
         # This will now run automatically when model_copy adds the kwargs
         if self.lr_scheduler_kwargs:
             assert self.max_epochs - self.lr_sched_epoch_start - self.lr_sched_epoch_duration >= 0, "The number of epochs must be greater than lr_scheduler_epoch_start + lr_scheduler_dur_epochs"
         return self
-    
+
     # @model_validator(mode='after')
     # def validate_lr_scheduler_type(self):
     #     valid_schedulers = ['cosine_annealing', 'step', 'exponential', 'reduce_on_plateau', 'constant']
@@ -434,21 +434,21 @@ class ExperimentConfig(BaseModel):
     model: AnyModelConfig = Field(discriminator="algorithm")
     train: TrainConfig
     device: str = 'cuda'
-    
+
     @field_validator('experiment_name')
     @classmethod
     def validate_experiment_name(cls, v):
         if not v or not v.strip():
             raise ValueError('experiment_name cannot be empty')
         return v
-        
+
     @field_validator('parent_dir')
     @classmethod
     def validate_parent_dir(cls, v):
         if not v:
             raise ValueError('parent_dir cannot be empty')
         return v
-    
+
     @model_validator(mode='before')
     @classmethod
     def set_outdir(cls, data: Any) -> Any:
@@ -456,14 +456,14 @@ class ExperimentConfig(BaseModel):
         if isinstance(data, dict) and data.get('outdir') is None:
             exp_name = data.get('experiment_name')
             parent = data.get('parent_dir', 'experiments/')
-            
+
             if exp_name:
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 data['outdir'] = str(Path(parent) / exp_name / f"run_{timestamp}")
                 # data['outdir'] = str(Path(parent) / exp_name)
-                     
+
         return data # Return the modified dictionary
-    
+
     @model_validator(mode="after")
     def validate_algorithm_compatibility(self) -> "ExperimentConfig":
         if (
@@ -476,7 +476,7 @@ class ExperimentConfig(BaseModel):
                 f"got {self.model.loss_strategy}"
             )
         return self
-        
+
     @model_validator(mode='after')
     def validate_paths(self) -> "ExperimentConfig":
         # Validate that parent_dir is a reasonable path
@@ -512,21 +512,21 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
     # UPDATE CONFIG.TRAIN
     train_updates = {"lr_scheduler_kwargs": lr_scheduler_kwargs}
     updated_train = cfg.train.model_copy(update=train_updates)
-     
+
     # COPY CONFIG WITH UPDATES
     resolved_cfg = cfg.model_copy(update={
         "data": updated_data,
         "train": updated_train
     })
-     
+
     # CONSTRUCT EXPERIMENT_OUTDIR CONFIG FIELD AND SAVE RESOLVED CONFIG
     if resolved_cfg.outdir is None:
         resolved_cfg.outdir = str(Path(resolved_cfg.outdir))
     Path(Path(resolved_cfg.outdir) / "configs" ).mkdir(parents=True, exist_ok=True)
     with open(Path(resolved_cfg.outdir) / "configs" /"resolved_config.yaml", "w") as f:
         # Use mode='json' to force Pydantic to convert complex types (like Enums) to strings
-        resolved_dict = resolved_cfg.model_dump(mode='json') 
+        resolved_dict = resolved_cfg.model_dump(mode='json')
         # print('DUMPING RESOLVED CONFIG IN ', f)
         yaml.dump(resolved_dict, f, sort_keys=False)
-     
+
     return resolved_cfg

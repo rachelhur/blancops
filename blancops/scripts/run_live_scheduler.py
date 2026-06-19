@@ -277,7 +277,7 @@ def main():
         args.start_sun_elevation_deg = args.start_sun_elevation_deg * units.deg
     if args.stop_sun_elevation_deg is not None:
         args.stop_sun_elevation_deg = args.stop_sun_elevation_deg * units.deg
-        
+
     # Setup logger. The format arg determines how message is formatted. For example, with the format below, a message will be printed like:
     # 2026-05-01 13:40:05 - INFO - Initializing blancops Live Scheduler...".
     logger = configure_logger(
