@@ -20,12 +20,12 @@ class ActionArchitecture(str, Enum):
     PSEUDO_AUTOREGRESSIVE = "pseudo_ar"
     AUTOREGRESSIVE = "autoregressive"
     # MARGINAL = "marginal"
-    
+
 class CheckpointMetric(str, Enum):
     VAL_LOSS = "val_loss"
     ANGULAR_SEPARATION = "ang_sep"
     MAX_Q_POLICY = "q_policy"
-    
+
 _AUTOREGRESSIVE_NETWORKS = {Network.AUTOREGRESSIVE}
 
 def is_autoregressive(network: Network) -> bool:
@@ -51,8 +51,8 @@ class LookupKeys(str, Enum):
     FIDFILT_EXPTIME = "fidfilt_exptime.pkl"
     TARGET_FILT_COUNTS = "target_counts_per_filter.pkl"
     TARGET_FID_COUNTS = "target_counts_per_fid.pkl"
-    
-    # TRAIN DATA LOOKUP KEYS    
+
+    # TRAIN DATA LOOKUP KEYS
     TARGET_FID2VISITS_TRAIN = "target_counts_per_fid_train.json"
     TARGET_FID2VISITS_EVAL = "target_counts_per_fid_eval.json"
     NIGHT2FID_VISIT_HIST = "night2fidvisits.pkl"

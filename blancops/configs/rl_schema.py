@@ -30,6 +30,7 @@ class ActionConstraints(BaseModel):
     @field_validator('airmass_limit', 'airmass_failsafe')
     @classmethod
     def validate_airmass_limit(cls, v):
+
         if v <= 1.0:
             raise ValueError('airmass limit should be > 1.0 (minimum airmass at zenith)')
         if v > 10.0:
