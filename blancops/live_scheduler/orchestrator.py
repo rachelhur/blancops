@@ -58,6 +58,7 @@ class SchedulerOrchestrator:
             columns=["field_id", "ra", "dec", "filter"]
         )  # field-level operator masks (field_id is the only column AIModelRunner reads)
         self.session_masked_propids = set()  # propid-level operator masks
+        self.priority_trigger = False
         self.first_exposure = True
         self.last_submitted_obs = {}
         self.last_telemetry_check = -float("inf")
@@ -120,7 +121,7 @@ class SchedulerOrchestrator:
                 telemetry=telemetry,
                 available_fields=[],  # XXX Placeholder
                 masked_field=all_masks,
-                masked_propids=self.session_masked_propids,
+                priority_trigger=self.priority_trigger,
                 chunk_size=self.chunk_size,
             )
 
