@@ -179,8 +179,9 @@ class MockModelRunner(ModelRunner):
 
 
 class AIModelRunner(ModelRunner):
-    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu",
-                 field_choice_method: str = "interp", mode='test', clock=None, chunk_size=None):
+    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None,
+                 device: str = "cpu", field_choice_method: str = "interp",
+                 mode='test', clock=None, sun_elevation_deg=None):
         self.device = device
         self.TESTING_MODE = mode == 'test' # XXX remove before production
         self.clock = clock or Clock()
