@@ -37,15 +37,10 @@ class ModelRunner(ABC):
     """
 
     @abstractmethod
-    def __init__(self, chunk_size):
+    def __init__(self):
         """
         Initialize the model runner with any necessary setup, such as loading model
         weights or setting up internal state.
-
-        Arguments
-        ---------
-        chunk_size: int
-            Number of sequential observations to propose in each generated chunk.
         """
 
         pass

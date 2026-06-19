@@ -315,7 +315,7 @@ def main():
 
     # initialize model runner
     if args.model_path_or_alias.lower() == "mock":
-        model = MockModelRunner(chunk_size=args.chunk_size, clock=clock)
+        model = MockModelRunner(clock=clock)
     else:
         model = AIModelRunner(
             model_path_or_alias=args.model_path_or_alias,
@@ -323,7 +323,6 @@ def main():
             fields_path=args.fields_path,
             device=args.device,
             field_choice_method=args.field_choice_method,
-            chunk_size=args.chunk_size,
             clock=clock,
             mode='test',  # XXX check this
         )
