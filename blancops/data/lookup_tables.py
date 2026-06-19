@@ -374,6 +374,8 @@ class LookupTables:
         per_field_cols = ["field", "ra", "dec"]
         if "propid" in df.columns:
             per_field_cols = per_field_cols + ["propid"]
+        if "priority" in df.columns:
+            per_field_cols = per_field_cols + ["priority"]
         for col in per_field_cols:
             counts = df.groupby("field_id")[col].nunique()
             if (counts > 1).any():
@@ -387,6 +389,8 @@ class LookupTables:
         field_cols = ['field_id', 'field', 'ra', 'dec']
         if "propid" in df.columns:
             field_cols = field_cols + ['propid']
+        if "priority" in df.columns:
+            field_cols = field_cols + ['priority']
         fields_lookup = (
             df[field_cols]
             .drop_duplicates()
