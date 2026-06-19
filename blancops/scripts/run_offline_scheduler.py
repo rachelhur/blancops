@@ -53,7 +53,7 @@ def get_args():
 
     # Scheduling parameters
     parser.add_argument('--sun_el_limit', type=float, default=-12, help="How low below horizon sun needs to be for observing (in deg). Default is -12.")
-    parser.add_argument('--airmass_limit', type=float, default=1.2, help="The agent will only observe if there exist *any* fields below the airmass_lim")
+    parser.add_argument('--airmass_limit', type=float, default=1.8, help="The agent will only observe if there exist *any* fields below the airmass_lim")
     parser.add_argument('--initial_fwhm', type=float, default=0.9,
                         help="Assumed zenith delivered seeing (arcsec, r-band) for the forward sim, "
                              "projected per pointing by airmass/filter. Default 0.9 is the CTIO Blanco/DECam "
