@@ -305,7 +305,7 @@ class AIModelRunner(ModelRunner):
                     'dec': [],
                     }
 
-        info = self.env.set_constraints(airmass_limit=2.5, sun_el_limit=-15.0)
+        info = self.env.set_constraints(airmass_limit=2.5, sun_el_limit=-10.5)
 
         obs, info = init_obs, init_info
         for i in range(chunk_size):
