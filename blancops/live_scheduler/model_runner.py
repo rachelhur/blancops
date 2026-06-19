@@ -196,9 +196,8 @@ class AIModelRunner(ModelRunner):
         if self.TESTING_MODE:
             now_ts = self.clock.now()
             sunset_ts, _ = get_night_boundaries(now_ts, -14)
-            init_ts = max(now_ts, sunset_ts + 60*60)
-            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=init_ts)
-            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': init_ts}
+            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=now_ts)
+            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': now_ts}
         else:
             raise NotImplementedError
 
