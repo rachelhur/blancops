@@ -238,7 +238,7 @@ class AIModelRunner(ModelRunner):
         return lookups
 
     def generate_chunk(self, telemetry=None, available_fields=None, masked_field=None,
-                       priority_trigger=False, chunk_size=3,
+                       priority_trigger=False, chunk_size=10,
                        new_fields=None, new_lookup_dir=None) -> pd.DataFrame:
         """Schedule a chunk of `chunk_size` observations given current state.
 
