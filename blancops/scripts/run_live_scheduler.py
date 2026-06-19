@@ -329,7 +329,11 @@ def main():
 
     # initialize ui
     if args.ui_mode.lower() == "cli":
-        ui = CLIInterface(output_dir=args.output_directory, show_plots=args.show_plots)
+        ui = CLIInterface(
+            output_dir=args.output_directory,
+            show_plots=args.show_plots,
+            clock=clock,
+        )
     else:
         raise NotImplementedError(f"UI mode '{args.ui_mode}' is not implemented yet.")
 
