@@ -210,7 +210,9 @@ class SchedulerOrchestrator:
                         break
 
         # record the last submitted observation
-        if self.last_submitted_obs:
+        # NOTE self.last_submitted_obs is a pd.Series, need
+        # to either convert to dict or use len()
+        if len(self.last_submitted_obs):
             self.progress.record_completion(self.last_submitted_obs)
 
         # announce session end
