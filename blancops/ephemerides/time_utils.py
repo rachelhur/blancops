@@ -3,6 +3,63 @@ from dateutil.parser import parse
 from pandas import Timedelta
 
 
+class Clock:
+    """
+    UTC clock with an optional fixed offset to simulate different testing times.
+
+    Methods
+    -------
+    now: Return the current UTC timestamp, optionally without the stored offset.
+    convert: Apply the stored offset to a timestamp expressed in UTC seconds.
+    """
+
+    def __init__(self, offset=0.0):
+        """
+        Initialize the clock with an optional offset.
+
+        Arguments
+        ---------
+        offset: float [0.0]
+            Number of seconds to offset the clock by. Default is 0 (real current time).
+            Use this to simulate running code at a different time for testing purposes.
+        """
+        self.offset = float(offset)
+
+    def now(self, real=False):
+        """
+        Return the current UTC timestamp as simulated by the clock.
+
+        Arguments
+        ---------
+        real: bool [False]
+            If True, return the real current UTC time regardless of simulated offset.
+
+        Returns
+        -------
+        float
+            Current simulated UTC timestamp in seconds.
+        """
+        current = utc_now()
+        return current if real else current + self.offset
+
+    def convert(self, timestamp):
+        """
+        Convert a real-world UTC timestamp to the simulated clock's time by applying the
+        stored offset.
+
+        Arguments
+        ---------
+        timestamp: float, str, datetime
+            Time variable to convert
+
+        Returns
+        -------
+        float
+            Converted UTC timestamp according to the simulated clock.
+        """
+        return standardize_time(timestamp) + self.offset
+
+
 def utc_now():
     """
     Return the current time in UTC as UNIX timestamp.

@@ -14,6 +14,7 @@ class ProgressManager:
     def __init__(
         self,
         output_dir,
+        clock=None,
         session_id=None,
         start_time=None,
         start_sun_elevation=None,
@@ -40,6 +41,7 @@ class ProgressManager:
         """
 
         self.output_dir = output_dir
+        self.clock = clock or time_utils.Clock()
         self.session_id = session_id or self._generate_session_id()
         self.history_file = os.path.join(
             self.output_dir, f"observing_log_{self.session_id}.jsonl"
@@ -83,12 +85,14 @@ class ProgressManager:
         from datetime import timedelta
 
         # map the current time to a start date; if before noon use the previous day
-        local_now = time_utils.unix_to_local_datetime(time_utils.utc_now())
+        local_now = time_utils.unix_to_local_datetime(self.clock.now())
         if local_now.hour < 12:
             session_date = local_now - timedelta(days=1)
         else:
             session_date = local_now
         session_date = session_date.strftime("%Y-%m-%d")
+        if abs(self.clock.offset_seconds) > 1e-9:
+            session_date = f"sim_{session_date}"
         logger.info(f"[Progress] Generated session ID: {session_date}")
         return session_date
 
@@ -143,7 +147,7 @@ class ProgressManager:
         Return whether conditions have been met to start the observing session.
         """
         # get current conditions
-        now = time_utils.utc_now()
+        now = self.clock.now()
         ra, dec = ephemerides.get_source_ra_dec("sun", time=now)
         az, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=now)
 
@@ -159,7 +163,7 @@ class ProgressManager:
         Return whether conditions have been met to end the observing session.
         """
         # get current conditions
-        now = time_utils.utc_now()
+        now = self.clock.now()
         ra, dec = ephemerides.get_source_ra_dec("sun", time=now)
         az, el = ephemerides.equatorial_to_topographic(ra=ra, dec=dec, time=now)
 
