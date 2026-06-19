@@ -17,7 +17,7 @@ from blancops.configs.constants import IDX2FILTER
 from blancops.configs.rl_schema import ActionConstraints
 from blancops.data.features.glob_features import get_night_boundaries
 from blancops.environment.live_env import LiveBlancoEnv
-from blancops.ephemerides.time_utils import utc_now
+from blancops.ephemerides.time_utils import Clock
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
 from blancops.data.lookup_tables import LookupTables
@@ -91,8 +91,9 @@ class ModelRunner(ABC):
 class MockModelRunner(ModelRunner):
     """Randomized mock implementation used for development and dry runs."""
 
-    def __init__(self, chunk_size):
+    def __init__(self, chunk_size, clock=None):
         self.chunk_size = chunk_size
+        self.clock = clock or Clock()
         self.current_field_id = 0
 
     def generate_next_observation(self, telemetry, masked_fields):
@@ -135,7 +136,7 @@ class MockModelRunner(ModelRunner):
                 continue
 
             # enforce telescope visibility via elevation floor
-            az, el = ephemerides.equatorial_to_topographic(ra, dec)
+            az, el = ephemerides.equatorial_to_topographic(ra, dec, time=self.clock.now())
             valid_el = el > 30 * units.deg  # 30deg elevation limit
 
             valid = valid_currentangsep and valid_angsep and valid_el
@@ -181,9 +182,10 @@ class MockModelRunner(ModelRunner):
 
 class AIModelRunner(ModelRunner):
     def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu",
-                 field_choice_method: str = "interp", mode='test'):
+                 field_choice_method: str = "interp", mode='test', clock=None, chunk_size=None):
         self.device = device
         self.TESTING_MODE = mode == 'test' # XXX remove before production
+        self.clock = clock or Clock()
 
         # Fields and Lookups
         self.fields_dir = Path(field_lookup_dir)
@@ -194,7 +196,7 @@ class AIModelRunner(ModelRunner):
         logger.info(f"[Model] Loaded model weights from {model_path_or_alias} into memory.")
 
         if self.TESTING_MODE:
-            now_ts = utc_now()
+            now_ts = self.clock.now()
             sunset_ts, _ = get_night_boundaries(now_ts, -14)
             init_ts = max(now_ts, sunset_ts + 60*60)
             zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=init_ts)
@@ -295,7 +297,7 @@ class AIModelRunner(ModelRunner):
         if 'pointing_dec' in tel:
             tel.setdefault('dec', tel.pop('pointing_dec'))
         if 'timestamp' not in tel:
-            tel['timestamp'] = utc_now()
+            tel['timestamp'] = self.clock.now()
         if 'filter' not in tel: # XXX - need to read current filter in telescope to send to agent
             tel['filter'] = 'g'
         if tel.get('is_exposing'): # XXX - check with Paul

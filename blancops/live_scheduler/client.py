@@ -90,7 +90,7 @@ class TelescopeClient(ABC):
 class MockTelescopeClient(TelescopeClient):
     """In-memory telescope simulator for development and integration testing."""
 
-    def __init__(self, exposure_duration=90):
+    def __init__(self, exposure_duration=90, clock=None):
         """Initialize mock timing and initial pointing state.
 
         Arguments
@@ -100,12 +100,15 @@ class MockTelescopeClient(TelescopeClient):
         """
 
         # model internal state to simulate exposure timing
+        self.clock = clock or time_utils.Clock()
         self.last_exposure_submit_time = -float("inf")
         self.exposure_duration = exposure_duration
         self.slew_time = 0
 
         # track current pointing to model stepping through observations
-        self.current_ra, self.current_dec = ephemerides.get_source_ra_dec("zenith")
+        self.current_ra, self.current_dec = ephemerides.get_source_ra_dec(
+            "zenith", time=self.clock.now()
+        )
 
         logger.info("[Client] Initialized mock telescope client.")
 
@@ -126,7 +129,7 @@ class MockTelescopeClient(TelescopeClient):
         """Return True when simulated slew+exposure time has elapsed."""
 
         # compare elapsed wall-clock time against modeled slew + exposure duration
-        delta = time_utils.utc_now() - self.last_exposure_submit_time
+        delta = self.clock.now() - self.last_exposure_submit_time
         return delta > self.slew_time + self.exposure_duration
 
     def submit_observation(self, obs_row, exp_time=None):
@@ -139,7 +142,7 @@ class MockTelescopeClient(TelescopeClient):
         self.slew_time = geometry.blanco_slew_time(angsep) / units.second
 
         # update internal state to reflect the new observation
-        self.last_exposure_submit_time = time_utils.utc_now()
+        self.last_exposure_submit_time = self.clock.now()
         self.current_ra = obs_row["ra"]
         self.current_dec = obs_row["dec"]
         if exp_time is not None:

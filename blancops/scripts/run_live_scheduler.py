@@ -181,6 +181,15 @@ def parse_args():
     # ==================================================================================
     operational_group = parser.add_argument_group("Operational Settings")
     operational_group.add_argument(
+        "--fake-start-time",
+        type=str,
+        default=None,
+        help=(
+            "Optional UTC time to simulate running this script. When set, the scheduler
+            "time base is shifted by a fixed offset from the real clock."
+        ),
+    )
+    operational_group.add_argument(
         "--chunk-size",
         type=int,
         default=defaults.get("chunk_size", 3),
@@ -279,10 +288,24 @@ def main():
         filename="run_live_scheduler.log",
         use_tqdm=True
     )
+
+    # set up simulated clock for testing
+    clock = time_utils.Clock()
+    if args.fake_start_time is not None:
+        fake_start_ts = time_utils.standardize_time(args.fake_start_time)
+        clock = time_utils.Clock(offset=fake_start_ts - clock.now(real=True))
+        logger.info(
+            "[Scheduler] Fake clock enabled: real UTC shifted by %.3f seconds.",
+            clock.offset_seconds,
+        )
+
     # initialize requested telescope client
     logger.info("Initializing blancops Live Scheduler...")
     if args.client_mode.lower() == "mock":
-        client = MockTelescopeClient(exposure_duration=args.mock_exposure_duration)
+        client = MockTelescopeClient(
+            exposure_duration=args.mock_exposure_duration,
+            clock=clock,
+        )
     else:
         client = BlancoSCLTelescopeClient(
             propid=args.propid,
@@ -292,7 +315,7 @@ def main():
 
     # initialize model runner
     if args.model_path_or_alias.lower() == "mock":
-        model = MockModelRunner(chunk_size=args.chunk_size)
+        model = MockModelRunner(chunk_size=args.chunk_size, clock=clock)
     else:
         model = AIModelRunner(
             model_path_or_alias=args.model_path_or_alias,
@@ -301,7 +324,8 @@ def main():
             device=args.device,
             field_choice_method=args.field_choice_method,
             chunk_size=args.chunk_size,
-            testing_mode=True,  # XXX check this
+            clock=clock,
+            mode='test',  # XXX check this
         )
 
     # initialize ui
@@ -313,6 +337,7 @@ def main():
     # initialize progress manager with session metadata and persisted history
     progress = ProgressManager(
         output_dir=args.output_directory,
+        clock=clock,
         session_id=args.session_id,
         start_time=args.start_time,
         start_sun_elevation=args.start_sun_elevation_deg,
