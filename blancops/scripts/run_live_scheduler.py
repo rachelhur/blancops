@@ -185,7 +185,7 @@ def parse_args():
         type=str,
         default=None,
         help=(
-            "Optional UTC time to simulate running this script. When set, the scheduler
+            "Optional UTC time to simulate running this script. When set, the scheduler"
             "time base is shifted by a fixed offset from the real clock."
         ),
     )
