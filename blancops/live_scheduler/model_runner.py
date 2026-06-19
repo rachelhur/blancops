@@ -191,7 +191,7 @@ class AIModelRunner(ModelRunner):
 
         # Model
         self._build_agent(model_path_or_alias=model_path_or_alias, field_choice_method=field_choice_method)
-        logger.info(f"[Model] Loaded model weights from {model_path_or_alias} into memory.")
+        logger.info(f"Loaded model weights from {model_path_or_alias} into memory.")
 
         if self.TESTING_MODE:
             now_ts = self.clock.now()
