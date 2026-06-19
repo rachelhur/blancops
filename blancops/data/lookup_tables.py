@@ -478,27 +478,6 @@ class LookupTables:
             self, "target_filt_counts", self.target_fidfilt_counts.sum(axis=0)
         )
 
-    def field_ids_for_propids(self, propids) -> set[int]:
-        """Resolve a set of propids to the set of field_ids assigned to them.
-
-        Raises ValueError if the fields table has no `propid` column (lookups
-        built from a field list without propid). Rebuild lookups from a field
-        list that includes `propid` to mask by propid.
-        """
-        if "propid" not in self.fields.columns:
-            raise ValueError(
-                "Loaded lookups have no 'propid' column; rebuild lookups from a "
-                "field list that includes 'propid' to mask by propid."
-            )
-        sel = self.fields["propid"].isin(set(propids))
-        return set(int(fid) for fid in self.fields.index[sel])
-
-    def available_propids(self) -> list[str]:
-        """Sorted unique propids, or [] when the fields table has no propid."""
-        if "propid" not in self.fields.columns:
-            return []
-        return sorted(self.fields["propid"].dropna().unique().tolist())
-
 
 @dataclass(frozen=True)
 class TrainLookupTables(LookupTables):
