@@ -357,6 +357,7 @@ def main():
         chunk_size=args.chunk_size,
         observing_poll_rate_sec=args.observing_poll_rate_sec,
         telemetry_poll_rate_sec=args.telemetry_poll_rate_sec,
+        clock=clock,
     )
 
     # run the scheduler loop

@@ -10,8 +10,8 @@ from abc import ABC, abstractmethod
 from blancops.math import units, geometry
 from blancops.ephemerides import ephemerides, time_utils
 from blancops.live_scheduler.scl import SCL
+from blancops.data_quality.seeing import Seeing, DatabaseSeeing
 import json
-from datetime import datetime
 
 import logging
 logger = logging.getLogger(__name__)
@@ -59,16 +59,9 @@ class TelescopeClient(ABC):
         pass
 
     @abstractmethod
-    def check_telemetry_change(self, current_telemetry, last_telemetry):
+    def check_telemetry_change(self):
         """
-        Report whether the telescope state has changed meaningfully since the last check.
-
-        Arguments
-        ---------
-        current_telemetry : dict
-            Most recently fetched telemetry dict.
-        last_telemetry : dict
-            Previously stored telemetry dict.
+        Report whether the telemetry has changed meaningfully since the last check.
 
         Returns
         -------
@@ -109,21 +102,31 @@ class MockTelescopeClient(TelescopeClient):
         self.current_ra, self.current_dec = ephemerides.get_source_ra_dec(
             "zenith", time=self.clock.now()
         )
+        self.ra_changed_since_last_check = False
+        self.dec_changed_since_last_check = False
+
+        # initialize seeing data, which remains empty for the mock client
+        self.seeing = Seeing()
 
         logger.info("[Client] Initialized mock telescope client.")
 
     def get_telemetry(self):
-        """Return the currently simulated telescope pointing."""
+        """Return the currently simulated telescope telemetry."""
+        return {
+            "pointing_ra": self.current_ra,
+            "pointing_dec": self.current_dec,
+            "seeing": self.seeing.raw,
+        }
 
-        return {"pointing_ra": self.current_ra, "pointing_dec": self.current_dec}
-
-    def check_telemetry_change(self, current_telemetry, last_telemetry):
-        """Returns True if the pointing has changed since the last call."""
-        if not last_telemetry:
-            return True
-        tel_current = (current_telemetry.get("pointing_ra"), current_telemetry.get("pointing_dec"))
-        tel_last = (last_telemetry.get("pointing_ra"), last_telemetry.get("pointing_dec"))
-        return tel_current != tel_last
+    def check_telemetry_change(self):
+        """
+        Returns True if pointing has changed meaningfully. Currently, this check is 
+        turned off and always returns False for testing.
+        """
+        changed = self.ra_changed_since_last_check or self.dec_changed_since_last_check
+        self.ra_changed_since_last_check = False
+        self.dec_changed_since_last_check = False
+        return changed
 
     def check_exposure_status(self):
         """Return True when simulated slew+exposure time has elapsed."""
@@ -161,10 +164,14 @@ class MockTelescopeClient(TelescopeClient):
 
 
 class BlancoSCLTelescopeClient(TelescopeClient):
-    """Blanco telescope control-system integration using SCL network."""
+    """
+    Blanco telescope control-system integration using SCL network for commands and a
+    postgres database for seeing monitoring.
+    """
 
-    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000):
+    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000, clock=None):
         """Initialize and confirm the connection to the control system."""
+        self.clock = clock or time_utils.Clock()
 
         # Initialize the TCP/IP communication client
         logger.info(f"[Client] Attempting to connect to SCLN server at {server_ip}:{server_port}...")
@@ -177,21 +184,25 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         else:
             logger.warning(f"[Client] WARNING: Could not connect to SCLN server at {server_ip}:{server_port}.")
 
+        # initialize connection to the seeing database
+        self.seeing = DatabaseSeeing()
+        self.seeing_changed_since_last_check = False
+
         # track current pointing based on submissions
         self.current_ra, self.current_dec = None, None
-        self.current_time = datetime.now().isoformat(timespec='milliseconds')
+        self.current_time = self.clock.now()
 
         self.propid = propid
 
     def _build_base_message(self, msg_type):
         """Helper to construct the standard JSON envelope for SCLN messages."""
         if msg_type == "COMMAND":
-            self.current_time = datetime.now().isoformat(timespec='milliseconds')
+            self.current_time = self.clock.now()
             cmd = {
                 "type": "COMMAND",
                 "source": "DECamAISched",
                 "target": "SISPI",
-                "timestamp": self.current_time,
+                "timestamp": time_utils.unix_to_datetime(self.current_time).isoformat(timespec='milliseconds'),
                 "transaction_id": str(self.transaction_id),
                 "command": "EXPOSE",
             }
@@ -212,6 +223,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         cmd = self._build_base_message("TELEMETRY")
 
         # send a request for telemetry and parse the response
+        ra, dec = None, None
         try:
             response_str = self.scl_client.send_command(json.dumps(cmd))
             if not response_str:
@@ -225,19 +237,24 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             ra = telemetry_data.get("ra", self.current_ra)
             dec = telemetry_data.get("dec", self.current_dec)
 
-            return {"pointing_ra": ra, "pointing_dec": dec}
-
         except Exception as e:
             logger.exception(f"[Client] Error fetching telemetry: {e}")
-            return {"pointing_ra": None, "pointing_dec": None}
+
+        # fetch seeing data
+        changed = self.seeing.update()
+        self.seeing_changed_since_last_check = changed or self.seeing_changed_since_last_check
+
+        return {
+            "pointing_ra": ra,
+            "pointing_dec": dec,
+            "seeing": self.seeing.raw,
+        }
 
     def check_telemetry_change(self, current_telemetry, last_telemetry):
-        """Returns True if the pointing has changed since the last telemetry check."""
-        if not last_telemetry:
-            return True
-        ra_changed = current_telemetry.get("pointing_ra") != last_telemetry.get("pointing_ra")
-        dec_changed = current_telemetry.get("pointing_dec") != last_telemetry.get("pointing_dec")
-        return ra_changed or dec_changed
+        """Returns True if the seeing data has changed since the last telemetry check."""
+        changed = self.seeing_changed_since_last_check
+        self.seeing_changed_since_last_check = False
+        return changed
 
     def check_exposure_status(self):
         """Return exposure readiness state from control system."""
@@ -292,6 +309,8 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             return None
 
     def close(self):
-        """Clean up the SCL client connection."""
+        """Clean up the SCL client and seeing databaseconnection."""
         self.scl_client.close()
         logger.info("[Client] Closed connection to SCLN server.")
+        self.seeing.database.close()
+        logger.info("[Client] Closed connection to seeing database.")

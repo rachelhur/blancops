@@ -104,8 +104,9 @@ class Seeing:
     - Provide a near-future prediction via a weighted-average heuristic
 
     Usage:
-    - add : ingest one or more measurements of seeing
+    - add : ingest one or more new measurements of seeing
     - prune : drop history older than a specified retention window to manage memory
+    - replace : replace the entire history with a new raw data table
     - predict : return a single predicted observed seeing FWHM
     """
 
@@ -232,6 +233,28 @@ class Seeing:
         # filter both raw and converted tables to keep only recent rows
         self.raw = self.raw.loc[self.raw["date"] >= cutoff].reset_index(drop=True)
         self.data = self.data.loc[self.data["date"] >= cutoff].reset_index(drop=True)
+        return
+
+    def replace(self, raw):
+        """
+        Replace the entire seeing history with given raw data table.
+
+        Arguments
+        ---------
+        raw : pandas.DataFrame
+            New raw seeing history, with columns "date", "seeing", "band", and "el".
+        """
+        # clear existing history
+        self.raw = self.raw.drop(self.raw.index)
+
+        # update with new raw data
+        self.add(
+            date=raw["date"].to_numpy(),
+            seeing=raw["seeing"].to_numpy(dtype=float),
+            band=raw["band"].to_numpy(dtype=str),
+            el=raw["el"].to_numpy(dtype=float),
+            prune=False,
+        )
         return
 
     def predict(self, band, el, now=None):
