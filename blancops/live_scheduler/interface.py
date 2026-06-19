@@ -87,11 +87,13 @@ class CLIInterface(BaseInterface):
         """Print the proposed chunk and save a simple RA/Dec plot."""
 
         # print the proposed chunk as a table in the terminal
-        logger.info("\n" + "=" * 88)
-        logger.info("[Interface] Proposed Observing Chunk")
-        logger.info("=" * 88)
-        logger.info(chunk_df.to_string(index=False))
-        logger.info("=" * 88)
+        logger.info(
+                    "\n" + "=" * 88
+                    + "\n Proposed Observing Chunk \n"
+                    + "=" * 88
+                    + "\n" + chunk_df.to_string(index=False)
+                    + "\n" + "=" * 88
+                    )
 
         # skip plotting when upstream returns an empty/malformed proposal
         required_cols = {"ra", "dec"}
