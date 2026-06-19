@@ -43,6 +43,7 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         initial_ot_at_sunset: float = 0.0,
         initial_fwhm: Optional[float] = None,
         field_mask_schedule=None,
+        telescope=None,
     ):
         # Parse before super so max_nights is known in time.
         self._night_info = self._parse_night_strs(observing_night_strs)
@@ -57,6 +58,7 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
             lookups=lookups,
             z_score_stats=z_score_stats,
             rel_norm_stats=rel_norm_stats,
+            telescope=telescope,
             max_nights=len(self._night_info),
         )
         self._initial_counts = initial_counts
@@ -88,12 +90,11 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
 
         # Resolve the time-windowed mask schedule to one positional boolean mask
         # per rule (over self._fids), then enable it. Done after super().__init__
-        # so self._fids exists. propids -> field_ids uses the same lookup call as
-        # the live model runner.
+        # so self._fids exists. field_ids resolved directly over self._fids.
         if field_mask_schedule is not None:
             for rule in field_mask_schedule.rules():
                 self._rule_positional_masks[rule] = resolve_positional_mask(
-                    rule, self._fids, lookups.field_ids_for_propids
+                    rule, self._fids
                 )
             self._field_mask_schedule = field_mask_schedule
 

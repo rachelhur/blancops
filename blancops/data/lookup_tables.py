@@ -374,6 +374,8 @@ class LookupTables:
         per_field_cols = ["field", "ra", "dec"]
         if "propid" in df.columns:
             per_field_cols = per_field_cols + ["propid"]
+        if "priority" in df.columns:
+            per_field_cols = per_field_cols + ["priority"]
         for col in per_field_cols:
             counts = df.groupby("field_id")[col].nunique()
             if (counts > 1).any():
@@ -387,6 +389,8 @@ class LookupTables:
         field_cols = ['field_id', 'field', 'ra', 'dec']
         if "propid" in df.columns:
             field_cols = field_cols + ['propid']
+        if "priority" in df.columns:
+            field_cols = field_cols + ['priority']
         fields_lookup = (
             df[field_cols]
             .drop_duplicates()
@@ -398,10 +402,12 @@ class LookupTables:
         target_fidfilt_counts = cls._build_target_count_lookup(df)
         fidfilt_exptime = cls._build_exptime_lookup(df)
 
-        resolved_dir = (
-            Path(outdir).resolve() if outdir is not None
-            else fields_path.parent.resolve()
-        )
+        if outdir is not None:
+            resolved_dir = Path(outdir).resolve()
+        elif fields_path is not None:
+            resolved_dir = fields_path.parent.resolve()
+        else:
+            resolved_dir = Path.cwd().resolve()
 
         lookups = cls(
             fields=fields_lookup,
@@ -473,27 +479,6 @@ class LookupTables:
         object.__setattr__(
             self, "target_filt_counts", self.target_fidfilt_counts.sum(axis=0)
         )
-
-    def field_ids_for_propids(self, propids) -> set[int]:
-        """Resolve a set of propids to the set of field_ids assigned to them.
-
-        Raises ValueError if the fields table has no `propid` column (lookups
-        built from a field list without propid). Rebuild lookups from a field
-        list that includes `propid` to mask by propid.
-        """
-        if "propid" not in self.fields.columns:
-            raise ValueError(
-                "Loaded lookups have no 'propid' column; rebuild lookups from a "
-                "field list that includes 'propid' to mask by propid."
-            )
-        sel = self.fields["propid"].isin(set(propids))
-        return set(int(fid) for fid in self.fields.index[sel])
-
-    def available_propids(self) -> list[str]:
-        """Sorted unique propids, or [] when the fields table has no propid."""
-        if "propid" not in self.fields.columns:
-            return []
-        return sorted(self.fields["propid"].dropna().unique().tolist())
 
 
 @dataclass(frozen=True)

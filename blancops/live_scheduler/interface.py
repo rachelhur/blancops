@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 import matplotlib.pyplot as plt
 from blancops.math import units
 from blancops.plotting import live_scheduling_viz
+from blancops.ephemerides import time_utils
 import pathlib
 import logging
 logger = logging.getLogger(__name__)
@@ -75,9 +76,10 @@ class BaseInterface(ABC):
 class CLIInterface(BaseInterface):
     """Command-line interface for chunk preview and approval."""
 
-    def __init__(self, output_dir=None, show_plots=True):
+    def __init__(self, output_dir=None, show_plots=True, clock=None):
         self.output_dir = pathlib.Path(output_dir) if output_dir is not None else None
         self.show_plots = show_plots
+        self.clock = clock or time_utils.Clock()
         if self.output_dir is None and not self.show_plots:
             logger.warning("[Interface] Warning: No plots will be saved or displayed.")
 
@@ -85,11 +87,13 @@ class CLIInterface(BaseInterface):
         """Print the proposed chunk and save a simple RA/Dec plot."""
 
         # print the proposed chunk as a table in the terminal
-        logger.info("\n" + "=" * 88)
-        logger.info("[Interface] Proposed Observing Chunk")
-        logger.info("=" * 88)
-        logger.info(chunk_df.to_string(index=False))
-        logger.info("=" * 88)
+        logger.info(
+                    "\n" + "=" * 88
+                    + "\n Proposed Observing Chunk \n"
+                    + "=" * 88
+                    + "\n" + chunk_df.to_string(index=False)
+                    + "\n" + "=" * 88
+                    )
 
         # skip plotting when upstream returns an empty/malformed proposal
         required_cols = {"ra", "dec"}
@@ -104,7 +108,11 @@ class CLIInterface(BaseInterface):
 
         # Generate and save a plot for quick visual inspection.
         # XXX update to include completed, future, and current fields in the plot
-        skymap = live_scheduling_viz.plot_live_schedule_snapshot(proposed_df=chunk_df)
+        # center and time-stamp the plot on the scheduler clock so the simulated
+        # time is respected during testing and the true UTC during live runs
+        live_scheduling_viz.plot_live_schedule_snapshot(
+            proposed_df=chunk_df, time=self.clock.now()
+        )
         if self.output_dir is not None:
             plt.savefig(self.output_dir / "current_chunk_proposal.png")
             logger.info(

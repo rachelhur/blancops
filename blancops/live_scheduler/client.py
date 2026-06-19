@@ -90,7 +90,7 @@ class TelescopeClient(ABC):
 class MockTelescopeClient(TelescopeClient):
     """In-memory telescope simulator for development and integration testing."""
 
-    def __init__(self, exposure_duration=90):
+    def __init__(self, exposure_duration=90, clock=None):
         """Initialize mock timing and initial pointing state.
 
         Arguments
@@ -100,12 +100,15 @@ class MockTelescopeClient(TelescopeClient):
         """
 
         # model internal state to simulate exposure timing
+        self.clock = clock or time_utils.Clock()
         self.last_exposure_submit_time = -float("inf")
         self.exposure_duration = exposure_duration
         self.slew_time = 0
 
         # track current pointing to model stepping through observations
-        self.current_ra, self.current_dec = ephemerides.get_source_ra_dec("zenith")
+        self.current_ra, self.current_dec = ephemerides.get_source_ra_dec(
+            "zenith", time=self.clock.now()
+        )
 
         logger.info("[Client] Initialized mock telescope client.")
 
@@ -121,12 +124,12 @@ class MockTelescopeClient(TelescopeClient):
         tel_current = (current_telemetry.get("pointing_ra"), current_telemetry.get("pointing_dec"))
         tel_last = (last_telemetry.get("pointing_ra"), last_telemetry.get("pointing_dec"))
         return tel_current != tel_last
-        
+
     def check_exposure_status(self):
         """Return True when simulated slew+exposure time has elapsed."""
 
         # compare elapsed wall-clock time against modeled slew + exposure duration
-        delta = time_utils.utc_now() - self.last_exposure_submit_time
+        delta = self.clock.now() - self.last_exposure_submit_time
         return delta > self.slew_time + self.exposure_duration
 
     def submit_observation(self, obs_row, exp_time=None):
@@ -139,7 +142,7 @@ class MockTelescopeClient(TelescopeClient):
         self.slew_time = geometry.blanco_slew_time(angsep) / units.second
 
         # update internal state to reflect the new observation
-        self.last_exposure_submit_time = time_utils.utc_now()
+        self.last_exposure_submit_time = self.clock.now()
         self.current_ra = obs_row["ra"]
         self.current_dec = obs_row["dec"]
         if exp_time is not None:
@@ -167,7 +170,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         logger.info(f"[Client] Attempting to connect to SCLN server at {server_ip}:{server_port}...")
         self.scl_client = SCL(server_ip, server_port)
         self.transaction_id = 0
-        
+
         # check if connection was successful
         if self.scl_client.is_connected():
             logger.info(f"[Client] Initialized connection to SCLN server at {server_ip}:{server_port}.")
@@ -207,7 +210,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         Fetch live telemetry.
         """
         cmd = self._build_base_message("TELEMETRY")
-        
+
         # send a request for telemetry and parse the response
         try:
             response_str = self.scl_client.send_command(json.dumps(cmd))
@@ -216,14 +219,14 @@ class BlancoSCLTelescopeClient(TelescopeClient):
 
             response = json.loads(response_str)
             telemetry_data = response.get("telemetry", {})
-            
+
             # extract current RA/Dec, falling back to last known values if not reported
             # XXX should check if this is actually reported in response
             ra = telemetry_data.get("ra", self.current_ra)
             dec = telemetry_data.get("dec", self.current_dec)
 
             return {"pointing_ra": ra, "pointing_dec": dec}
-            
+
         except Exception as e:
             logger.exception(f"[Client] Error fetching telemetry: {e}")
             return {"pointing_ra": None, "pointing_dec": None}
@@ -235,7 +238,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         ra_changed = current_telemetry.get("pointing_ra") != last_telemetry.get("pointing_ra")
         dec_changed = current_telemetry.get("pointing_dec") != last_telemetry.get("pointing_dec")
         return ra_changed or dec_changed
-    
+
     def check_exposure_status(self):
         """Return exposure readiness state from control system."""
 
@@ -249,7 +252,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             # server provides a bool indicating if it can accept the next EXPOSE command
             response = json.loads(response_str)
             return response.get("readyToExpose", False)
-            
+
         except Exception as e:
             logger.exception(f"[Client] Error checking exposure status: {e}")
             return False
@@ -257,7 +260,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
     def submit_observation(self, obs_row, exp_time=None):
         """Submit one observation request to the control system."""
         cmd = self._build_base_message("COMMAND")
-        
+
         # map the desired observation to the command parameters expected by SCLN
         self.current_ra = float(obs_row.get("ra", self.current_ra))
         self.current_dec = float(obs_row.get("dec", self.current_dec))
@@ -278,12 +281,12 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         try:
             response_str = self.scl_client.send_command(json.dumps(cmd))
             response = json.loads(response_str) if response_str else {}
-            
+
             if response.get("status") == "FAILED":
                 logger.warning(f"[Client] EXPOSURE FAILED: {response.get('message')}")
-                
+
             return response
-            
+
         except Exception as e:
             logger.exception(f"[Client] Error submitting observation: {e}")
             return None

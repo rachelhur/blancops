@@ -75,7 +75,12 @@ def build_evaluators(
     )
     style = style or PlotStyle()
 
-    outdir = Path(cfg.outdir)
+    # Resolve the model dir from where the config was loaded
+    if cfg.orig_cfg_path:
+        cfg_dir = Path(cfg.orig_cfg_path).parent
+        outdir = cfg_dir.parent if cfg_dir.name == "configs" else cfg_dir
+    else:
+        outdir = Path(cfg.outdir)
     ss_outdir = outdir / eval_outdir / 'ss'
     ms_outdir = outdir / eval_outdir / 'ms'
 
@@ -114,7 +119,7 @@ def build_evaluators(
     global_normalizer = build_normalizer(
         state_feature_names=val_dataset.global_feature_names, cfg=cfg,
     )
-    
+
     # Agent + runner
     factory = AgentFactory(base_model_dir=outdir)
     agent, cfg, _ = factory.build_agent(
@@ -150,7 +155,7 @@ def build_evaluators(
     action_space = cfg.data.action_space
     ss_data = SingleStepDataContainer(val_dataset, action_space, lookups,
                                      global_normalizer=global_normalizer)
-    
+
     ms_data = MultiStepDataContainer(val_dataset, action_space, lookups, z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats,
                                      global_normalizer=global_normalizer)
 
@@ -173,7 +178,7 @@ class Evaluator(ABC):
     Can plot using convenience methods (wrapper around Plotter methods)
     or plot manually using data in self.data.expert_df and self.data.agent_df.
     """
-    
+
     def __init__(self, policy, data_container: DataContainer,
                  plotter: EvaluationPlotter, device: str):
         self.policy = policy
@@ -220,7 +225,7 @@ class Evaluator(ABC):
         ax.set_xticks(xs)
         ax.set_xticklabels(names, rotation=45)
         return ax
-    
+
 
     # ---- Common plot pass-throughs ----------------------------------
 
@@ -241,8 +246,8 @@ class Evaluator(ABC):
             agent_arr=self.data.agent_df[feature_name],
             density=density, bins=bins, use_weights=use_weights, ax=ax,
         )
-    
-    
+
+
     def plot_2dhist(self, feature_x: str, feature_y: str, bins=25):
         return self.plotter.plot_2dhist(
             feature_x, feature_y,
@@ -260,7 +265,7 @@ class Evaluator(ABC):
             label_fontsize=label_fontsize,
             normalization=normalization,
         )
-        
+
     def plot_2dhist_per_filter(self, feature_x, feature_y, bins=25, density=True):
         for filt in FILTER2IDX.keys():
             exp_f_mask = self.data.expert_df['filter'].values == filt
@@ -277,53 +282,53 @@ class Evaluator(ABC):
             plt.suptitle(f'{filt}-band', fontsize=16)
 
     # ---- Plotter independent plots ----------------------------------
- 
+
     def plot_scalar_metrics(self):
         expert_metrics = self._get_scalar_metrics_from_df(self.data.expert_df)
         agent_metrics = self._get_scalar_metrics_from_df(self.data.agent_df)
-        
+
         metrics_keys = list(expert_metrics.keys())
         num_metrics = len(metrics_keys)
-        
+
         fig, axs = plt.subplots(num_metrics, 1, figsize=(8, 2 * num_metrics), sharex=False)
 
         exp_y = 1
         ag_y = 2
-        
+
         for i, metric in enumerate(metrics_keys):
             ax = axs[i]
             if not isinstance(expert_metrics[metric], dict):
                 exp_val = expert_metrics[metric]
                 ag_val = agent_metrics[metric]
-                
+
                 # Plot just the dots
                 ax.plot(exp_val, exp_y, 'o', color=self.plotter.style.expert_color, markersize=8)
                 ax.plot(ag_val, ag_y, 'o', color=self.plotter.style.agent_color, markersize=8)
-                
+
                 # Add padding for scalar values so they don't sit on the plot edges
                 x_min_all = min(exp_val, ag_val)
                 x_max_all = max(exp_val, ag_val)
-                
+
                 # Ensure there is visible padding even if the expert and agent values are identical
                 spread = x_max_all - x_min_all
                 padding = spread * 0.2 if spread > 0 else max(x_min_all * 0.1, 1.0)
                 ax.set_xlim(x_min_all - padding, x_max_all + padding)
-                
+
             else:
                 # Extract Expert Data
                 exp_mean = expert_metrics[metric]['mean']
                 exp_p10 = expert_metrics[metric]['p10']
                 exp_p90 = expert_metrics[metric]['p90']
-                
+
                 # Extract Agent Data
                 ag_mean = agent_metrics[metric]['mean']
                 ag_p10 = agent_metrics[metric]['p10']
                 ag_p90 = agent_metrics[metric]['p90']
-                
+
                 # Plot Expert (y=1)
                 ax.hlines(y=exp_y, xmin=exp_p10, xmax=exp_p90, color=self.plotter.style.expert_color, linewidth=2)
                 ax.plot(exp_mean, exp_y, 'o', color=self.plotter.style.expert_color, markersize=8, label='Expert' if i==0 else "")
-                
+
                 # Plot Agent (y=2)
                 ax.hlines(y=ag_y, xmin=ag_p10, xmax=ag_p90, color=self.plotter.style.agent_color, linewidth=2)
                 ax.plot(ag_mean, ag_y, 'o', color=self.plotter.style.agent_color, markersize=8, label='Agent' if i==0 else "")
@@ -339,11 +344,11 @@ class Evaluator(ABC):
             ax.set_yticklabels([None, 'Agent', 'Expert', None])
             ax.set_title(metric, fontsize=14, loc='left')
             ax.grid(True, alpha=0.3)
-            
+
         fig.legend(loc='upper right', bbox_to_anchor=(0.95, 0.95))
         plt.tight_layout()
         return fig, axs
-    
+
     def plot_violin_per_filter(self, key_metric='moon_el'):
         expert_df = self.data.expert_df.assign(source='Expert')
         agent_df  = self.data.agent_df.assign(source='BC Agent')
@@ -354,7 +359,7 @@ class Evaluator(ABC):
             ignore_index=True,
         )
         self.plotter.plot_violin_per_filter(combined_df, key_metric=key_metric)
-        
+
     def plot_metric_distributions(self):
         metrics = ['airmass', 'ha', 'slew_dist']
 
@@ -362,20 +367,20 @@ class Evaluator(ABC):
         agent_df = self.data.agent_df.copy()
         expert_df['ha'] /= units.deg
         agent_df['ha'] /= units.deg
-        
+
         # Remove slew distances > 35 degrees (arbitrary cutoff) # XXX need to check train data construction
         expert_df['slew_dist'] = expert_df['slew_dist'].where(expert_df['slew_dist'] < 10, np.nan)
         agent_df['slew_dist'] = agent_df['slew_dist'].where(agent_df['slew_dist'] < 10, np.nan)
-        
+
         expert_df = expert_df[metrics].assign(source='Expert')
         agent_df  = agent_df[metrics].assign(source='BC Agent')
 
         # 3. Combine into a single long-format DataFrame
         combined_df = pd.concat([expert_df, agent_df], ignore_index=True)
-        
+
         # 4. Pass the combined data and metrics list to your plotter
         fig, axs = self.plotter._plot_metric_distributions(combined_df, metrics)
-        
+
         return fig, axs
 
 
@@ -573,7 +578,7 @@ class SingleStepEvaluator(Evaluator):
             agent_filters=self.data.agent_df['filter'].values,
             bins=bins,
         )
-    
+
 
     def calculate_filter_confusion(self) -> np.ndarray:
         n = len(FILTER2IDX)
@@ -723,6 +728,13 @@ class MultiStepEvaluator(Evaluator):
 
         night_keys = [k for k in manifest if manifest[k] is not None]
 
+        # The manifest may store absolute paths from the training machine; the
+        # night CSV/npz files always live in <outdir>/nights with these
+        # basenames, so resolve by basename to stay portable across machines.
+        nights_dir = self.outdir / 'nights'
+        manifest = {k: (nights_dir / Path(v).name) if v is not None else None
+                    for k, v in manifest.items()}
+
         # ---- Pass 1: scalars from per-night CSVs ----
         frames = []
         for n in night_keys:
@@ -815,7 +827,7 @@ class MultiStepEvaluator(Evaluator):
             agent_arr=self.data.agent_df[feature_name],
             density=density, bins=bins, use_weights=use_weights, ax=ax,
         )
-        
+
     def _calculate_performance_metrics(self):
         """Placeholder for episode-level metrics (reward, coverage, etc.)."""
         metrics = {}
@@ -865,7 +877,7 @@ def plot_metric_distributions_with_ss_overlay(
         #     color=SS_COLOR, linestyle='--', linewidth=1.0, alpha=0.8,
         # )
         ax.set_xlabel('')  # Keeping x-axis clear as the metric title explains the values
-        
+
 
     existing = axs[0].get_legend()
     handles = list(existing.legend_handles) if existing else []

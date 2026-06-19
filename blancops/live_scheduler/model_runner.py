@@ -17,12 +17,13 @@ from blancops.configs.constants import IDX2FILTER
 from blancops.configs.rl_schema import ActionConstraints
 from blancops.data.features.glob_features import get_night_boundaries
 from blancops.environment.live_env import LiveBlancoEnv
-from blancops.ephemerides.time_utils import utc_now
+from blancops.ephemerides.time_utils import Clock
 from blancops.math import geometry, units
 from blancops.ephemerides import ephemerides
 from blancops.data.lookup_tables import LookupTables
 from blancops.ephemerides.ephemerides import HealpixGrid
 from blancops.rl.agent_factory import AgentFactory
+from blancops.survey.profiles import DES
 
 logger = logging.getLogger(__name__)
 
@@ -37,37 +38,30 @@ class ModelRunner(ABC):
     """
 
     @abstractmethod
-    def __init__(self, chunk_size):
+    def __init__(self):
         """
         Initialize the model runner with any necessary setup, such as loading model
         weights or setting up internal state.
-
-        Arguments
-        ---------
-        chunk_size: int
-            Number of sequential observations to propose in each generated chunk.
         """
 
         pass
 
     @abstractmethod
-    def generate_chunk(self, telemetry, available_fields, masked_field, masked_propids, chunk_size):
+    def generate_chunk(self, telemetry, available_fields, masked_field, priority_trigger, chunk_size):
         """
         Generate a chunk of proposed observations.
 
         Arguments
         ---------
         telemetry: dict
-            Current telescope/sky state dictionary. The mock runner expects at least
-            "pointing_ra" and "pointing_dec".
+            Current telescope/sky state dictionary.
         available_fields: list
-            Candidate field set available for scheduling.
+            Candidate field set.
         masked_field: pandas.DataFrame
-            Field-level masks to avoid this cycle; rows carry at least a
-            "field_id" column.
-        masked_propids: set
-            Propids whose fields should be avoided this cycle (resolved to
-            field_ids via the lookup table).
+            Legacy field-level mask (kept for parity; unused by the AI runner).
+        priority_trigger: bool
+            When True, the env masks all non-priority-1 fields until priority-1
+            work is complete (see LiveBlancoEnv.set_priority_trigger).
         chunk_size: int
             Number of sequential observations to propose.
 
@@ -75,7 +69,6 @@ class ModelRunner(ABC):
         -------
             pandas.DataFrame: Proposed observation chunk.
         """
-
         pass
 
     def record_visit(self, obs_row) -> None:
@@ -91,8 +84,9 @@ class ModelRunner(ABC):
 class MockModelRunner(ModelRunner):
     """Randomized mock implementation used for development and dry runs."""
 
-    def __init__(self, chunk_size):
+    def __init__(self, chunk_size, clock=None):
         self.chunk_size = chunk_size
+        self.clock = clock or Clock()
         self.current_field_id = 0
 
     def generate_next_observation(self, telemetry, masked_fields):
@@ -135,20 +129,21 @@ class MockModelRunner(ModelRunner):
                 continue
 
             # enforce telescope visibility via elevation floor
-            az, el = ephemerides.equatorial_to_topographic(ra, dec)
+            az, el = ephemerides.equatorial_to_topographic(ra, dec, time=self.clock.now())
             valid_el = el > 30 * units.deg  # 30deg elevation limit
 
             valid = valid_currentangsep and valid_angsep and valid_el
 
         return ra, dec
 
-    def generate_chunk(self, telemetry, available_fields, masked_fields, chunk_size=None):
+    def generate_chunk(self, telemetry, available_fields, masked_fields, priority_trigger=False, chunk_size=None):
         """
         Generate a mock chunk as a short random walk in sky coordinates.
 
         Note:
             available_fields is currently unused but included to preserve interface
-            compatibility with other production model runners.
+            compatibility with other production model runners. priority_trigger is
+            accepted for parity but ignored: the mock has no catalog to gate.
         """
 
         logger.info(
@@ -180,10 +175,12 @@ class MockModelRunner(ModelRunner):
 
 
 class AIModelRunner(ModelRunner):
-    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None, device: str = "cpu",
-                 field_choice_method: str = "interp", mode='test'):
+    def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None,
+                 device: str = "cpu", field_choice_method: str = "interp",
+                 mode='test', clock=None, sun_elevation_deg=DES.sun_el_limit):
         self.device = device
         self.TESTING_MODE = mode == 'test' # XXX remove before production
+        self.clock = clock or Clock()
 
         # Fields and Lookups
         self.fields_dir = Path(field_lookup_dir)
@@ -191,18 +188,16 @@ class AIModelRunner(ModelRunner):
 
         # Model
         self._build_agent(model_path_or_alias=model_path_or_alias, field_choice_method=field_choice_method)
-        logger.info(f"[Model] Loaded model weights from {model_path_or_alias} into memory.")
+        logger.info(f"Loaded model weights from {model_path_or_alias} into memory.")
 
         if self.TESTING_MODE:
-            now_ts = utc_now()
-            sunset_ts, _ = get_night_boundaries(now_ts, -14)
-            init_ts = max(now_ts, sunset_ts + 60*60)
-            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=init_ts)
-            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': init_ts}
+            now_ts = self.clock.now()
+            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=now_ts)
+            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': now_ts}
         else:
             raise NotImplementedError
 
-        self.env = self._build_env(telemetry_now=telemetry)
+        self.env = self._build_env(telemetry_now=telemetry, sun_elevation_deg=sun_elevation_deg)
         self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
 
     def _build_agent(self, model_path_or_alias, field_choice_method):
@@ -215,8 +210,8 @@ class AIModelRunner(ModelRunner):
             device=self.device
         )
 
-    def _build_env(self, telemetry_now):
-        constraints_cfg = ActionConstraints()
+    def _build_env(self, telemetry_now, sun_elevation_deg):
+        constraints_cfg = ActionConstraints(sun_el_limit=sun_elevation_deg) # Uses default constraints
         zscore_stats = self.norm_stats.get('z_score', {})
         rel_norm_stats = self.norm_stats.get('rel_norm', {})
         env = LiveBlancoEnv(
@@ -236,33 +231,21 @@ class AIModelRunner(ModelRunner):
         else:
             lookups = LookupTables.load_from_dir(fields_dir, include_historic=False)
         return lookups
-        
+
     def generate_chunk(self, telemetry=None, available_fields=None, masked_field=None,
-                       masked_propids=None, chunk_size=3, new_fields=None, new_lookup_dir=None,
-                       ) -> pd.DataFrame:
-        """Schedules a chunk of size `chunk_size` observations given the current state.
+                       priority_trigger=False, chunk_size=10,
+                       new_fields=None, new_lookup_dir=None) -> pd.DataFrame:
+        """Schedule a chunk of `chunk_size` observations given current state.
 
-        The live env's visit history is maintained externally by the orchestrator via
-        ``LiveBlancoEnv.record_visit`` after each hardware submission. This method
-        syncs the env to real telemetry, saves a rollout snapshot, runs the rollout,
-        then restores the env so live state is not permanently mutated by the simulation.
+        available_fields and masked_field are accepted but unused: masking is driven entirely by priority_trigger via the
+        env's priority gate. Syncs the env to telemetry, applies the gate, runs a
+        snapshotted rollout, then restores the env so live state is not mutated.
         """
-        # Normalize telemetry key names and inject timestamp/filter defaults.
         telemetry = self.resolve_rollout_telemetry(telemetry)
+        self.update_lookups(new_fields, new_dir=new_lookup_dir)
 
-        self.lookups = self.update_lookups(new_fields, new_dir=new_lookup_dir)
+        self.env.set_priority_trigger(priority_trigger)
 
-        # Resolve operator field masks (field-level DataFrame + propid set) to a
-        # flat set of field ids and apply before any action-mask refresh.
-        masked_ids = set()
-        if masked_field is not None and len(masked_field):
-            masked_ids |= set(int(fid) for fid in masked_field["field_id"].tolist())
-        if masked_propids:
-            masked_ids |= self.lookups.field_ids_for_propids(masked_propids)
-        self.env.set_masked_fields(masked_ids)
-
-        # Sync live env with hardware telemetry, save rollout baseline, run rollout,
-        # then restore so live state (including record_visit history) is preserved.
         self.env.sync_telemetry(telemetry)
         rollout_snapshot = self.env.save_snapshot()
         obs, info = self.env.get_obs(), self.env.get_info()
@@ -271,16 +254,11 @@ class AIModelRunner(ModelRunner):
         proposed_schedule = self._rollout(init_obs=obs, init_info=info, chunk_size=chunk_size)
 
         self.env.restore_snapshot(rollout_snapshot)
-
         return proposed_schedule
 
     def record_visit(self, obs_row) -> None:
         """Update the live env's visit history after a hardware submission."""
         self.env.record_visit(obs_row)
-
-    def get_maskable_propids(self) -> list:
-        """Propids available for operator masking, for the UI's choice list."""
-        return self.lookups.available_propids()
 
     def resolve_rollout_telemetry(self, telemetry: dict) -> dict:
         """Normalize raw client telemetry to env-canonical form.
@@ -295,7 +273,7 @@ class AIModelRunner(ModelRunner):
         if 'pointing_dec' in tel:
             tel.setdefault('dec', tel.pop('pointing_dec'))
         if 'timestamp' not in tel:
-            tel['timestamp'] = utc_now()
+            tel['timestamp'] = self.clock.now()
         if 'filter' not in tel: # XXX - need to read current filter in telescope to send to agent
             tel['filter'] = 'g'
         if tel.get('is_exposing'): # XXX - check with Paul
@@ -303,13 +281,16 @@ class AIModelRunner(ModelRunner):
         return tel
 
     def update_lookups(self, new_fields_path, new_dir=None):
-        if not new_fields_path: 
+        if not new_fields_path:
             return self.lookups
-        
-        new_lookups = LookupTables.build_lookups_from_fields(fields_path=new_fields_path, write_to_disk=False)
-        self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir) # writes to disk if new_dir is not None
+
+        new_lookups = LookupTables.build_lookups_from_fields(
+            fields_path=new_fields_path, write_to_disk=False)
+        self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir)
+        self.env.refresh_lookups(self.lookups)
+        self.agent.lookups = self.lookups
         return self.lookups
-    
+
     def _rollout(self, init_obs: dict, init_info: dict, chunk_size: int) -> pd.DataFrame:
         proposed_schedule = {'bin_idx': [],
                     'field_id': [],
@@ -318,29 +299,29 @@ class AIModelRunner(ModelRunner):
                     'ra': [],
                     'dec': [],
                     }
-        
-        info = self.env.set_constraints(airmass_limit=2.5, sun_el_limit=-15.0)
+
+        info = self.env.set_constraints(airmass_limit=2.5, sun_el_limit=-10.5)
 
         obs, info = init_obs, init_info
         for i in range(chunk_size):
             bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, self.hpGrid)
             actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
-            
+
             proposed_schedule['bin_idx'].append(bin_idx)
             proposed_schedule['field_id'].append(field_id)
             proposed_schedule['filter'].append(IDX2FILTER[filter_idx])
             proposed_schedule['timestamp'].append(info.get('timestamp'))
-    
-            
+
+
             ra, dec = self.lookups.fields[["ra", "dec"]].loc[field_id]
 
             proposed_schedule['ra'].append(ra)
             proposed_schedule['dec'].append(dec)
-            
+
             obs, reward, terminated, truncated, info = self.env.step(actions)
             if terminated or truncated: #ie, end of night - orchestrator default stops this, but doesn't hurt to have extra check here
                 break
-            
+
         for key, val in proposed_schedule.items():
             if key in ['bin_idx', 'field_id', 'timestamp']:
                 dtype = np.int64
@@ -349,5 +330,5 @@ class AIModelRunner(ModelRunner):
             elif key == 'filter':
                 dtype = str
             proposed_schedule[key] = np.array(val, dtype=dtype)
-        
+
         return pd.DataFrame(proposed_schedule)

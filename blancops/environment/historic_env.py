@@ -37,6 +37,7 @@ class HistoricBlancoEnv(BaseBlancoOfflineEnv):
         rel_norm_stats,
         global_pd_nightgroup,
         night_start_bin_states: Optional[np.ndarray] = None,
+        telescope=None,
     ):
         super().__init__(
             cfg=cfg,
@@ -44,6 +45,7 @@ class HistoricBlancoEnv(BaseBlancoOfflineEnv):
             lookups=lookups,
             z_score_stats=z_score_stats,
             rel_norm_stats=rel_norm_stats,
+            telescope=telescope,
             max_nights=global_pd_nightgroup.ngroups,
         )
         self._groupbynight = global_pd_nightgroup

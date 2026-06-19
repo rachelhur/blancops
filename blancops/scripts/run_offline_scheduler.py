@@ -53,7 +53,7 @@ def get_args():
 
     # Scheduling parameters
     parser.add_argument('--sun_el_limit', type=float, default=-12, help="How low below horizon sun needs to be for observing (in deg). Default is -12.")
-    parser.add_argument('--airmass_limit', type=float, default=1.2, help="The agent will only observe if there exist *any* fields below the airmass_lim")
+    parser.add_argument('--airmass_limit', type=float, default=1.8, help="The agent will only observe if there exist *any* fields below the airmass_lim")
     parser.add_argument('--initial_fwhm', type=float, default=0.9,
                         help="Assumed zenith delivered seeing (arcsec, r-band) for the forward sim, "
                              "projected per pointing by airmass/filter. Default 0.9 is the CTIO Blanco/DECam "
@@ -62,17 +62,17 @@ def get_args():
     # Evaluation hyperparameters
     parser.add_argument('--num_episodes', type=int, default=1, help='Number of evaluation episodes to run')
 
-    # Field masking (time-windowed propid masks). Omit --mask_baseline_propids to disable.
-    parser.add_argument('--mask_baseline_propids', type=str, nargs='*', default=None,
-                        help='Propids masked outside any mask window (baseline). If omitted, no masking is applied.')
+    # Field masking (time-windowed field-id masks). Omit --mask_baseline_field_ids to disable.
+    parser.add_argument('--mask_baseline_field_ids', type=int, nargs='*', default=None,
+                        help='Field ids masked outside any mask window (baseline). If omitted, no masking is applied.')
     parser.add_argument('--mask_baseline_mode', type=str, choices=['mask', 'keep_only'], default='mask',
-                        help="Baseline mask mode: 'mask' hides these propids; 'keep_only' hides all others.")
+                        help="Baseline mask mode: 'mask' hides these field ids; 'keep_only' hides all others.")
     parser.add_argument('--mask_window_start', type=float, default=None, help='Unix ts (UTC) start of the mask window.')
     parser.add_argument('--mask_window_end', type=float, default=None, help='Unix ts (UTC) end of the mask window.')
-    parser.add_argument('--mask_window_propids', type=str, nargs='*', default=None,
-                        help='Propids for the mask window rule.')
+    parser.add_argument('--mask_window_field_ids', type=int, nargs='*', default=None,
+                        help='Field ids for the mask window rule.')
     parser.add_argument('--mask_window_mode', type=str, choices=['mask', 'keep_only'], default='keep_only',
-                        help="Window mask mode: 'keep_only' hides all propids except these during the window.")
+                        help="Window mask mode: 'keep_only' hides all field ids except these during the window.")
 
     return parser.parse_args()
 
@@ -80,7 +80,7 @@ def get_args():
 def main():
     # Parse args
     args = get_args()
-    
+
     # ------------------------------
     # LOAD TARGET FIELDS
     # ------------------------------
@@ -163,11 +163,11 @@ def main():
 
     # Build the time-windowed field-mask schedule (None when no masking args given).
     field_mask_schedule = FieldMaskSchedule.build(
-        baseline_propids=args.mask_baseline_propids,
+        baseline_field_ids=args.mask_baseline_field_ids,
         baseline_mode=args.mask_baseline_mode,
         window_start=args.mask_window_start,
         window_end=args.mask_window_end,
-        window_propids=args.mask_window_propids,
+        window_field_ids=args.mask_window_field_ids,
         window_mode=args.mask_window_mode,
     )
 

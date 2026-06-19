@@ -42,16 +42,9 @@ _SITE = ObservingSite(
 # ------------------------------------------------------------------ #
 # Slew model                                                           #
 # ------------------------------------------------------------------ #
-# The Blanco is a classic equatorial-style alt-az from the 1970s; its
-# drive system is considerably slower than Rubin's modern design.
-#
-# Empirical values from DES survey logs and CTIO operations documentation:
-#   - Az : ~1.5 deg/s, accel ramp ~0.5 deg/s²
-#   - Alt: ~1.0 deg/s, accel ramp ~0.5 deg/s²
-# Settling time is rolled into visit_overhead via shutter_overhead.
 
-_AZ_SLEW  = SlewModel(max_speed=1.5, acceleration=0.5)
-_ALT_SLEW = SlewModel(max_speed=1.0, acceleration=0.5)
+_AZ_SLEW  = None #SlewModel(max_speed=1.5, acceleration=0.5)
+_ALT_SLEW = None #SlewModel(max_speed=1.0, acceleration=0.5)
 
 # ------------------------------------------------------------------ #
 # Instrument parameters — DECam broadband                             #

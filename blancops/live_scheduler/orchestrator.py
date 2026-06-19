@@ -58,6 +58,7 @@ class SchedulerOrchestrator:
             columns=["field_id", "ra", "dec", "filter"]
         )  # field-level operator masks (field_id is the only column AIModelRunner reads)
         self.session_masked_propids = set()  # propid-level operator masks
+        self.priority_trigger = False
         self.first_exposure = True
         self.last_submitted_obs = {}
         self.last_telemetry_check = -float("inf")
@@ -120,7 +121,7 @@ class SchedulerOrchestrator:
                 telemetry=telemetry,
                 available_fields=[],  # XXX Placeholder
                 masked_field=all_masks,
-                masked_propids=self.session_masked_propids,
+                priority_trigger=self.priority_trigger,
                 chunk_size=self.chunk_size,
             )
 
@@ -209,7 +210,9 @@ class SchedulerOrchestrator:
                         break
 
         # record the last submitted observation
-        if self.last_submitted_obs:
+        # NOTE self.last_submitted_obs is a pd.Series, need
+        # to either convert to dict or use len()
+        if len(self.last_submitted_obs):
             self.progress.record_completion(self.last_submitted_obs)
 
         # announce session end

@@ -25,6 +25,7 @@ from datetime import time, timezone, timedelta
 import datetime
 from typing import Union
 from collections import defaultdict
+import warnings
 
 import pandas as pd
 import numpy as np
@@ -825,11 +826,29 @@ def compute_causal_fwhm(night_df, seeing_cfg) -> np.ndarray:
             el=el[valid],
         )
 
-    out = np.empty(len(night_df), dtype=float)
-    for i in range(len(night_df)):
-        out[i] = float(
-            seeing.predict(band=bands[i], el=float(el[i]), now=float(ts[i]))
-        ) / units.arcsec
+    # Only warn when all rows in night are have no seeing history
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="No seeing history available",
+            category=RuntimeWarning,
+        )
+        out = np.empty(len(night_df), dtype=float)
+        for i in range(len(night_df)):
+            out[i] = float(
+                seeing.predict(band="i", el=np.pi / 2, now=float(ts[i]))
+            ) / units.arcsec
+
+    if not valid.any():
+        night_id = (
+            night_df['night'].iloc[0] if 'night' in night_df.columns else "unknown"
+        )
+        warnings.warn(
+            f"Night {night_id}: no measured seeing available; all "
+            f"{len(night_df)} rows fall back to the nominal DECam median.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return out
 
 
