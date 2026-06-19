@@ -22,6 +22,7 @@ import logging
 import numpy as np
  
 from blancops.environment.base import BaseBlancoEnv, StateSnapshot
+from blancops.environment.field_mask_schedule import MaskRule, resolve_positional_mask
 from blancops.environment.seeing_model import PredictiveSeeingModel
 from blancops.data.features.glob_features import get_night_boundaries
 from blancops.ephemerides import ephemerides
@@ -53,11 +54,9 @@ class LiveBlancoEnv(BaseBlancoEnv):
     ):
         self._survey_night_idx = survey_night_idx
 
-        # Operator field masks (set per chunk via set_masked_fields). Initialized
-        # before super().__init__ so any action-mask refresh during base init is
-        # safe; the positional mask is recomputed once _fids exists.
-        self._masked_field_ids = np.array([], dtype=int)
-        self._field_mask_positional = None
+        self._priority_trigger = False
+        self._priority1_positional = None   # [n_fields] bool
+        self._priority_rule = None          # MaskRule(keep_only priority-1 ids)
 
         super().__init__(
             cfg=cfg,
@@ -67,6 +66,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
             rel_norm_stats=rel_norm_stats,
             telescope=telescope,
         )
+        self._build_priority_mask()
         # airmass_limit and sun_el_limit are stored on self by base.
         # Live sessions always start fresh; offline envs load this from
         # historical snapshots via offline_base.py._apply_state_snapshot.
@@ -128,14 +128,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
                 )
 
         self._refresh_night_boundaries()
-
-        # Recompute observation arrays so downstream agents see fresh
-        # state even if no `step` is called between the sync and the
-        # next decision.
-        self._update_action_masks()
-        self._global_state = self._calculate_global_features()
-        if self.include_bin_features:
-            self._bin_state = self._calculate_bin_features()
+        self._recompute_derived_state()
 
     def record_visit(self, obs_row) -> None:
         """Record that an observation was submitted to the telescope.
@@ -154,10 +147,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
         self._record_visit(field_id=field_id, filter_idx=filter_idx)
         self._field_id = field_id
         self._filter_idx = filter_idx
-        self._update_action_masks()
-        self._global_state = self._calculate_global_features()
-        if self.include_bin_features:
-            self._bin_state = self._calculate_bin_features()
+        self._recompute_derived_state()
 
     def save_snapshot(self) -> StateSnapshot:
         """Capture the full mutable state — pointing, time, and visit counts."""
@@ -174,35 +164,62 @@ class LiveBlancoEnv(BaseBlancoEnv):
         """Restore mutable state from a snapshot and recompute derived arrays."""
         self._apply_state_snapshot(snap)
         self._refresh_night_boundaries()
+        self._recompute_derived_state()
+
+    def _build_priority_mask(self) -> None:
+        """Compute the priority-1 positional mask and keep_only rule.
+
+        No-op-safe: when the lookups carry no `priority` column or no field
+        has priority 1, `_priority1_positional` is all-False so the gate never
+        masks anything. Rebuilt on `refresh_lookups`.
+        """
+        if "priority" in self.lookups.fields.columns:
+            priorities = self.lookups.fields["priority"].to_numpy()   # [n_fields]
+            self._priority1_positional = (priorities == 1)            # [n_fields] bool
+        else:
+            self._priority1_positional = np.zeros(self.nfields, dtype=bool)
+        priority1_ids = self._fids[self._priority1_positional]
+        self._priority_rule = MaskRule(
+            field_ids=frozenset(int(f) for f in priority1_ids),
+            mode="keep_only",
+        )
+
+    def set_priority_trigger(self, active: bool) -> None:
+        """Set the operator priority-scheduling flag and refresh derived state.
+
+        Args
+        ----
+        active : bool
+            When True, the priority gate engages (see `_apply_field_mask`).
+        """
+        self._priority_trigger = bool(active)
+        self._recompute_derived_state()
+
+    def _apply_field_mask(self, sel_valid: np.ndarray) -> np.ndarray:
+        """Apply the priority gate to the action-validity mask.
+
+        While the trigger is on and any priority-1 field is still incomplete,
+        zero the rows of every non-priority-1 field (keep_only priority-1).
+        Auto-releases (identity) once no incomplete priority-1 field remains, so
+        the rest of the catalog reopens. `sel_valid` is a fresh `&` result, so
+        in-place mutation is safe. Works for `(nfields, nfilters)` and
+        `(nfields,)` since field index is axis 0.
+        """
+        if not self._priority_trigger or not self._priority1_positional.any():
+            return sel_valid
+        incomplete = self._survey_progress_tracker.get_incomplete_mask()
+        incomplete_fields = incomplete.any(axis=1) if incomplete.ndim == 2 else incomplete
+        if not (self._priority1_positional & incomplete_fields).any():
+            return sel_valid   # priority-1 complete -> release the gate
+        sel_valid[resolve_positional_mask(self._priority_rule, self._fids)] = False
+        return sel_valid
+
+    def _recompute_derived_state(self) -> None:
+        """Refresh action masks and feature vectors after a state change."""
         self._update_action_masks()
         self._global_state = self._calculate_global_features()
         if self.include_bin_features:
             self._bin_state = self._calculate_bin_features()
-
-    def set_masked_fields(self, field_ids) -> None:
-        """Set the operator-masked field ids for subsequent action-mask refreshes.
-
-        Idempotent. Called fresh at the top of each chunk generation. Field ids
-        not present in the catalog are ignored. The masked set is config-like
-        input, not dynamic episode state, so it is not part of save/restore
-        snapshots.
-        """
-        self._masked_field_ids = np.asarray(
-            sorted(set(int(f) for f in field_ids)), dtype=int
-        )
-        self._field_mask_positional = np.isin(self._fids, self._masked_field_ids)
-
-    def _apply_field_mask(self, sel_valid: np.ndarray) -> np.ndarray:
-        """Zero the validity rows for operator-masked fields.
-
-        Works for both the (nfields, nfilters) filtered mask and the (nfields,)
-        unfiltered mask, since field index is axis 0 in both. `sel_valid` here is
-        a fresh array (result of an `&`), so in-place mutation is safe.
-        """
-        if self._field_mask_positional is None or not self._field_mask_positional.any():
-            return sel_valid
-        sel_valid[self._field_mask_positional] = False
-        return sel_valid
 
     # -----------------------------------------------------------------------
     # BaseBlancoEnv lifecycle hooks
