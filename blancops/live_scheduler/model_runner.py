@@ -283,15 +283,12 @@ class AIModelRunner(ModelRunner):
         return tel
 
     def update_lookups(self, new_fields_path, new_dir=None):
-        if not new_fields_path:
-            return self.lookups
-
-        new_lookups = LookupTables.build_lookups_from_fields(
-            fields_path=new_fields_path, write_to_disk=False)
-        self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir)
-        self.env.refresh_lookups(self.lookups)
-        self.agent.lookups = self.lookups
-        return self.lookups
+        if new_fields_path:
+            new_lookups = LookupTables.build_lookups_from_fields(
+                fields_path=new_fields_path, write_to_disk=False)
+            self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir)
+            self.env.refresh_lookups(self.lookups)
+            self.agent.lookups = self.lookups
 
     def _rollout(self, init_obs: dict, init_info: dict, chunk_size: int) -> pd.DataFrame:
         proposed_schedule = {'bin_idx': [],
