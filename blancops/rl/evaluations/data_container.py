@@ -244,7 +244,7 @@ class DataContainer(ABC):
         `convert_to_deg()` on both first). Output is stored as radians and is
         converted to degrees by the standard `convert_to_deg()` pass.
         """
-        
+
         expert_radec_rad_bin = self.expert_df[['bin_ra', 'bin_dec']].to_numpy() * units.deg
         agent_radec_rad_bin  = self.agent_df[['bin_ra', 'bin_dec']].to_numpy() * units.deg
 
