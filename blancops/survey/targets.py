@@ -80,6 +80,7 @@ def to_lookup_fields_df(
             "count": count,
             "exptime": exptime,
             "propid": propid,
+            "priority": priority
         }
     )
 
