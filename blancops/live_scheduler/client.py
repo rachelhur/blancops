@@ -12,6 +12,7 @@ from blancops.ephemerides import ephemerides, time_utils
 from blancops.live_scheduler.scl import SCL
 from blancops.data_quality.seeing import Seeing, DatabaseSeeing
 import json
+import pandas as pd
 
 import logging
 logger = logging.getLogger(__name__)
@@ -105,6 +106,13 @@ class MockTelescopeClient(TelescopeClient):
         self.ra_changed_since_last_check = False
         self.dec_changed_since_last_check = False
 
+        # track the last submitted observation, initialized to dummy values
+        self.last_submitted_obs_row = pd.Series({
+            "ra": self.current_ra,
+            "dec": self.current_dec,
+            "filter": None,
+        })
+
         # initialize seeing data, which remains empty for the mock client
         self.seeing = Seeing()
 
@@ -113,6 +121,10 @@ class MockTelescopeClient(TelescopeClient):
     def get_telemetry(self):
         """Return the currently simulated telescope telemetry."""
         return {
+            "last_exposure": self.last_submitted_obs_row,
+            "last_exposure_submit_time": self.last_exposure_submit_time,
+            "last_exposure_estimated_start_time": self.last_exposure_submit_time + self.slew_time,
+            "last_exposure_estimated_end_time": self.last_exposure_submit_time + self.slew_time + self.exposure_duration,
             "pointing_ra": self.current_ra,
             "pointing_dec": self.current_dec,
             "seeing": self.seeing.raw,
@@ -137,6 +149,8 @@ class MockTelescopeClient(TelescopeClient):
 
     def submit_observation(self, obs_row, exp_time=None):
         """Submit an observation into the mock queue and update simulator state."""
+
+        self.last_submitted_obs_row = obs_row
 
         # approximate slew time from angular separation between old/new pointings
         angsep = geometry.angular_separation(
@@ -171,7 +185,12 @@ class BlancoSCLTelescopeClient(TelescopeClient):
 
     def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000, clock=None):
         """Initialize and confirm the connection to the control system."""
+
+        # track time management
         self.clock = clock or time_utils.Clock()
+        self.last_exposure_submit_time = -float("inf")
+        self.last_exposure_duration = 0
+        self.last_exposure_estimated_slew_time = 0
 
         # Initialize the TCP/IP communication client
         logger.info(f"[Client] Attempting to connect to SCLN server at {server_ip}:{server_port}...")
@@ -191,6 +210,9 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         # track current pointing based on submissions
         self.current_ra, self.current_dec = None, None
         self.current_time = self.clock.now()
+
+        # track the last submitted observation for telemetry reporting
+        self.last_submitted_obs_row = pd.Series()
 
         self.propid = propid
 
@@ -245,6 +267,10 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         self.seeing_changed_since_last_check = changed or self.seeing_changed_since_last_check
 
         return {
+            "last_exposure": self.last_submitted_obs_row,
+            "last_exposure_submit_time": self.last_exposure_submit_time,
+            "last_exposure_estimated_start_time": self.last_exposure_submit_time + self.last_exposure_estimated_slew_time,
+            "last_exposure_estimated_end_time": self.last_exposure_submit_time + self.last_exposure_estimated_slew_time + self.last_exposure_duration,
             "pointing_ra": ra,
             "pointing_dec": dec,
             "seeing": self.seeing.raw,
@@ -279,6 +305,10 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         cmd = self._build_base_message("COMMAND")
 
         # map the desired observation to the command parameters expected by SCLN
+        angsep = geometry.angular_separation(
+            (self.current_ra, self.current_dec), (obs_row["ra"], obs_row["dec"])
+        ) if self.current_ra is not None and self.current_dec is not None else 0
+        self.last_exposure_estimated_slew_time = geometry.blanco_slew_time
         self.current_ra = float(obs_row.get("ra", self.current_ra))
         self.current_dec = float(obs_row.get("dec", self.current_dec))
         cmd["parameters"] = {
@@ -292,6 +322,12 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             "object": str(obs_row.get("field_name", f"pointing_{self.current_time}")),
             "comment": "DO NOT USE", # XXX placeholder for day-time testing
         }
+
+        # store the submitted observation for telemetry reporting
+        self.last_submitted_obs_row = obs_row
+        self.last_exposure_submit_time = self.clock.now()
+        self.last_exposure_duration = float(cmd["parameters"]["expTime"])
+        self.last_exposure_estimated_slew_time = geometry.blanco_slew_time(angsep) / units.second
 
         # send the command and wait for the synchronous response
         logger.info(f"[Client] SUBMIT: RA={cmd['parameters']['ra']}, DEC={cmd['parameters']['dec']}, FILTER={cmd['parameters']['filter']}")
