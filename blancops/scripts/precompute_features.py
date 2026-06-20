@@ -52,7 +52,7 @@ def get_args():
         '-l', '--logging_level', type=str, default='info',
         help='Logging level (info or debug).'
     )
-    
+
     parser.add_argument('--test', action='store_true', help='Run in test mode with reduced data.')
     return parser.parse_args()
 
@@ -73,7 +73,7 @@ def main():
 
     logger.info(f"Loading and processing historical data from {fits_path}")
     df = load_and_process_historic_data(fits_path=fits_path)
-    
+
     if args.test:
         logger.info("Running in test mode: using only the first 1000 rows of data.")
         df = df.head(1000)
@@ -87,7 +87,7 @@ def main():
     logger.info("Computing feature cache…")
     cache = RawFeatureCache.compute(df=df, lookups=lookups, hpGrid=hpGrid)
 
-    
+
     if not args.test:
         logger.info(f"Saving feature cache to {outdir}")
         cache.save(outdir)
