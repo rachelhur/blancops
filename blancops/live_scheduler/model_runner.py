@@ -260,24 +260,26 @@ class AIModelRunner(ModelRunner):
         """Update the live env's visit history after a hardware submission."""
         self.env.record_visit(obs_row)
 
-    def resolve_rollout_telemetry(self, telemetry: dict) -> dict:
+    def resolve_rollout_telemetry(self, telemetry: pd.Series | dict) -> dict:
         """Normalize raw client telemetry to env-canonical form.
 
-        Renames hardware key aliases (``pointing_ra`` → ``ra``, etc.), injects a
-        wall-clock timestamp when the client doesn't provide one, and adds a
-        default filter string. Works on a copy — does not mutate the input dict.
+        Renames key aliases (``pointing_ra`` → ``ra``, etc.), sets ``timestamp`` as
+        ``last_exposure_estimated_start_time``, and gets filter from
+        ``last_exposure``. Works on a copy — does not mutate the input dict.
         """
         tel = dict(telemetry)
         if 'pointing_ra' in tel:
             tel.setdefault('ra', tel.pop('pointing_ra'))
         if 'pointing_dec' in tel:
             tel.setdefault('dec', tel.pop('pointing_dec'))
-        if 'timestamp' not in tel:
-            tel['timestamp'] = self.clock.now()
-        if 'filter' not in tel: # XXX - need to read current filter in telescope to send to agent
-            tel['filter'] = 'g'
-        if tel.get('is_exposing'): # XXX - check with Paul
-            tel['timestamp'] = tel['exposure_start_time'] # XXX Model input state time should be timestamp at exposure start time
+        ts = tel.pop('last_exposure_estimated_start_time', None)
+        if ts is None or not np.isfinite(ts):  # no exposure submitted yet -> sentinel anchor
+            ts = self.clock.now()
+        tel.setdefault('timestamp', ts)
+        if tel.get('last_exposure', None) is not None:
+            filt = tel['last_exposure'].get('filter')
+            tel['filter'] = filt if filt in IDX2FILTER.values() else 'g'
+
         return tel
 
     def update_lookups(self, new_fields_path, new_dir=None):
