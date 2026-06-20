@@ -132,7 +132,7 @@ class MockTelescopeClient(TelescopeClient):
 
     def check_telemetry_change(self):
         """
-        Returns True if pointing has changed meaningfully. Currently, this check is 
+        Returns True if pointing has changed meaningfully. Currently, this check is
         turned off and always returns False for testing.
         """
         changed = self.ra_changed_since_last_check or self.dec_changed_since_last_check
