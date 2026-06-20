@@ -55,6 +55,7 @@ def to_lookup_fields_df(
     filt: str,
     count: int = 1,
     exptime: float = 90.0,
+    priority: int | None = None,
     *,
     ra_col: str = "RA",
     dec_col: str = "DEC",
