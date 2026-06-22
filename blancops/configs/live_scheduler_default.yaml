@@ -37,6 +37,7 @@ chunk_size: 3
 min_chunk_size: null
 observing_poll_rate_sec: 1
 telemetry_poll_rate_sec: 20
+seeing_window: "15m"
 
 # =======================================================================================
 # Observing Limits

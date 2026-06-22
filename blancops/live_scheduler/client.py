@@ -84,13 +84,17 @@ class TelescopeClient(ABC):
 class MockTelescopeClient(TelescopeClient):
     """In-memory telescope simulator for development and integration testing."""
 
-    def __init__(self, exposure_duration=90, clock=None):
+    def __init__(self, exposure_duration=90, clock=None, seeing_window="15m"):
         """Initialize mock timing and initial pointing state.
 
         Arguments
         ---------
         exposure_duration: float [90]
             Simulated exposure time in seconds.
+        clock: time_utils.Clock [None]
+            Optional custom clock for testing. By default, uses the real current time.
+        seeing_window: str ["15m"]
+            Time window for recent seeing measurements.
         """
 
         # model internal state to simulate exposure timing
@@ -114,7 +118,7 @@ class MockTelescopeClient(TelescopeClient):
         })
 
         # initialize seeing data, which remains empty for the mock client
-        self.seeing = Seeing()
+        self.seeing = Seeing(window=seeing_window)
 
         logger.info("[Client] Initialized mock telescope client.")
 
@@ -183,8 +187,23 @@ class BlancoSCLTelescopeClient(TelescopeClient):
     postgres database for seeing monitoring.
     """
 
-    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000, clock=None):
-        """Initialize and confirm the connection to the control system."""
+    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000, clock=None, seeing_window="15m"):
+        """
+        Initialize and confirm the connection to the control system.
+        
+        Arguments
+        ---------
+        propid: str
+            Proposal ID to include with each observation submission.
+        server_ip: str ["observer4.ctio.noao.edu"]
+            IP address of the SCLN server.
+        server_port: int [20000]
+            Port number of the SCLN server.
+        clock: time_utils.Clock [None]
+            Optional custom clock for testing. By default, uses the real current time.
+        seeing_window: str ["15m"]
+            Time window for recent seeing measurements.
+        """
 
         # track time management
         self.clock = clock or time_utils.Clock()
@@ -204,7 +223,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             logger.warning(f"[Client] WARNING: Could not connect to SCLN server at {server_ip}:{server_port}.")
 
         # initialize connection to the seeing database
-        self.seeing = DatabaseSeeing()
+        self.seeing = DatabaseSeeing(window=seeing_window)
         self.seeing_changed_since_last_check = False
 
         # track current pointing based on submissions
@@ -345,7 +364,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             return None
 
     def close(self):
-        """Clean up the SCL client and seeing databaseconnection."""
+        """Clean up the SCL client and seeing database connection."""
         self.scl_client.close()
         logger.info("[Client] Closed connection to SCLN server.")
         self.seeing.database.close()
