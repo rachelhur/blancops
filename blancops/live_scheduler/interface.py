@@ -119,8 +119,8 @@ class CLIInterface(BaseInterface):
                 f"[Interface] Plot saved to '{self.output_dir / 'current_chunk_proposal.png'}'."
             )
         if self.show_plots:
-            plt.show()
-        plt.close()
+            plt.show(block=False)
+            plt.pause(0.1)
 
     def get_user_decision(self):
         """Prompt for Y/N approval and return scheduler decision payload."""
