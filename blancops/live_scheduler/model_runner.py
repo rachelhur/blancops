@@ -195,7 +195,7 @@ class AIModelRunner(ModelRunner):
             zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=now_ts)
             telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': now_ts}
         else:
-            raise NotImplementedError
+            pass
 
         self.env = self._build_env(telemetry_now=telemetry, sun_elevation_deg=sun_elevation_deg)
         self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
