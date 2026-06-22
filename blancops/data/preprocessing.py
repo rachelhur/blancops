@@ -34,7 +34,7 @@ _OP_MAP = {
 
 # Applies AND based selections given the following criteria:
 _DES_SELECTION_CRITERIA = [
-    ('propid', '2012B-0001', '=='), 
+    ('propid', '2012B-0001', '=='),
     ('exptime', 100, '<'),
     ('exptime', 40, '>'),
     ('datetime', pd.Timestamp("2013-08-30", tz="UTC"), '>='),
@@ -45,8 +45,8 @@ _DES_SELECTION_CRITERIA = [
 # Specific objects to remove from dataset (non-astronomical targets or non DES wide-field survey targets).
 # Most (but not all) of these should be taken care of by the 'program' and 'propid' selection criteria.
 _DES_UNWANTED_OBJECTS = [
-    "guide", 
-    "pointing", 
+    "guide",
+    "pointing",
     "DES vvds",
     "J0",
     "SN",
@@ -60,25 +60,25 @@ _DES_UNWANTED_OBJECTS = [
     "WD0",
     "DES supernova hex",
     "NGC",
-    "ec", 
+    "ec",
     ]
 
 
 def load_and_process_historic_data(
-    fits_path: str | Path | None = None, 
+    fits_path: str | Path | None = None,
     df: pd.DataFrame | None = None,
-    start_date: str | pd.Timestamp | None = None, 
-    end_date: str | pd.Timestamp | None = None, 
-    valid_years=None, 
-    valid_months=None, 
-    valid_days=None, 
+    start_date: str | pd.Timestamp | None = None,
+    end_date: str | pd.Timestamp | None = None,
+    valid_years=None,
+    valid_months=None,
+    valid_days=None,
     valid_filters=None,
     selections=_DES_SELECTION_CRITERIA,
-    objects_to_remove=_DES_UNWANTED_OBJECTS, 
+    objects_to_remove=_DES_UNWANTED_OBJECTS,
     outlier_cutoff_dist=3.5
     ) -> pd.DataFrame:
     """Loads data from fits file, applies selection criteria, and processes into a clean DataFrame ready for lookup construction and feature engineering.
-    
+
     Args:
     =====
     fits_path (str | Path): str | Path
@@ -91,7 +91,7 @@ def load_and_process_historic_data(
     assert fits_path or df, "Provide either fits_path or df, not both."
     if df is None:
         df = preprocess_fits(fits_path)
-        
+
 
     df = df \
         .pipe(_apply_selection_criteria, selections=selections) \
@@ -101,20 +101,20 @@ def load_and_process_historic_data(
         .pipe(_remove_unwanted_objects, objects_to_remove=objects_to_remove) \
         .pipe(_add_essential_cols) \
         .pipe(_add_field_col) \
-        
+
     df = df.sort_values(by='timestamp').reset_index(drop=True)
-    
+
     return df
 
 def _apply_selection_criteria(df, selections: list):
     sel_mask = np.ones(len(df), dtype=bool)
-    
+
     for crit_key, val, op_str in selections:
         try:
             op_func = _OP_MAP[op_str]
         except KeyError:
             raise ValueError(f"Operator '{op_str}' is not supported.")
-            
+
         # Special handling for NaN comparisons
         if pd.isna(val):
             if op_str == '!=':
@@ -123,17 +123,17 @@ def _apply_selection_criteria(df, selections: list):
                 sel_mask &= df[crit_key].isna()
         else:
             sel_mask &= op_func(df[crit_key], val)
-            
+
     return df[sel_mask].copy()
-    
+
 def _convert_df_to_radians(df: pd.DataFrame, key_list: list | None = None) -> pd.DataFrame:
     """Converts specified columns in the dataframe from degrees to radians.
-    
+
     If key_list is None, it defaults to converting 'ra', 'dec', 'az', 'zd', and 'ha'.
     """
     if key_list is None:
         key_list = []
-        
+
     key_list.extend(['ra', 'dec', 'az', 'zd', 'ha'])
     key_list = list(set(key_list))
     if not all(key in df.columns for key in key_list):
@@ -144,12 +144,12 @@ def _convert_df_to_radians(df: pd.DataFrame, key_list: list | None = None) -> pd
 def _add_essential_cols(df):
     df['el'] = np.pi/2 - df['zd'].values
     return df
-    
+
 def _remove_unwanted_objects(df, objects_to_remove) -> pd.DataFrame:
-    """Removes objects that have specific substrings in their object name"""    
+    """Removes objects that have specific substrings in their object name"""
     pattern = '|'.join(re.escape(obj) for obj in objects_to_remove)
     mask = ~df['object'].str.contains(pattern, case=False, na=False, regex=True) & (df['object'] != '')
-    
+
     # Filter the DataFrame
     df = df[mask]
     return df
@@ -173,7 +173,7 @@ def _remove_outliers(df, col='object', cutoff_dist=3.5) -> pd.DataFrame:
 
         # Calculate true on-sky distance from the robust center
         distances = get_haversine_dist(median_ra, median_dec, g.ra.values, g.dec.values)
-        
+
         # Mask and re-label
         mask_outlier = distances > cutoff_dist
 
@@ -184,12 +184,12 @@ def _remove_outliers(df, col='object', cutoff_dist=3.5) -> pd.DataFrame:
     return cleaned_df
 
 def _filter_observing_timeframe(
-    df: pd.DataFrame, 
-    start_date: str | pd.Timestamp | None = None, 
-    end_date: str | pd.Timestamp | None = None, 
-    valid_years: list | int | None = None, 
-    valid_months: list | int | None = None, 
-    valid_days: list | int | None = None, 
+    df: pd.DataFrame,
+    start_date: str | pd.Timestamp | None = None,
+    end_date: str | pd.Timestamp | None = None,
+    valid_years: list | int | None = None,
+    valid_months: list | int | None = None,
+    valid_days: list | int | None = None,
     valid_filters: list | str | None = None
 ) -> pd.DataFrame:
     """
@@ -209,7 +209,7 @@ def _filter_observing_timeframe(
         mask &= night_dt >= pd.to_datetime(start_date)
         if not mask.any():
             raise ValueError(f"No data found after start_date: {start_date}")
-            
+
     if end_date is not None:
         mask &= night_dt <= pd.to_datetime(end_date)
         if not mask.any():
@@ -246,47 +246,47 @@ def _filter_observing_timeframe(
 def _get_median_ra(ra_arr):
     """Returns the median RA for a given array of RA values.
     Useful for edge aware centering.
-    
+
     Args
     ----
     ra_arr (np.ndarray): Array of RA values in degrees.
     """
     ra_rad = np.radians(ra_arr)
-    
+
     mean_x = np.mean(np.cos(ra_rad))
     mean_y = np.mean(np.sin(ra_rad))
-    
+
     anchor_ra = np.degrees(np.arctan2(mean_y, mean_x)) % 360
     shifted_ra = (ra_arr - anchor_ra + 180) % 360 - 180
-    
+
     return (np.median(shifted_ra) + anchor_ra) % 360
 
 def _get_mean_ra(ra_arr):
     """Returns the mean RA for a given array of RA values.
     Useful for edge aware centering.
-    
+
     Args
     ----
     ra_arr (np.ndarray): Array of RA values in degrees.
     """
     ra_rad = np.radians(ra_arr)
-    
+
     mean_x = np.mean(np.cos(ra_rad))
     mean_y = np.mean(np.sin(ra_rad))
-    
+
     anchor_ra = np.degrees(np.arctan2(mean_y, mean_x)) % 360
     shifted_ra = (ra_arr - anchor_ra + 180) % 360 - 180
-    
+
     return (np.mean(shifted_ra) + anchor_ra) % 360
 
 def get_haversine_dist(ra_center, dec_center, ra_array, dec_array):
     """Calculates great-circle distance between a center point and an array of points."""
     ra1, dec1 = np.radians(ra_center), np.radians(dec_center)
     ra2, dec2 = np.radians(ra_array), np.radians(dec_array)
-    
+
     d_ra = ra2 - ra1
     d_dec = dec2 - dec1
-    
+
     a = np.sin(d_dec / 2.0)**2 + np.cos(dec1) * np.cos(dec2) * np.sin(d_ra / 2.0)**2
     a = np.clip(a, 0.0, 1.0)
     return np.degrees(2.0 * np.arcsin(np.sqrt(a)))
@@ -296,22 +296,22 @@ def _add_field_col(df):
     assert all('tiling' in obj_name for obj_name in df['object'].unique()), "All object names must contain 'tiling' for this function to work as intended."
     df['field'] = df['object'].str.replace(r'\s*tiling\s+\d+', '', regex=True)
     return df
-    
+
 
 def build_DES_lookups(fits_path=None, outdir=None):
     fits_path = Path(fits_path or DES_FITS_PATH).resolve()
     outdir = Path(outdir or DES_DATA_DIR).resolve()
-    
+
     df = load_and_process_historic_data(fits_path=fits_path)
     if len(df) == 0: # Fixed the logical bug here: len(df) == 0 means no obs found
         logger.warning("No observations found for the specified year/month/day/filter selections.")
         raise ValueError
-    
+
     # Require field_id is 0..N-1 contiguous
     field2idx = {obj_name: idx for idx, obj_name in enumerate(sorted(df['field'].unique()))}
     df['field_id'] = df['field'].map(field2idx)
     df["filt_idx"] = df["filter"].map(FILTER2IDX)
-    
+
     num_fields = df["field_id"].nunique()
     nfilters = len(FILTER2IDX)
 
@@ -327,7 +327,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
             f"No observations with teff > {valid_teff_threshold} in "
             f"{fits_path}; check input data quality."
         )
-    
+
     # ---------- Per-field DataFrame ----------
     # One row per field_id. Aggregate over the FULL df (not teff-
     # filtered) so even fields with no valid observations still
@@ -394,7 +394,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
     night2ot_clock_seconds = {}     # night -> OT(sunset_n)
 
     cum_ot = 0.0
-        
+
     for i, (night, night_df) in enumerate(df.groupby("night")):
         sunset_ts, sunrise_ts = get_night_boundaries(night, sun_el_limit=sun_el_limit)
         night2ot_clock_seconds[night] = cum_ot
@@ -412,7 +412,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
         night2fid_last_visit_ot[night] = field_last_visit_ot.copy()
         night2fidfilt_last_visit_ot[night] = fidfilt_last_visit_ot.copy()
 
- 
+
         valid_night = night_df[night_df["teff"] > valid_teff_threshold]
         if len(valid_night):
             # Visit counts
@@ -438,7 +438,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
             field_last_visit_ts[fid_ids] = np.fmax(
                 field_last_visit_ts[fid_ids], fid_ts
             )
- 
+
             # Per (field, filter): same idea, 2-D index.
             ff_max = valid_night.groupby(["field_id", "filt_idx"])["timestamp"].max()
             if len(ff_max):
@@ -448,7 +448,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
                 fidfilt_last_visit_ts[rows, cols] = np.fmax(
                     fidfilt_last_visit_ts[rows, cols], ff_ts
                 )
-                
+
             # Last-visit time: in unit of observing time seconds
             #       is per (field) and per (field, filter),
             valid_night = valid_night.assign(
@@ -461,7 +461,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
             field_last_visit_ot[fid_ids] = np.fmax(
                 field_last_visit_ot[fid_ids], fid_ot
             )
- 
+
             # Per (field, filter): same idea, 2-D index.
             ff_max = valid_night.groupby(["field_id", "filt_idx"])["ot"].max()
             if len(ff_max):
@@ -473,7 +473,7 @@ def build_DES_lookups(fits_path=None, outdir=None):
                 )
 
         cum_ot += night_dur
-        
+
     # total_observing_seconds = cum_ot
 
     logger.info(" [+] Constructed start-of-night 'Snapshots' Lookup (required for history-based feature construction and per-night rollout) ")
@@ -497,4 +497,3 @@ def build_DES_lookups(fits_path=None, outdir=None):
     logger.info(f" [+] Successfully generated all lookup tables in {outdir}")
 
     return lookups
-    

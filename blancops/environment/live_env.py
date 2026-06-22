@@ -52,6 +52,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
         telemetry_init,
         survey_night_idx=0,
         telescope=None,
+        seeing_window=None
     ):
         self._survey_night_idx = survey_night_idx
 
@@ -76,6 +77,8 @@ class LiveBlancoEnv(BaseBlancoEnv):
         # sync. Built before the first sync below so telemetry_init can seed
         # it. Cold start falls back to the nominal median in Seeing.predict.
         if "fwhm" in self.global_feature_names:
+            if seeing_window:
+                cfg.data.seeing.window = seeing_window
             self._seeing_model = PredictiveSeeingModel(cfg.data.seeing)
         self.sync_telemetry(telemetry=telemetry_init)
         self._validate_feature_config()
@@ -95,7 +98,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
         Args
         ----
         telemetry : Optional[dict]
-            Expected keys: 'time' (unix ts), 'ra' / 'dec' (matching the
+            Expected keys: 'timestamp' (unix ts), 'ra' / 'dec' (matching the
             unit convention of `self._ra_arr` / `self._dec_arr`), and
             optionally 'filter_idx'. If None, calls
             `self._telemetry.read()`.
@@ -112,21 +115,8 @@ class LiveBlancoEnv(BaseBlancoEnv):
             )
             self._apply_state_snapshot(snap)
 
-            # Ingest the real reading into the rolling seeing history. Each
-            # chunk rollout then predicts forward from accumulated history
-            # (see `_get_fwhm` via the SeeingModel). Syncs without 'fwhm'
-            # preserve the prior history.
-            if telemetry.get("fwhm") is not None and self._seeing_model is not None:
-                _, el = ephemerides.equatorial_to_topographic(
-                    ra=telemetry["ra"], dec=telemetry["dec"],
-                    time=telemetry["timestamp"],
-                )
-                el = max(min(el, np.pi / 2), 0.0)
-                band = IDX2FILTER.get(int(filter_idx), FWHM_REF_FILTER)
-                self._seeing_model.add(
-                    date=telemetry["timestamp"], seeing=telemetry["fwhm"],
-                    band=band, el=el,
-                )
+            if telemetry.get("seeing") is not None and self._seeing_model is not None:
+                self._seeing_model.replace(telemetry.get("seeing"))
 
         self._refresh_night_boundaries()
         self._recompute_derived_state()

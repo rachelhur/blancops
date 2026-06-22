@@ -19,6 +19,7 @@ class SchedulerOrchestrator:
         chunk_size=3,
         observing_poll_rate_sec=1,
         telemetry_poll_rate_sec=20,
+        clock=None,
         # XXX add needed pathing arguments
     ):
         """
@@ -40,6 +41,8 @@ class SchedulerOrchestrator:
             Poll cadence while waiting for the current exposure to finish.
         telemetry_poll_rate_sec: float [20]
             Cadence for telemetry checks that can trigger replanning.
+        clock: Clock, optional
+            Clock instance to use for simulated time management. Default to real-time.
         """
 
         # scheduler components
@@ -49,6 +52,7 @@ class SchedulerOrchestrator:
         self.progress = progress
 
         # operational settings
+        self.clock = clock or time_utils.Clock()
         self.chunk_size = chunk_size
         self.observing_poll_rate_sec = observing_poll_rate_sec
         self.telemetry_poll_rate_sec = telemetry_poll_rate_sec
@@ -192,12 +196,12 @@ class SchedulerOrchestrator:
                     break
 
                 # periodically check for telemetry, field list changes => trigger replan
-                delta = time_utils.utc_now() - self.last_telemetry_check
+                delta = self.clock.now() - self.last_telemetry_check
                 if delta > self.telemetry_poll_rate_sec:
                     logger.info("[Orchestrator] Performing periodic telemetry/field check")
                     new_telemetry = self.client.get_telemetry()
-                    self.last_telemetry_check = time_utils.utc_now()
-                    telemetry_changed = False  # XXX check telemetry changes
+                    self.last_telemetry_check = self.clock.now()
+                    telemetry_changed = self.client.check_telemetry_change()
                     if telemetry_changed:
                         logger.info("[Orchestrator] Telemetry change detected.")
                     fields_changed = False  # XXX check field list changes

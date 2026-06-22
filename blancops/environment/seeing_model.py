@@ -82,3 +82,6 @@ class PredictiveSeeingModel(SeeingModel):
     def fwhm(self, timestamp: float, band: str = "i", el: float = np.pi / 2) -> float:
         predicted = self._seeing.predict(band=band, el=el, now=timestamp)
         return float(predicted) / units.arcsec
+
+    def replace(self, raw):
+        self._seeing.replace(raw)

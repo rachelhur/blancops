@@ -177,7 +177,7 @@ class MockModelRunner(ModelRunner):
 class AIModelRunner(ModelRunner):
     def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None,
                  device: str = "cpu", field_choice_method: str = "interp",
-                 mode='test', clock=None, sun_elevation_deg=DES.sun_el_limit):
+                 mode='test', clock=None, sun_elevation_deg=DES.sun_el_limit, seeing_window="15m"):
         self.device = device
         self.TESTING_MODE = mode == 'test' # XXX remove before production
         self.clock = clock or Clock()
@@ -195,9 +195,13 @@ class AIModelRunner(ModelRunner):
             zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=now_ts)
             telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': now_ts}
         else:
-            raise NotImplementedError
+            pass
 
-        self.env = self._build_env(telemetry_now=telemetry, sun_elevation_deg=sun_elevation_deg)
+        self.env = self._build_env(
+            telemetry_now=telemetry,
+            sun_elevation_deg=sun_elevation_deg,
+            seeing_window=seeing_window
+        )
         self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
 
     def _build_agent(self, model_path_or_alias, field_choice_method):
@@ -210,7 +214,7 @@ class AIModelRunner(ModelRunner):
             device=self.device
         )
 
-    def _build_env(self, telemetry_now, sun_elevation_deg):
+    def _build_env(self, telemetry_now, sun_elevation_deg, seeing_window):
         constraints_cfg = ActionConstraints(sun_el_limit=sun_elevation_deg) # Uses default constraints
         zscore_stats = self.norm_stats.get('z_score', {})
         rel_norm_stats = self.norm_stats.get('rel_norm', {})
@@ -220,7 +224,8 @@ class AIModelRunner(ModelRunner):
             lookups=self.lookups,
             z_score_stats=zscore_stats,
             rel_norm_stats=rel_norm_stats,
-            telemetry_init=telemetry_now
+            telemetry_init=telemetry_now,
+            seeing_window=seeing_window
         )
         return env
 
@@ -260,36 +265,35 @@ class AIModelRunner(ModelRunner):
         """Update the live env's visit history after a hardware submission."""
         self.env.record_visit(obs_row)
 
-    def resolve_rollout_telemetry(self, telemetry: dict) -> dict:
+    def resolve_rollout_telemetry(self, telemetry: pd.Series | dict) -> dict:
         """Normalize raw client telemetry to env-canonical form.
 
-        Renames hardware key aliases (``pointing_ra`` → ``ra``, etc.), injects a
-        wall-clock timestamp when the client doesn't provide one, and adds a
-        default filter string. Works on a copy — does not mutate the input dict.
+        Renames key aliases (``pointing_ra`` → ``ra``, etc.), sets ``timestamp`` as
+        ``last_exposure_estimated_start_time``, and gets filter from
+        ``last_exposure``. Works on a copy — does not mutate the input dict.
         """
         tel = dict(telemetry)
         if 'pointing_ra' in tel:
             tel.setdefault('ra', tel.pop('pointing_ra'))
         if 'pointing_dec' in tel:
             tel.setdefault('dec', tel.pop('pointing_dec'))
-        if 'timestamp' not in tel:
-            tel['timestamp'] = self.clock.now()
-        if 'filter' not in tel: # XXX - need to read current filter in telescope to send to agent
-            tel['filter'] = 'g'
-        if tel.get('is_exposing'): # XXX - check with Paul
-            tel['timestamp'] = tel['exposure_start_time'] # XXX Model input state time should be timestamp at exposure start time
+        ts = tel.pop('last_exposure_estimated_start_time', None)
+        if ts is None or not np.isfinite(ts):  # no exposure submitted yet -> sentinel anchor
+            ts = self.clock.now()
+        tel.setdefault('timestamp', ts)
+        if tel.get('last_exposure', None) is not None:
+            filt = tel['last_exposure'].get('filter')
+            tel['filter'] = filt if filt in IDX2FILTER.values() else 'g'
+
         return tel
 
     def update_lookups(self, new_fields_path, new_dir=None):
-        if not new_fields_path:
-            return self.lookups
-
-        new_lookups = LookupTables.build_lookups_from_fields(
-            fields_path=new_fields_path, write_to_disk=False)
-        self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir)
-        self.env.refresh_lookups(self.lookups)
-        self.agent.lookups = self.lookups
-        return self.lookups
+        if new_fields_path:
+            new_lookups = LookupTables.build_lookups_from_fields(
+                fields_path=new_fields_path, write_to_disk=False)
+            self.lookups = self.lookups.merge(new_lookups, new_dir=new_dir)
+            self.env.refresh_lookups(self.lookups)
+            self.agent.lookups = self.lookups
 
     def _rollout(self, init_obs: dict, init_info: dict, chunk_size: int) -> pd.DataFrame:
         proposed_schedule = {'bin_idx': [],

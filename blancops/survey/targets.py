@@ -49,12 +49,28 @@ def build_candidate_fields(
     ).reset_index(drop=True)
 
 
+def parse_count_arg(s: str) -> int | dict[str, int]:
+    """Parse a --count CLI value: a plain int, or per-filter "f=n,..." pairs.
+
+    "3" -> 3; "i=2,z=3,Y=1" -> {"i": 2, "z": 3, "Y": 1}. The dict form is
+    consumed by to_lookup_fields_df to set a different count per filter.
+    """
+    if "=" not in s:
+        return int(s)
+    out = {}
+    for pair in s.split(","):
+        filt, _, n = pair.partition("=")
+        out[filt.strip()] = int(n)
+    return out
+
+
 def to_lookup_fields_df(
     fields: pd.DataFrame,
     propid: str,
     filt: str,
-    count: int = 1,
+    count: int | dict[str, int] = 1,
     exptime: float = 90.0,
+    priority: int | None = None,
     *,
     ra_col: str = "RA",
     dec_col: str = "DEC",
@@ -64,13 +80,17 @@ def to_lookup_fields_df(
     RA/Dec are read in degrees, wrapped to [0, 360), and converted to radians
     (the units the lookup builder requires). filt is one filter per character
     ("z" -> z only, "zg" -> z and g); each field is emitted once per filter,
-    sharing the same count and exptime, and tagged with propid.
+    sharing the same exptime and tagged with propid. count is shared across
+    filters when an int, or set per filter when a dict keyed by filter
+    character (e.g. {"z": 3, "g": 1}).
     """
     ra_deg = fields[ra_col].to_numpy(dtype=float)
     ra_deg = np.where(ra_deg < 0, ra_deg + 360.0, ra_deg)
     dec_deg = fields[dec_col].to_numpy(dtype=float)
     filters = list(filt)
     n = len(ra_deg)
+    if isinstance(count, dict):
+        count = np.repeat([count[f] for f in filters], n)
     return pd.DataFrame(
         {
             "RA": np.tile(np.radians(ra_deg), len(filters)),
@@ -79,6 +99,7 @@ def to_lookup_fields_df(
             "count": count,
             "exptime": exptime,
             "propid": propid,
+            "priority": priority
         }
     )
 

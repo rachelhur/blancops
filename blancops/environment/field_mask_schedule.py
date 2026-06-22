@@ -1,4 +1,7 @@
-"""Time-windowed field-mask schedule for offline rollouts.
+"""Field-masking schedules for online and offline rollouts.
+Holds masking rules for:
+    - Field priority-mask schedule for online and offline rollouts.
+    - Time-windowed field-mask schedule for offline rollouts.
 
 Holds the masking spec (a baseline rule plus time windows) and selects the
 active rule for a given timestamp. Pure spec and selection: no ephemeris or

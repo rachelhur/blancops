@@ -181,9 +181,9 @@ def parse_args():
     # ==================================================================================
     operational_group = parser.add_argument_group("Operational Settings")
     operational_group.add_argument(
-        "--fake-start-time",
+        "--sim-time-now",
         type=str,
-        default=None,
+        default=defaults.get("sim_time_now", None),
         help=(
             "Optional UTC time to simulate running this script. When set, the scheduler"
             "time base is shifted by a fixed offset from the real clock."
@@ -216,6 +216,15 @@ def parse_args():
         type=float,
         default=defaults.get("telemetry_poll_rate_sec", 20),
         help="How often to re-check telemetry before deciding whether to replan.",
+    )
+    operational_group.add_argument(
+        "--seeing-window",
+        type=str,
+        default=defaults.get("seeing_window", "15m"),
+        help=(
+            "Time window for recent seeing measurements to include as model features. "
+            'Format is a number followed by a time unit, e.g. "15m" for 15 minutes.'
+        ),
     )
 
     # ==================================================================================
@@ -291,8 +300,8 @@ def main():
 
     # set up simulated clock for testing
     clock = time_utils.Clock()
-    if args.fake_start_time is not None:
-        fake_start_ts = time_utils.standardize_time(args.fake_start_time)
+    if args.sim_time_now is not None:
+        fake_start_ts = time_utils.standardize_time(args.sim_time_now)
         clock = time_utils.Clock(offset=fake_start_ts - clock.now(real=True))
         logger.info(
             "[Scheduler] Fake clock enabled: real UTC shifted by %.3f seconds.",
@@ -305,12 +314,15 @@ def main():
         client = MockTelescopeClient(
             exposure_duration=args.mock_exposure_duration,
             clock=clock,
+            seeing_window=args.seeing_window,
         )
     else:
         client = BlancoSCLTelescopeClient(
             propid=args.propid,
             server_ip=args.scl_server_ip,
-            server_port=args.scl_server_port
+            server_port=args.scl_server_port,
+            clock=clock,
+            seeing_window=args.seeing_window,
         )
 
     # initialize model runner
@@ -325,6 +337,7 @@ def main():
             field_choice_method=args.field_choice_method,
             clock=clock,
             mode='test',  # XXX check this
+            seeing_window=args.seeing_window,
         )
 
     # initialize ui
@@ -357,6 +370,7 @@ def main():
         chunk_size=args.chunk_size,
         observing_poll_rate_sec=args.observing_poll_rate_sec,
         telemetry_poll_rate_sec=args.telemetry_poll_rate_sec,
+        clock=clock,
     )
 
     # run the scheduler loop
