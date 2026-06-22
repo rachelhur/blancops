@@ -72,10 +72,6 @@ class StateSnapshot:
     counts_cur : Optional[np.ndarray] = None # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
     last_visit_ot_cur: Optional[np.ndarray] = None    # Can have shape (nfields,) or (nfields, NUM_FILTERS) depending on action space
 
-    def resume_from_visit_history():
-        # XXX DO THIS!!!
-        pass
-
 
 # ---------------------------------------------------------------------------
 # Feature → source requirements (consumed by _validate_feature_config)
