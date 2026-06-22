@@ -197,7 +197,11 @@ class AIModelRunner(ModelRunner):
         else:
             pass
 
-        self.env = self._build_env(telemetry_now=telemetry, sun_elevation_deg=sun_elevation_deg)
+        self.env = self._build_env(
+            telemetry_now=telemetry,
+            sun_elevation_deg=sun_elevation_deg,
+            seeing_window=seeing_window
+        )
         self.hpGrid = HealpixGrid(nside=self.cfg.data.nside, is_azel="azel" in self.cfg.data.action_space)
 
     def _build_agent(self, model_path_or_alias, field_choice_method):
@@ -210,7 +214,7 @@ class AIModelRunner(ModelRunner):
             device=self.device
         )
 
-    def _build_env(self, telemetry_now, sun_elevation_deg):
+    def _build_env(self, telemetry_now, sun_elevation_deg, seeing_window):
         constraints_cfg = ActionConstraints(sun_el_limit=sun_elevation_deg) # Uses default constraints
         zscore_stats = self.norm_stats.get('z_score', {})
         rel_norm_stats = self.norm_stats.get('rel_norm', {})
@@ -220,7 +224,8 @@ class AIModelRunner(ModelRunner):
             lookups=self.lookups,
             z_score_stats=zscore_stats,
             rel_norm_stats=rel_norm_stats,
-            telemetry_init=telemetry_now
+            telemetry_init=telemetry_now,
+            seeing_window=seeing_window
         )
         return env
 

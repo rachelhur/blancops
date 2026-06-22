@@ -52,6 +52,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
         telemetry_init,
         survey_night_idx=0,
         telescope=None,
+        seeing_window=None
     ):
         self._survey_night_idx = survey_night_idx
 
@@ -76,6 +77,8 @@ class LiveBlancoEnv(BaseBlancoEnv):
         # sync. Built before the first sync below so telemetry_init can seed
         # it. Cold start falls back to the nominal median in Seeing.predict.
         if "fwhm" in self.global_feature_names:
+            if seeing_window:
+                cfg.data.seeing.window = seeing_window
             self._seeing_model = PredictiveSeeingModel(cfg.data.seeing)
         self.sync_telemetry(telemetry=telemetry_init)
         self._validate_feature_config()
