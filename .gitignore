@@ -33,6 +33,6 @@
 # Testing
 /.pytest_cache/
 
-# Blancops model diagnostics files
+# Blancops heavy data 
 **/val_dataset_cache.pt
-
+/data/

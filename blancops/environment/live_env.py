@@ -59,6 +59,7 @@ class LiveBlancoEnv(BaseBlancoEnv):
         self._priority_trigger = False
         self._priority1_positional = None   # [n_fields] bool
         self._priority_rule = None          # MaskRule(keep_only priority-1 ids)
+        self._masked_field_ids = []         # list of operator-masked field ids
 
         super().__init__(
             cfg=cfg,
@@ -213,15 +214,41 @@ class LiveBlancoEnv(BaseBlancoEnv):
         self._priority_trigger = bool(active)
         self._recompute_derived_state()
 
+    def set_field_mask(self, masked_field_ids) -> None:
+        """Set the operator field mask and refresh derived state.
+
+        Args
+        ----
+        masked_field_ids : Iterable[int] or None
+            Field ids to drop from the action space. None or empty clears the
+            mask. Applied on top of the priority gate (see `_apply_field_mask`).
+        """
+        self._masked_field_ids = (
+            [int(f) for f in masked_field_ids] if masked_field_ids else []
+        )
+        self._recompute_derived_state()
+
     def _apply_field_mask(self, sel_valid: np.ndarray) -> np.ndarray:
-        """Apply the priority gate to the action-validity mask.
+        """Apply the priority gate and operator field mask to the action mask.
+
+        First applies the priority gate, then drops any operator-masked fields.
+        Both act independently, so a field is observable only if it passes the
+        gate AND is not in `_masked_field_ids`. `sel_valid` is a fresh `&`
+        result, so in-place mutation is safe. Works for `(nfields, nfilters)`
+        and `(nfields,)`.
+        """
+        sel_valid = self._apply_priority_gate(sel_valid)
+        if self._masked_field_ids:
+            sel_valid[np.isin(self._fids, self._masked_field_ids)] = False
+        return sel_valid
+
+    def _apply_priority_gate(self, sel_valid: np.ndarray) -> np.ndarray:
+        """Zero non-priority-1 fields while the gate is engaged.
 
         While the trigger is on and any priority-1 field is still incomplete,
         zero the rows of every non-priority-1 field (keep_only priority-1).
-        Auto-releases once no incomplete priority-1 field remains, so
-        the rest of the catalog reopens. `sel_valid` is a fresh `&` result, so
-        in-place mutation is safe. Works for `(nfields, nfilters)` and
-        `(nfields,)`.
+        Auto-releases once no incomplete priority-1 field remains, so the rest
+        of the catalog reopens.
         """
         if not self._priority_trigger or not self._priority1_positional.any():
             return sel_valid

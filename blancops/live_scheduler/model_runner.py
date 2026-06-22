@@ -57,8 +57,8 @@ class ModelRunner(ABC):
             Current telescope/sky state dictionary.
         available_fields: list
             Candidate field set.
-        masked_field: pandas.DataFrame
-            Legacy field-level mask (kept for parity; unused by the AI runner).
+        masked_field: Iterable[int] or None
+            Field ids to drop from the action space for this chunk.
         priority_trigger: bool
             When True, the env masks all non-priority-1 fields until priority-1
             work is complete (see LiveBlancoEnv.set_priority_trigger).
@@ -237,19 +237,22 @@ class AIModelRunner(ModelRunner):
             lookups = LookupTables.load_from_dir(fields_dir, include_historic=False)
         return lookups
 
-    def generate_chunk(self, telemetry=None, available_fields=None, masked_field=None,
+    def generate_chunk(self, telemetry=None, available_fields=[], masked_field_ids=[],
                        priority_trigger=False, chunk_size=10,
                        new_fields=None, new_lookup_dir=None) -> pd.DataFrame:
         """Schedule a chunk of `chunk_size` observations given current state.
 
-        available_fields and masked_field are accepted but unused: masking is driven entirely by priority_trigger via the
-        env's priority gate. Syncs the env to telemetry, applies the gate, runs a
-        snapshotted rollout, then restores the env so live state is not mutated.
+        available_fields is accepted but unused. masked_field_ids is a list of field
+        ids (or None) that the env drops from the action space for this chunk, on
+        top of the priority gate driven by priority_trigger. Syncs the env to
+        telemetry, applies the masks, runs a snapshotted rollout, then restores
+        the env so live state is not mutated.
         """
         telemetry = self.resolve_rollout_telemetry(telemetry)
         self.update_lookups(new_fields, new_dir=new_lookup_dir)
 
         self.env.set_priority_trigger(priority_trigger)
+        self.env.set_field_mask(masked_field_ids)
 
         self.env.sync_telemetry(telemetry)
         rollout_snapshot = self.env.save_snapshot()
