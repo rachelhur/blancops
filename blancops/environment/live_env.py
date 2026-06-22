@@ -158,6 +158,69 @@ class LiveBlancoEnv(BaseBlancoEnv):
         self._refresh_night_boundaries()
         self._recompute_derived_state()
 
+    def resume_interrupted_session(self, completed_obs) -> None:
+        """Rebuild visit counts and last-visit times from a completed-observation log.
+
+        Replays this night's persisted observing history (one row per completed
+        exposure) into the survey-progress tracker and last-visit-OT array so a
+        session that was terminated mid-night resumes with correct cumulative
+        state. Counts increment once per
+        row; ``last_visit_ot`` is anchored to each row's own ``timestamp`` via
+        ``ot_at_sunset + (timestamp - sunset_ts)``, keeping the latest value per
+        field (and filter when ``do_filt``). Rows whose ``field_id`` falls
+        outside the current catalog are skipped.
+
+        Args
+        ----
+        completed_obs : pandas.DataFrame
+            Completed observations with at least ``field_id``, ``filter``, and
+            ``timestamp`` columns. An empty or None frame is a no-op.
+        """
+        if completed_obs is None or len(completed_obs) == 0:
+            return
+
+        self._refresh_night_boundaries()
+
+        counts = np.zeros_like(self._survey_progress_tracker.raw_counts)
+        last_visit_ot = np.full(
+            self._last_visit_ot.shape, np.nan, dtype=self._last_visit_ot.dtype
+        )
+
+        for row in completed_obs.itertuples(index=False):
+            field_id = int(row.field_id)
+            if not 0 <= field_id < self.nfields:
+                logger.warning(
+                    "[Live] Skipping resume row with out-of-catalog field_id %d.",
+                    field_id,
+                )
+                continue
+            ot = float(self._ot_at_sunset + (int(row.timestamp) - self._sunset_ts))
+            if self.do_filt:
+                filter_idx = int(FILTER2IDX[row.filter])
+                counts[field_id, filter_idx] += 1
+                prev = last_visit_ot[field_id, filter_idx]
+                if np.isnan(prev) or ot > prev:
+                    last_visit_ot[field_id, filter_idx] = ot
+            else:
+                counts[field_id] += 1
+                prev = last_visit_ot[field_id]
+                if np.isnan(prev) or ot > prev:
+                    last_visit_ot[field_id] = ot
+
+        snap = StateSnapshot(
+            timestamp=self._ts,
+            field_id=self._field_id,
+            bin_num=self._bin_num,
+            filter_idx=self._filter_idx,
+            counts_cur=counts,
+            last_visit_ot_cur=last_visit_ot,
+        )
+        self.restore_snapshot(snap)
+        logger.info(
+            "[Live] Resumed survey state from %d completed observations.",
+            len(completed_obs),
+        )
+
     def _build_priority_mask(self) -> None:
         """Compute the priority-1 positional mask and keep_only rule.
 

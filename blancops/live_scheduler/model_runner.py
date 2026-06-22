@@ -80,6 +80,16 @@ class ModelRunner(ABC):
         """
         pass
 
+    def resume_interrupted_session(self, completed_obs) -> None:
+        """Seed the runner with this night's persisted visit history on restart.
+
+        Called once by the orchestrator before the scheduling loop so an
+        AI-backed runner can rebuild its env's cumulative survey state after a
+        session was terminated mid-night. Default is a no-op; runners with no
+        persistent state ignore it.
+        """
+        pass
+
 
 class MockModelRunner(ModelRunner):
     """Randomized mock implementation used for development and dry runs."""
@@ -267,6 +277,10 @@ class AIModelRunner(ModelRunner):
     def record_visit(self, obs_row) -> None:
         """Update the live env's visit history after a hardware submission."""
         self.env.record_visit(obs_row)
+
+    def resume_interrupted_session(self, completed_obs) -> None:
+        """Rebuild the live env's survey state from this night's visit history."""
+        self.env.resume_interrupted_session(completed_obs)
 
     def resolve_rollout_telemetry(self, telemetry: pd.Series | dict) -> dict:
         """Normalize raw client telemetry to env-canonical form.

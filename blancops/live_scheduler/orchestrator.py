@@ -105,6 +105,9 @@ class SchedulerOrchestrator:
         # - check initial field lookup
         # - check client connectivity
 
+        # rebuild survey state from this night's log if the session was restarted
+        self.model.resume_interrupted_session(self.progress.completed_fields)
+
         while not self.progress.check_end_condition():
             # ==========================================================================
             # Generate observing chunk, get user approval
