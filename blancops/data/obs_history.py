@@ -33,20 +33,20 @@ def build_synthetic_obs_history(
     end_date,
     sun_el_limit,
     *,
-    remaining=1,
-    visits_by_propid=None,
+    visits_by_propid,
     seed=42,
 ) -> pd.DataFrame:
     """Synthesize an obs-history frame seeding completed visits per (field, filter).
 
-    Completed-visit counts are read from ``lookups.target_fidfilt_counts``: each
-    targeted (field, filter) is seeded with ``target - remaining`` visits, which
-    leaves every field incomplete (so its bins stay active for the staleness
-    feature). ``visits_by_propid`` overrides this with an absolute completed
-    count for named propids -- e.g. ``0`` to start a time-critical program fresh
-    -- and requires a ``propid`` column on ``lookups.fields``. This reads the
-    merged lookup directly, so a merged multi-program lookup needs no separate
-    history merge: field ids and per-program targets already carry through.
+    Completed-visit counts are defined entirely by ``visits_by_propid``, a
+    required ``{propid: {filter: completed_visits}}`` mapping giving an absolute
+    completed count for every (propid, filter) -- e.g. ``0`` to start a
+    time-critical program fresh. Every targeted (field, filter) must have a
+    defined count: a missing propid or filter, or a count exceeding that cell's
+    target, raises ``ValueError``. Requires a ``propid`` column on
+    ``lookups.fields``. This reads the merged lookup directly, so a merged
+    multi-program lookup needs no separate history merge: field ids and
+    per-program targets already carry through.
 
     Each field's most-recent visit night is drawn uniformly across a
     ``span_nights`` window of consecutive observing nights ending at
@@ -65,9 +65,8 @@ def build_synthetic_obs_history(
         span_nights: number of consecutive nights the history spans.
         end_date: evening-date of the latest history night (str or date-like).
         sun_el_limit: sun-elevation limit (deg); must match the consuming run.
-        remaining: target-relative shortfall to leave per (field, filter);
-            completed = target - remaining (clamped to [0, target]).
-        visits_by_propid: optional {propid: completed_visits} absolute overrides.
+        visits_by_propid: required {propid: {filter: completed_visits}} mapping;
+            every targeted (propid, filter) must be present.
         seed: RNG seed for per-field recency assignment.
 
     Returns:
@@ -80,13 +79,13 @@ def build_synthetic_obs_history(
     field_ids = lookups.fields.index.to_numpy()
     idx2filter = {idx: name for name, idx in FILTER2IDX.items()}
 
-    propids = None
-    if visits_by_propid:
-        if "propid" not in lookups.fields.columns:
-            raise ValueError(
-                "visits_by_propid requires a 'propid' column on lookups.fields."
-            )
-        propids = lookups.fields["propid"].to_numpy()
+    if not visits_by_propid:
+        raise ValueError("visits_by_propid is required and must be non-empty.")
+    if "propid" not in lookups.fields.columns:
+        raise ValueError(
+            "visits_by_propid requires a 'propid' column on lookups.fields."
+        )
+    propids = lookups.fields["propid"].to_numpy()
 
     end = pd.Timestamp(end_date).date()
     # Evening-dates, earliest first; index span_nights-1 is the latest night.
@@ -101,12 +100,28 @@ def build_synthetic_obs_history(
 
     records = []
     for row, (fid, r) in enumerate(zip(field_ids, recent)):
-        override = visits_by_propid.get(propids[row]) if propids is not None else None
+        propid = propids[row]
+        filt_counts = visits_by_propid.get(propid)
+        if filt_counts is None:
+            raise ValueError(
+                f"propid {propid!r} has no entry in visits_by_propid "
+                f"(defined: {sorted(visits_by_propid)})."
+            )
         for f in np.nonzero(targets[row] > 0)[0]:
             target_f = int(targets[row, f])
-            completed = override if override is not None else target_f - remaining
-            completed = int(np.clip(completed, 0, target_f))
             filt = idx2filter[int(f)]
+            if filt not in filt_counts:
+                raise ValueError(
+                    f"propid {propid!r} is missing a count for targeted filter "
+                    f"{filt!r} in visits_by_propid (has: {sorted(filt_counts)})."
+                )
+            completed = int(filt_counts[filt])
+            if completed < 0 or completed > target_f:
+                raise ValueError(
+                    f"visits_by_propid[{propid!r}][{filt!r}]={completed} is out "
+                    f"of range; must be in [0, {target_f}] (the (field {int(fid)}, "
+                    f"{filt}) target)."
+                )
             for k in range(completed):
                 j = max(0, int(r) - k)
                 records.append((int(fid), filt, float(midpoints[j])))
@@ -114,10 +129,8 @@ def build_synthetic_obs_history(
     if not records:
         raise ValueError(
             "build_synthetic_obs_history produced no visits: every (field, "
-            f"filter) resolved to 0 completed visits. Check that target counts "
-            f"exceed remaining={remaining} (max target in lookups is "
-            f"{int(targets.max())}) and that the visits_by_propid overrides "
-            f"{visits_by_propid or {}} are intended."
+            "filter) resolved to 0 completed visits. Check that the "
+            f"visits_by_propid counts {visits_by_propid} are intended."
         )
     return pd.DataFrame(records, columns=["field_id", "filter", "timestamp"])
 
