@@ -58,41 +58,42 @@ class SchedulerOrchestrator:
         self.telemetry_poll_rate_sec = telemetry_poll_rate_sec
 
         # track the state of the current session
-        self.session_masked_fields = pd.DataFrame(
+        self.session_masked_fields = pd.DataFrame( # XXX Paul: do something with this.....?
             columns=["field_id", "ra", "dec", "filter"]
         )  # field-level operator masks (field_id is the only column AIModelRunner reads)
-        self.session_masked_propids = set()  # propid-level operator masks
+        # self.session_masked_propids = set()  # propid-level operator masks
+        self.masked_field_ids = []
         self.priority_trigger = False
         self.first_exposure = True
         self.last_submitted_obs = {}
         self.last_telemetry_check = -float("inf")
 
-    def _apply_mask_update(self, to_add, to_remove):
-        """Apply an operator mask add/remove to the session mask state.
+    # def _apply_mask_update(self, to_add, to_remove):
+    #     """Apply an operator mask add/remove to the session mask state.
 
-        Both arguments are dicts with keys "field_ids" (iterable[int]) and
-        "propids" (iterable[str]). Field masks are stored in
-        `session_masked_fields` (field_id populated; ra/dec/filter left NA since
-        only field_id is consumed downstream); propids in
-        `session_masked_propids`.
-        """
-        add_fids = list(to_add.get("field_ids", []))
-        if add_fids:
-            new_rows = pd.DataFrame({"field_id": add_fids}).reindex(
-                columns=["field_id", "ra", "dec", "filter"]
-            )
-            self.session_masked_fields = pd.concat(
-                [self.session_masked_fields, new_rows], ignore_index=True
-            ).drop_duplicates(subset=["field_id"], ignore_index=True)
-        self.session_masked_propids |= set(to_add.get("propids", set()))
+    #     Both arguments are dicts with keys "field_ids" (iterable[int]) and
+    #     "propids" (iterable[str]). Field masks are stored in
+    #     `session_masked_fields` (field_id populated; ra/dec/filter left NA since
+    #     only field_id is consumed downstream); propids in
+    #     `session_masked_propids`.
+    #     """
+    #     add_fids = list(to_add.get("field_ids", []))
+    #     if add_fids:
+    #         new_rows = pd.DataFrame({"field_id": add_fids}).reindex(
+    #             columns=["field_id", "ra", "dec", "filter"]
+    #         )
+    #         self.session_masked_fields = pd.concat(
+    #             [self.session_masked_fields, new_rows], ignore_index=True
+    #         ).drop_duplicates(subset=["field_id"], ignore_index=True)
+    #     self.session_masked_propids |= set(to_add.get("propids", set()))
 
-        remove_fids = set(to_remove.get("field_ids", []))
-        if remove_fids:
-            keep = ~self.session_masked_fields["field_id"].isin(remove_fids)
-            self.session_masked_fields = self.session_masked_fields[keep].reset_index(
-                drop=True
-            )
-        self.session_masked_propids -= set(to_remove.get("propids", set()))
+    #     remove_fids = set(to_remove.get("field_ids", []))
+    #     if remove_fids:
+    #         keep = ~self.session_masked_fields["field_id"].isin(remove_fids)
+    #         self.session_masked_fields = self.session_masked_fields[keep].reset_index(
+    #             drop=True
+    #         )
+    #     self.session_masked_propids -= set(to_remove.get("propids", set()))
 
     def run(self):
         """Run the continuous proposal/approval/submission loop until end condition."""
@@ -124,7 +125,7 @@ class SchedulerOrchestrator:
             chunk_df = self.model.generate_chunk(
                 telemetry=telemetry,
                 available_fields=[],  # XXX Placeholder
-                masked_field=all_masks,
+                masked_field_ids=self.masked_field_ids,
                 priority_trigger=self.priority_trigger,
                 chunk_size=self.chunk_size,
             )
