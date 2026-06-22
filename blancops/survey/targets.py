@@ -49,6 +49,21 @@ def build_candidate_fields(
     ).reset_index(drop=True)
 
 
+def parse_count_arg(s: str) -> int | dict[str, int]:
+    """Parse a --count CLI value: a plain int, or per-filter "f=n,..." pairs.
+
+    "3" -> 3; "i=2,z=3,Y=1" -> {"i": 2, "z": 3, "Y": 1}. The dict form is
+    consumed by to_lookup_fields_df to set a different count per filter.
+    """
+    if "=" not in s:
+        return int(s)
+    out = {}
+    for pair in s.split(","):
+        filt, _, n = pair.partition("=")
+        out[filt.strip()] = int(n)
+    return out
+
+
 def to_lookup_fields_df(
     fields: pd.DataFrame,
     propid: str,
