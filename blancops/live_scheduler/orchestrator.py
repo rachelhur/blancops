@@ -191,8 +191,15 @@ class SchedulerOrchestrator:
                     continue
 
                 # check for user-triggered soft interrupt to replan chunk
-                if self.ui.check_for_replan_signal():
-                    logger.info("[Orchestrator] User gave soft interrupt. Aborting chunk.")
+                replan = self.ui.check_for_replan_signal()
+                if replan[0] and replan[1] == "replan":
+                    logger.info("[Orchestrator] User requested a replan. Aborting chunk.")
+                    break
+
+                # check for user-triggered gravitational wave trigger
+                if replan[0] and replan[1] == "gw-trigger":
+                    logger.info("[Orchestrator] User triggered gravitational-wave follow-up observations.")
+                    self.priority_trigger = True
                     break
 
                 # periodically check for telemetry, field list changes => trigger replan

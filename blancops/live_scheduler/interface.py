@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from blancops.math import units
 from blancops.plotting import live_scheduling_viz
 from blancops.ephemerides import time_utils
+import sys, select
 import pathlib
 import logging
 logger = logging.getLogger(__name__)
@@ -139,6 +140,33 @@ class CLIInterface(BaseInterface):
                 logger.warning("[Interface] Invalid input, please enter Y or N.")
 
     def check_for_replan_signal(self):
-        """CLI has no non-blocking soft-interrupt channel; always returns False."""
+        """
+        Non-blocking soft-interrupt check using standard select. Performs the following
+        user-input checks:
+        - r + Enter: signal to replan the current chunk
+        - t + Enter: (temporary) signal gravitational-wave follow-up observations
 
-        return False
+        Returns
+        -------
+        bool, str
+            Tuple of (signal_received, signal_type) where signal_received indicates
+            whether a valid signal was detected, and signal_type is a string label for
+            the type of signal (e.g. 'replan', 'gw_trigger') or None
+        """
+        # select.select checks if a file descriptor is ready to be read
+        # [sys.stdin] is the list of objects we want to check
+        # 0.0 timeout: tell select to return instantly (non-blocking)
+        if sys.stdin in select.select([sys.stdin], [], [], 0.0)[0]:
+            
+            # entering this block means user hit Enter; read the line and clean buffer
+            user_input = sys.stdin.readline().strip().lower()
+            if user_input == 'r':
+                logger.info("[Interface] Soft interrupt detected! 'r' entered.")
+                return True, 'replan'
+            elif user_input == 't':
+                logger.info("[Interface] Gravitational-wave trigger signal detected! 't' entered.")
+                return True, 'gw-trigger'
+            else: # ignore other input; note that reading the input cleared the buffer
+                pass
+                
+        return False, None
