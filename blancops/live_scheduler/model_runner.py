@@ -47,7 +47,7 @@ class ModelRunner(ABC):
         pass
 
     @abstractmethod
-    def generate_chunk(self, telemetry, available_fields, masked_field, priority_trigger, chunk_size):
+    def generate_chunk(self, telemetry, available_fields, masked_field_ids, priority_trigger, chunk_size):
         """
         Generate a chunk of proposed observations.
 
@@ -57,7 +57,7 @@ class ModelRunner(ABC):
             Current telescope/sky state dictionary.
         available_fields: list
             Candidate field set.
-        masked_field: Iterable[int] or None
+        masked_field_ids: Iterable[int] or None
             Field ids to drop from the action space for this chunk.
         priority_trigger: bool
             When True, the env masks all non-priority-1 fields until priority-1
@@ -84,12 +84,11 @@ class ModelRunner(ABC):
 class MockModelRunner(ModelRunner):
     """Randomized mock implementation used for development and dry runs."""
 
-    def __init__(self, chunk_size, clock=None):
-        self.chunk_size = chunk_size
+    def __init__(self, clock=None):
         self.clock = clock or Clock()
         self.current_field_id = 0
 
-    def generate_next_observation(self, telemetry, masked_fields):
+    def generate_next_observation(self, telemetry, masked_field_ids):
         """
         Sample a valid next pointing near the current one.
 
@@ -118,9 +117,10 @@ class MockModelRunner(ModelRunner):
                 continue
 
             # keep away from user/system-masked fields
-            if len(masked_fields) > 0:
+            #if len(masked_field_ids) > 0:
+            if False:  # XXX temporarily disable this check until we have a catalog
                 angsep = geometry.angular_separation(
-                    (ra, dec), masked_fields[["ra", "dec"]].values.T
+                    (ra, dec), masked_field_ids[["ra", "dec"]].values.T
                 )
                 valid_angsep = np.all(angsep > 5 * units.deg)  # 5deg threshold
             else:
@@ -136,7 +136,7 @@ class MockModelRunner(ModelRunner):
 
         return ra, dec
 
-    def generate_chunk(self, telemetry, available_fields, masked_fields, priority_trigger=False, chunk_size=None):
+    def generate_chunk(self, telemetry, available_fields, masked_field_ids, priority_trigger=False, chunk_size=10):
         """
         Generate a mock chunk as a short random walk in sky coordinates.
 
@@ -153,10 +153,10 @@ class MockModelRunner(ModelRunner):
 
         # start from the current telescope pointing and walk forward
         ra, dec = telemetry["pointing_ra"], telemetry["pointing_dec"]
-        for i in range(chunk_size or self.chunk_size):
+        for i in range(chunk_size):
             ra, dec = self.generate_next_observation(
                 telemetry={"pointing_ra": ra, "pointing_dec": dec},
-                masked_fields=masked_fields,
+                masked_field_ids=masked_field_ids,
             )
 
             # keep output schema aligned with scheduler expectations
