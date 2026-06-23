@@ -135,7 +135,7 @@ def main():
 
     # 2. Generate the Observing Chunk
     logging.info(f"[Test] Generating observation chunk of size {args.cycles}...")
-    model = MockModelRunner(chunk_size=args.cycles)
+    model = MockModelRunner()
 
     # get telemetry and default starting position at zenith
     start_ra, start_dec = ephemerides.get_source_ra_dec("zenith")
@@ -155,6 +155,7 @@ def main():
             telemetry=telemetry,
             available_fields=[],
             masked_fields=[],
+            chunk_size=args.cycles,
         )
 
         if chunk_df is None or chunk_df.empty:
