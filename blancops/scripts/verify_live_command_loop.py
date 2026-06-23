@@ -101,6 +101,15 @@ def parse_args():
         action="store_true",
         help="Whether to display plots in the CLI interface or just save to output dir",
     )
+    parser.add_argument(
+        "--override-error",
+        action="store_true",
+        help=(
+            "Whether to override the sun elevation check for real science exposures. "
+            "THIS IS DANGEROUS AND SHOULD ONLY BE USED FOR TESTING PURPOSES UNDER "
+            "DIRECT SUPERVISION OF THE STAFF."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -131,6 +140,7 @@ def main():
             server_ip=args.scl_server_ip,
             server_port=args.scl_server_port,
             daytime_testing="test" in args.client_mode.lower(),
+            override_error=args.override_error,
         )
 
     # 2. Generate the Observing Chunk

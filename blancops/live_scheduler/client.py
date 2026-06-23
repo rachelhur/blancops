@@ -190,7 +190,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
     postgres database for seeing monitoring.
     """
 
-    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000, clock=None, seeing_window="15m", daytime_testing=False):
+    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000, clock=None, seeing_window="15m", daytime_testing=False, override_error=False):
         """
         Initialize and confirm the connection to the control system.
 
@@ -209,8 +209,11 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         daytime_testing: bool [False]
             When True, submit harmless day-time test exposures (dark exposures with the
             "block" filter) instead of real science exposures. When the sun is above
-            -10 degrees elevation, this must be True or initialization fails.
-
+            -10.5 degrees elevation, this must be True or initialization fails.
+        override_error: bool [False]
+            When True, allow submission of real science exposures even when the sun is above
+            -10.5 degrees elevation. THIS IS DANGEROUS AND SHOULD ONLY BE USED FOR 
+            TESTING PURPOSES UNDER DIRECT SUPERVISION OF THE STAFF.
         Raises
         ------
         RuntimeError
@@ -232,11 +235,11 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             sun_ra, sun_dec, time=self.clock.now(real=True)
         )
         sun_el_deg = sun_el / units.deg
-        #if sun_el_deg > -10.5 and not daytime_testing:
-        #    raise RuntimeError(
-        #        f"[Client] Sun elevation is {sun_el_deg:.1f} deg (> -10.5 deg) but "
-        #        "daytime_testing is False. Only day-time test exposures are allowed."
-        #    )
+        if sun_el_deg > -10.5 and not daytime_testing and not override_error:
+            raise RuntimeError(
+                f"[Client] Sun elevation is {sun_el_deg:.1f} deg (> -10.5 deg) but "
+                "daytime_testing is False. Only day-time test exposures are allowed."
+            )
 
         # Initialize the TCP/IP communication client
         logger.info(f"[Client] Attempting to connect to SCLN server at {server_ip}:{server_port}...")
