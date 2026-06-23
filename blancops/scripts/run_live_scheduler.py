@@ -72,7 +72,7 @@ def parse_args():
         choices=("mock", "blanco", "blanco_test"),
         default=defaults.get("client_mode", "mock"),
         help=(
-            'Scheduler mode to run. Choose "mock" for offline testing. Any mode '
+            'Scheduler mode to run. Choose "mock" for offline testing. Any other mode '
             'containing "test" (e.g. "blanco_test") enables day-time testing on the '
             "real Blanco client, submitting harmless dark exposures."
         ),

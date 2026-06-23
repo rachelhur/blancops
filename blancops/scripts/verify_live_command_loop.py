@@ -70,7 +70,7 @@ def parse_args():
         choices=["mock", "blanco", "blanco_test"],
         default="mock",
         help=(
-            'Which client to use for the test. Any mode containing "test" (e.g. '
+            'Which client to use for the test. Any other mode containing "test" (e.g. '
             '"blanco_test") enables day-time testing on the real Blanco client, '
             "submitting harmless dark exposures."
         ),
