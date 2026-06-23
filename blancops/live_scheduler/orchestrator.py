@@ -190,7 +190,7 @@ class SchedulerOrchestrator:
                     self.client.submit_observation(obs_row)
                     self.model.record_visit(obs_row)
                     logger.info(
-                        f"[Orchestrator] Observation [{obs_row['field_id']}] submitted after [{self.last_submitted_obs['field_id']}] finished."
+                        f"[Orchestrator] Observation {obs_row['field_id']} submitted after {self.last_submitted_obs['field_id']} finished."
                     )
                     self.progress.record_completion(self.last_submitted_obs)
                     self.last_submitted_obs = obs_row
