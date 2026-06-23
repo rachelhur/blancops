@@ -69,9 +69,13 @@ def parse_args():
     client_group = parser.add_argument_group("Client Settings")
     client_group.add_argument(
         "--client-mode",
-        choices=("mock", "blanco"),
+        choices=("mock", "blanco", "blanco_test"),
         default=defaults.get("client_mode", "mock"),
-        help='Scheduler mode to run. Choose "mock" for offline testing.',
+        help=(
+            'Scheduler mode to run. Choose "mock" for offline testing. Any mode '
+            'containing "test" (e.g. "blanco_test") enables day-time testing on the '
+            "real Blanco client, submitting harmless dark exposures."
+        ),
     )
     client_group.add_argument(
         "--mock-exposure-duration",
@@ -323,6 +327,7 @@ def main():
             server_port=args.scl_server_port,
             clock=clock,
             seeing_window=args.seeing_window,
+            daytime_testing="test" in args.client_mode.lower(),
         )
 
     # initialize model runner

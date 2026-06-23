@@ -187,10 +187,10 @@ class BlancoSCLTelescopeClient(TelescopeClient):
     postgres database for seeing monitoring.
     """
 
-    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000, clock=None, seeing_window="15m"):
+    def __init__(self, propid=None, server_ip="observer4.ctio.noao.edu", server_port=20000, clock=None, seeing_window="15m", daytime_testing=False):
         """
         Initialize and confirm the connection to the control system.
-        
+
         Arguments
         ---------
         propid: str
@@ -203,10 +203,31 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             Optional custom clock for testing. By default, uses the real current time.
         seeing_window: str ["15m"]
             Time window for recent seeing measurements.
+        daytime_testing: bool [False]
+            When True, submit harmless day-time test exposures (dark exposures with the
+            "block" filter) instead of real science exposures. When the sun is above
+            -10 degrees elevation, this must be True or initialization fails.
+
+        Raises
+        ------
+        RuntimeError
+            If the sun is above -10 degrees elevation and daytime_testing is False.
         """
 
         # track time management
         self.clock = clock or time_utils.Clock()
+        self.daytime_testing = daytime_testing
+
+        # failsafe: refuse to take real science exposures while the sun is up
+        sun_ra, sun_dec = ephemerides.get_source_ra_dec("sun", time=self.clock.now())
+        _, sun_el = ephemerides.equatorial_to_topographic(sun_ra, sun_dec, time=self.clock.now())
+        sun_el_deg = sun_el / units.deg
+        if sun_el_deg > -10 and not daytime_testing:
+            raise RuntimeError(
+                f"[Client] Sun elevation is {sun_el_deg:.1f} deg (> -10 deg) but "
+                "daytime_testing is False. Only day-time test exposures are allowed "
+                "while the sun is up; enable daytime_testing to proceed."
+            )
         self.last_exposure_submit_time = -float("inf")
         self.last_exposure_duration = 0
         self.last_exposure_estimated_slew_time = 0
@@ -330,16 +351,28 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         self.last_exposure_estimated_slew_time = geometry.blanco_slew_time
         self.current_ra = float(obs_row.get("ra", self.current_ra))
         self.current_dec = float(obs_row.get("dec", self.current_dec))
+
+        # day-time testing uses harmless dark exposures with the beam blocked;
+        # real observations use the science exposure type, filter, and comment
+        if self.daytime_testing:
+            exp_type = "dark"
+            filt = "block"
+            comment = "DO NOT USE"
+        else:
+            exp_type = str(obs_row.get("expType", "object"))
+            filt = str(obs_row.get("filter", "None"))
+            comment = str(obs_row.get("comment", ""))
+
         cmd["parameters"] = {
             "expTime": str(obs_row.get("expTime", 90)) if exp_time is None else str(exp_time), # XXX examples had this as str, but directions say int
-            "expType": "dark", # XXX dark for day-time testing #str(obs_row.get("expType", "object")),
+            "expType": exp_type,
             "propid": str(obs_row.get("propid", "UNKNOWN")) if self.propid is None else str(self.propid),
             "count": int(obs_row.get("count", 1)),
-            "filter": "block", # XXX block for day-time testing #str(obs_row.get("filter", "None")),
+            "filter": filt,
             "ra": self.current_ra / units.degree,
             "dec": self.current_dec / units.degree,
             "object": str(obs_row.get("field_name", f"pointing_{self.current_time}")),
-            "comment": "DO NOT USE", # XXX placeholder for day-time testing
+            "comment": comment,
         }
 
         # store the submitted observation for telemetry reporting

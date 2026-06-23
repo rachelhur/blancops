@@ -67,9 +67,13 @@ def parse_args():
     )
     parser.add_argument(
         "--client-mode",
-        choices=["mock", "blanco"],
+        choices=["mock", "blanco", "blanco_test"],
         default="mock",
-        help="Which client to use for the test.",
+        help=(
+            'Which client to use for the test. Any mode containing "test" (e.g. '
+            '"blanco_test") enables day-time testing on the real Blanco client, '
+            "submitting harmless dark exposures."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -126,6 +130,7 @@ def main():
             propid=args.propid,
             server_ip=args.scl_server_ip,
             server_port=args.scl_server_port,
+            daytime_testing="test" in args.client_mode.lower(),
         )
 
     # 2. Generate the Observing Chunk
