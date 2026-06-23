@@ -101,7 +101,6 @@ class SchedulerOrchestrator:
         logger.info("\n[Orchestrator] Starting Live Scheduler Loop...")
 
         # XXX add in pre-loop checks:
-        # - get initial telemetry
         # - check initial field lookup
         # - check client connectivity
 
@@ -114,15 +113,6 @@ class SchedulerOrchestrator:
             # ==========================================================================
             telemetry = self.client.get_telemetry()
             # XXX pick up new field files
-
-            # combine manually masked fields with already completed fields
-            # NOTE the completed_fields portion is redundant with the env's
-            # SurveyProgressTracker, so it is a safe no-op on the env. Only the
-            # field_id column is consumed by AIModelRunner.
-            all_masks = pd.concat(
-                [self.session_masked_fields, self.progress.completed_fields],
-                ignore_index=True,
-            ).convert_dtypes()
 
             # create the new chunk
             chunk_df = self.model.generate_chunk(
@@ -141,10 +131,13 @@ class SchedulerOrchestrator:
             # get user approval for the chunk before executing
             self.ui.display_chunk(chunk_df)
             approved = self.ui.get_user_decision()
-            new_masks = []
-            if not approved:
-                # self.session_masked_fields.extend(new_masks) # XXX we don't want these permanently masked, have it reset after we finally have an approved chunk
+            if not approved: # mask the first field and replan
+                to_mask = chunk_df.iloc[0]["field_id"]
+                self.masked_field_ids.append(to_mask)
+                logger.info(f"[Orchestrator] User rejected the proposed chunk. Masking field: {to_mask}")
                 continue
+            else: # reset the mask list
+                self.masked_field_ids = []
 
             # ==========================================================================
             # Execute waiting/submission loop with the approved chunk
@@ -197,7 +190,10 @@ class SchedulerOrchestrator:
                 # check for user-triggered soft interrupt to replan chunk
                 replan = self.ui.check_for_replan_signal()
                 if replan[0] and replan[1] == "replan":
-                    logger.info("[Orchestrator] User requested a replan. Aborting chunk.")
+                    self.masked_field_ids.append(obs_row["field_id"])
+                    logger.info(
+                        f"[Orchestrator] User requested a replan. Aborting chunk and masking field: {obs_row['field_id']}"
+                    )
                     break
 
                 # check for user-triggered gravitational wave trigger
