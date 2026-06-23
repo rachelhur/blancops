@@ -373,6 +373,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             exp_type = "dark"
             filt = "block"
             comment = "DO NOT USE"
+            exp_time = 10 if exp_time is None else exp_time
         else:
             exp_type = str(obs_row.get("expType", "object"))
             filt = str(obs_row.get("filter", "None"))
@@ -380,10 +381,11 @@ class BlancoSCLTelescopeClient(TelescopeClient):
                 "comment",
                 f"Submitted by AI scheduler at {time_utils.unix_to_datetime(self.clock.now()).isoformat(timespec='seconds')}"
             ))
+            exp_time = obs_row.get("expTime", 90) if exp_time is None else exp_time
 
         # build command parameters
         cmd["parameters"] = {
-            "expTime": str(obs_row.get("expTime", 90)) if exp_time is None else str(exp_time), # XXX examples had this as str, but directions say int
+            "expTime": str(exp_time), # XXX examples had this as str, but directions say int
             "expType": exp_type,
             "propid": str(obs_row.get("propid", "UNKNOWN")) if self.propid is None else str(self.propid),
             "count": int(obs_row.get("count", 1)),
