@@ -122,9 +122,9 @@ class MockTelescopeClient(TelescopeClient):
 
         logger.info("[Client] Initialized mock telescope client.")
 
-    def get_telemetry(self):
+    def get_telemetry(self, print_data=False):
         """Return the currently simulated telescope telemetry."""
-        return {
+        telemetry_data = {
             "last_exposure": self.last_submitted_obs_row,
             "last_exposure_submit_time": self.last_exposure_submit_time,
             "last_exposure_estimated_start_time": self.last_exposure_submit_time + self.slew_time,
@@ -133,6 +133,9 @@ class MockTelescopeClient(TelescopeClient):
             "pointing_dec": self.current_dec,
             "seeing": self.seeing.raw,
         }
+        if print_data:
+            logger.info(f"[Client] Telemetry data:\n{telemetry_data}")
+        return telemetry_data
 
     def check_telemetry_change(self):
         """
@@ -281,18 +284,19 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             raise ValueError(f"[Client] Unsupported message type: {msg_type}")
         return cmd
 
-    def get_telemetry(self):
+    def get_telemetry(self, print_data=False):
         """
         Fetch live telemetry.
         """
         cmd = self._build_base_message("TELEMETRY")
 
         # send a request for telemetry and parse the response
-        ra, dec = None, None
+        telemetry_data = {}
+        ra, dec = self.current_ra, self.current_dec
         try:
             response_str = self.scl_client.send_command(json.dumps(cmd))
             if not response_str:
-                return {"pointing_ra": None, "pointing_dec": None}
+                raise RuntimeError("No telemetry response received from SCLN server.")
 
             response = json.loads(response_str)
             telemetry_data = response.get("telemetry", {})
@@ -305,8 +309,17 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         except Exception as e:
             logger.exception(f"[Client] Error fetching telemetry: {e}")
 
+        # print data upon request
+        if print_data:
+            logger.info(f"[Client] Telemetry data:\n{telemetry_data}")
+
         # fetch seeing data
         changed = self.seeing.update()
+        if not self.seeing.raw.empty:
+            pred = self.seeing.predict(self.clock.now()) / units.arcsec
+            logger.info(f"[Client] Current seeing prediction (i, zenith): {pred:.2f} arcsec")
+        else:
+            logger.info("[Client] No seeing data logged yet.")
         self.seeing_changed_since_last_check = changed or self.seeing_changed_since_last_check
 
         return {

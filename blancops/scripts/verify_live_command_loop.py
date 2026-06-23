@@ -137,19 +137,24 @@ def main():
     logging.info(f"[Test] Generating observation chunk of size {args.cycles}...")
     model = MockModelRunner(chunk_size=args.cycles)
 
-    # default starting position at zenith
+    # get telemetry and default starting position at zenith
     start_ra, start_dec = ephemerides.get_source_ra_dec("zenith")
-    telemetry = {"pointing_ra": start_ra, "pointing_dec": start_dec}
+    telemetry = client.get_telemetry(print_data=True)
+    if telemetry.get("pointing_ra") is None:
+        logging.warning(f"[Test] No current RA received from telemetry; defaulting to zenith {start_ra}")
+        telemetry["pointing_ra"] = start_ra
+    if telemetry.get("pointing_dec") is None:
+        logging.warning(f"[Test] No current Dec received from telemetry; defaulting to zenith {start_dec}")
+        telemetry["pointing_dec"] = start_dec
 
     # generate the random walk sequence created by MockModelRunner
-    empty_masks = pd.DataFrame(columns=["ra", "dec"])
     chunk_attempt = 1
     while True:
         logging.info(f"[Test] Generating observation chunk attempt {chunk_attempt}...")
         chunk_df = model.generate_chunk(
             telemetry=telemetry,
             available_fields=[],
-            masked_fields=empty_masks,
+            masked_fields=[],
         )
 
         if chunk_df is None or chunk_df.empty:
