@@ -8,11 +8,13 @@ from a prior observing history via ``--obs_history_filename``.
 import numpy as np
 import gymnasium as gym
 
+from blancops.configs.constants import WORKSPACE
 from blancops.configs.rl_schema import ActionConstraints
 from blancops.rl.agent_factory import AgentFactory
 from blancops.rl.offline_runner import OfflineRunner
 from blancops.data.lookup_tables import LookupTables
 from blancops.data.obs_history import load_seed_state_from_obs_history
+from blancops.data.seeing_trajectory import extract_night_seeing_trajectory
 from blancops.utils.sys_utils import seed_everything
 from blancops.io.logger_utils import configure_logger
 from blancops.utils.sys_utils import get_system_device
@@ -57,7 +59,16 @@ def get_args():
     parser.add_argument('--initial_fwhm', type=float, default=0.9,
                         help="Assumed zenith delivered seeing (arcsec, r-band) for the forward sim, "
                              "projected per pointing by airmass/filter. Default 0.9 is the CTIO Blanco/DECam "
-                             "median. Only used when the model includes 'fwhm' as a global feature.")
+                             "median. Only used when the model includes 'fwhm' as a global feature, and "
+                             "ignored when --seeing_val_night is given.")
+    parser.add_argument('--val_seeing_cache', type=Path,
+                        default=WORKSPACE / 'deployable_models/bc_v1_max_feature_set/checkpoints/val_dataset_cache.pt',
+                        help="Path to a val_dataset_cache.pt holding the validation-night DataFrame, "
+                             "used with --seeing_val_night to replay a real night's measured seeing.")
+    parser.add_argument('--seeing_val_night', type=str, default=None,
+                        help="Validation night key (date string in the cache's 'night' column) whose "
+                             "measured seeing trajectory to replay each sim night. Overrides --initial_fwhm. "
+                             "Omit to use a constant --initial_fwhm.")
 
     # Evaluation hyperparameters
     parser.add_argument('--num_episodes', type=int, default=1, help='Number of evaluation episodes to run')
@@ -161,6 +172,24 @@ def main():
         initial_last_visit_ot = np.full(shape=lookups.target_fidfilt_counts.shape, fill_value=np.nan)
         initial_ot_at_sunset = 0.0
 
+    # Replay a real validation night's measured seeing when requested. The
+    # extracted trajectory (keyed by seconds-since-sunset) is saved to the run
+    # outdir for provenance and re-aligned to each sim night inside the env.
+    seeing_trajectory = None
+    if args.seeing_val_night is not None:
+        logger.info(
+            f"Extracting seeing trajectory for night {args.seeing_val_night} from "
+            f"{args.val_seeing_cache}"
+        )
+        seeing_trajectory = extract_night_seeing_trajectory(
+            cache_path=args.val_seeing_cache,
+            val_night=args.seeing_val_night,
+            sun_el_limit=args.sun_el_limit,
+        )
+        seeing_csv_path = outdir / 'val_night_seeing.csv'
+        seeing_trajectory.to_csv(seeing_csv_path, index=False)
+        logger.info(f"Saved seeing trajectory to {seeing_csv_path}")
+
     # Build the time-windowed field-mask schedule (None when no masking args given).
     field_mask_schedule = FieldMaskSchedule.build(
         baseline_field_ids=args.mask_baseline_field_ids,
@@ -184,6 +213,7 @@ def main():
         initial_last_visit_ot=initial_last_visit_ot,
         initial_ot_at_sunset=initial_ot_at_sunset,
         initial_fwhm=args.initial_fwhm,
+        seeing_trajectory=seeing_trajectory,
         field_mask_schedule=field_mask_schedule,
     )
 

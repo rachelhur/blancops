@@ -10,7 +10,7 @@ from blancops.environment.base import StateSnapshot
 from blancops.environment.offline_base import BaseBlancoOfflineEnv
 from blancops.environment.field_mask_schedule import resolve_positional_mask
 from blancops.data.features.glob_features import calc_twilight, get_night_boundaries
-from blancops.environment.seeing_model import ConstantSeeingModel
+from blancops.environment.seeing_model import ConstantSeeingModel, PredictiveSeeingModel
 from blancops.configs.constants import FWHM_REF_FILTER
 
 import logging
@@ -42,6 +42,7 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         initial_last_visit_ot: Optional[np.ndarray] = None,
         initial_ot_at_sunset: float = 0.0,
         initial_fwhm: Optional[float] = None,
+        seeing_trajectory=None,
         field_mask_schedule=None,
         telescope=None,
     ):
@@ -65,12 +66,26 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         self._initial_last_visit_ot = initial_last_visit_ot
         self._initial_ot_at_sunset = float(initial_ot_at_sunset)
 
-        # Seed seeing for the forward simulation. There is no measured
-        # seeing in a date-string sim, so `initial_fwhm` is the assumed
-        # delivered zenith seeing in the reference band, projected to each
-        # pointing's elevation/filter by the constant model. Held constant
-        # across the run.
-        if initial_fwhm is not None:
+        # Seed seeing for the forward simulation. Two mutually exclusive modes:
+        #   1. `seeing_trajectory`: replay a real night's measured seeing via a
+        #      PredictiveSeeingModel, rebuilt and re-aligned to each night's
+        #      sunset in `_start_new_night` (mirrors HistoricBlancoEnv).
+        #   2. `initial_fwhm`: assumed delivered zenith seeing in the reference
+        #      band, projected per pointing by a ConstantSeeingModel and held
+        #      constant across the run.
+        # The trajectory wins when both are given.
+        self._seeing_trajectory = seeing_trajectory
+        if seeing_trajectory is not None:
+            if initial_fwhm is not None:
+                logger.warning(
+                    "OfflineBlancoEnv: both seeing_trajectory and initial_fwhm "
+                    "given; replaying seeing_trajectory and ignoring initial_fwhm."
+                )
+            # Empty predictor so feature validation passes; _start_new_night
+            # repopulates it per night, re-aligned to that night's sunset.
+            if "fwhm" in self.global_feature_names:
+                self._seeing_model = PredictiveSeeingModel(self.cfg.data.seeing)
+        elif initial_fwhm is not None:
             self._seeing_model = ConstantSeeingModel(
                 zenith_seeing=float(initial_fwhm), ref_band=FWHM_REF_FILTER,
             )
@@ -82,8 +97,10 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         if "fwhm" in self.global_feature_names and self._seeing_model is None:
             raise ValueError(
                 "OfflineBlancoEnv: 'fwhm' is a configured global feature but "
-                "initial_fwhm=None. Pass initial_fwhm (assumed zenith seeing, "
-                "arcsec) so the forward sim can project seeing per pointing."
+                "no seeing source was given. Pass initial_fwhm (assumed zenith "
+                "seeing, arcsec) for a constant model, or seeing_trajectory to "
+                "replay a measured night, so the sim can project seeing per "
+                "pointing."
             )
 
         self._validate_feature_config()
@@ -124,6 +141,28 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
         # state leaks from previous episodes.
         self._night_cfg_cache = {}
         super()._begin_episode()
+
+    def _start_new_night(self) -> None:
+        super()._start_new_night()
+        if self._seeing_trajectory is not None and "fwhm" in self.global_feature_names:
+            self._rebuild_seeing_model_from_trajectory()
+
+    def _rebuild_seeing_model_from_trajectory(self) -> None:
+        """Rebuild the seeing predictor from the replay trajectory.
+
+        The trajectory's `sec_since_sunset` offsets are added to this night's
+        sunset timestamp, re-aligning the same measured night onto the current
+        sim night's clock. Mirrors HistoricBlancoEnv._rebuild_seeing_model.
+        """
+        traj = self._seeing_trajectory
+        model = PredictiveSeeingModel(self.cfg.data.seeing)
+        model.add(
+            date=self._sunset_ts + traj["sec_since_sunset"].to_numpy(dtype=float),
+            seeing=traj["fwhm"].to_numpy(dtype=float),
+            band=list(traj["band"]),
+            el=traj["el"].to_numpy(dtype=float),
+        )
+        self._seeing_model = model
 
     def _get_night_config(self, night_idx: int) -> dict:
         if night_idx in self._night_cfg_cache:
