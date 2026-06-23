@@ -17,6 +17,7 @@ class SchedulerOrchestrator:
         ui,
         progress,
         chunk_size=3,
+        min_chunk_size=None,
         observing_poll_rate_sec=1,
         telemetry_poll_rate_sec=20,
         clock=None,
@@ -37,6 +38,11 @@ class SchedulerOrchestrator:
             Progress manager handling session history and night boundaries.
         chunk_size: int [3]
             Number of observations generated per proposal chunk.
+        min_chunk_size: int, optional
+            Minimum number of un-submitted observations to leave in a chunk before
+            replanning. When set, chunk_size - min_chunk_size observations are submitted
+            from each chunk before a new chunk is generated. Default None replans after
+            every submission.
         observing_poll_rate_sec: float [1]
             Poll cadence while waiting for the current exposure to finish.
         telemetry_poll_rate_sec: float [20]
@@ -54,6 +60,7 @@ class SchedulerOrchestrator:
         # operational settings
         self.clock = clock or time_utils.Clock()
         self.chunk_size = chunk_size
+        self.min_chunk_size = min_chunk_size
         self.observing_poll_rate_sec = observing_poll_rate_sec
         self.telemetry_poll_rate_sec = telemetry_poll_rate_sec
 
@@ -142,9 +149,14 @@ class SchedulerOrchestrator:
             # ==========================================================================
             # Execute waiting/submission loop with the approved chunk
             # ==========================================================================
-            obs_row = chunk_df.iloc[
-                0
-            ]  # XXX add a loop when we implement min_chunk_size
+            # submit chunk_size - min_chunk_size observations before replanning,
+            # leaving a min_chunk_size lookahead buffer (None replans after each one)
+            n_to_submit = (
+                1 if self.min_chunk_size is None else self.chunk_size - self.min_chunk_size
+            )
+            n_to_submit = min(n_to_submit, len(chunk_df))
+            submit_idx = 0
+            obs_row = chunk_df.iloc[submit_idx]
             exposure_finished = self.client.check_exposure_status()
 
             # end observing for the night if end condition is met
@@ -161,10 +173,14 @@ class SchedulerOrchestrator:
                     self.model.record_visit(obs_row)
                     self.last_submitted_obs = obs_row
                     self.first_exposure = False
-                    submitted = True
                     logger.info(
                         f"[Orchestrator] First observation submitted: {obs_row['field_id']}"
                     )
+                    submit_idx += 1
+                    if submit_idx >= n_to_submit:
+                        submitted = True
+                    else:
+                        obs_row = chunk_df.iloc[submit_idx]
                     continue
 
                 # otherwise wait for current exposure to finish
@@ -184,7 +200,11 @@ class SchedulerOrchestrator:
                     )
                     self.progress.record_completion(self.last_submitted_obs)
                     self.last_submitted_obs = obs_row
-                    submitted = True
+                    submit_idx += 1
+                    if submit_idx >= n_to_submit:
+                        submitted = True
+                    else:
+                        obs_row = chunk_df.iloc[submit_idx]
                     continue
 
                 # check for user-triggered soft interrupt to replan chunk

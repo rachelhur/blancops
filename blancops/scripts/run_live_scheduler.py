@@ -280,8 +280,12 @@ def main():
 
     # parse and validate CLI arguments, with defaults loaded from YAML config
     args = parse_args()
-    if args.min_chunk_size is not None:  # XXX implement this
-        raise NotImplementedError("min_chunk_size is not implemented yet.")
+    if args.min_chunk_size is not None and not (0 <= args.min_chunk_size < args.chunk_size):
+        raise ValueError(
+            f"min_chunk_size ({args.min_chunk_size}) must be in [0, chunk_size) "
+            f"(chunk_size={args.chunk_size}) so that at least one observation is "
+            "submitted per chunk."
+        )
     if args.start_time is not None:
         args.start_time = time_utils.standardize_time(args.start_time)
     if args.stop_time is not None:
@@ -373,6 +377,7 @@ def main():
         ui,
         progress,
         chunk_size=args.chunk_size,
+        min_chunk_size=args.min_chunk_size,
         observing_poll_rate_sec=args.observing_poll_rate_sec,
         telemetry_poll_rate_sec=args.telemetry_poll_rate_sec,
         clock=clock,
