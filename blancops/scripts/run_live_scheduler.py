@@ -305,7 +305,7 @@ def main():
         clock = time_utils.Clock(offset=fake_start_ts - clock.now(real=True))
         logger.info(
             "[Scheduler] Fake clock enabled: real UTC shifted by %.3f seconds.",
-            clock.offset_seconds,
+            clock.offset,
         )
 
     # initialize requested telescope client

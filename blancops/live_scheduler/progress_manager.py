@@ -28,6 +28,9 @@ class ProgressManager:
         ---------
         output_dir: str
             Directory where observing history should be written.
+        clock: Clock, optional
+            Clock instance to use for simulated time management. Default assumes the
+            real-time clock.
         session_id: str, optional
             Explicit observing-session identifier. If omitted, one is generated.
         start_time: float, optional
@@ -91,7 +94,7 @@ class ProgressManager:
         else:
             session_date = local_now
         session_date = session_date.strftime("%Y-%m-%d")
-        if abs(self.clock.offset_seconds) > 1e-9:
+        if abs(self.clock.offset) > 1e-9:
             session_date = f"sim_{session_date}"
         logger.info(f"[Progress] Generated session ID: {session_date}")
         return session_date
