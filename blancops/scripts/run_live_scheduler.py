@@ -306,6 +306,12 @@ def main():
         use_tqdm=True
     )
 
+    # log the parsed arguments
+    logger.info(f"User-provided command line call: {' '.join(sys.argv)}")
+    logger.info("Parsed arguments:")
+    for arg, value in vars(args).items():
+        logger.info(f"  {arg}: {value}")
+
     # set up simulated clock for testing
     clock = time_utils.Clock()
     if args.sim_time_now is not None:
