@@ -154,7 +154,7 @@ def main():
         chunk_df = model.generate_chunk(
             telemetry=telemetry,
             available_fields=[],
-            masked_fields=[],
+            masked_field_ids=[],
             chunk_size=args.cycles,
         )
 
