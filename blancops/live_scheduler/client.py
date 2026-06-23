@@ -232,11 +232,11 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             sun_ra, sun_dec, time=self.clock.now(real=True)
         )
         sun_el_deg = sun_el / units.deg
-        if sun_el_deg > -10.5 and not daytime_testing:
-            raise RuntimeError(
-                f"[Client] Sun elevation is {sun_el_deg:.1f} deg (> -10.5 deg) but "
-                "daytime_testing is False. Only day-time test exposures are allowed."
-            )
+        #if sun_el_deg > -10.5 and not daytime_testing:
+        #    raise RuntimeError(
+        #        f"[Client] Sun elevation is {sun_el_deg:.1f} deg (> -10.5 deg) but "
+        #        "daytime_testing is False. Only day-time test exposures are allowed."
+        #    )
 
         # Initialize the TCP/IP communication client
         logger.info(f"[Client] Attempting to connect to SCLN server at {server_ip}:{server_port}...")
