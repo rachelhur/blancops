@@ -115,10 +115,9 @@ class CLIInterface(BaseInterface):
             proposed_df=chunk_df, time=self.clock.now()
         )
         if self.output_dir is not None:
-            plt.savefig(self.output_dir / "current_chunk_proposal.png")
-            logger.info(
-                f"[Interface] Plot saved to '{self.output_dir / 'current_chunk_proposal.png'}'."
-            )
+            outname = self.output_dir / f"chunk_proposal_{self.clock.now()}.png"
+            plt.savefig(outname)
+            logger.info(f"[Interface] Plot saved to {outname}")
         if self.show_plots:
             plt.show(block=False)
             plt.pause(0.1)
