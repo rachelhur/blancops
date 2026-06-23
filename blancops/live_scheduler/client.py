@@ -316,7 +316,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         # fetch seeing data
         changed = self.seeing.update()
         if not self.seeing.raw.empty:
-            pred = self.seeing.predict(self.clock.now(), band='i', el=90 * units.deg, ) / units.arcsec
+            pred = self.seeing.predict(band='i', el=90 * units.deg, now=self.clock.now()) / units.arcsec
             logger.info(f"[Client] Current seeing prediction (i, zenith): {pred:.2f} arcsec")
         else:
             logger.info("[Client] No seeing data logged yet.")
