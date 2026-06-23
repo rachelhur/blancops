@@ -309,6 +309,17 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         except Exception as e:
             logger.exception(f"[Client] Error fetching telemetry: {e}")
 
+        # tcs info has some pointing info, but not all fields guaranteed to be present
+        tcs = telemetry_data.get("tcs_infot", {})
+        tcs_time = time_utils.standardize_time(val) if (val := tcs.get("time_recorded")) is not None else None
+        tcs_ra = float(val) * units.deg if (val := tcs.get("tel_ra")) is not None else None
+        tcs_dec = float(val) * units.deg if (val := tcs.get("tel_dec")) is not None else None
+        tcs_az = float(val) * units.deg if (val := tcs.get("tel_az")) is not None else None
+        tcs_el = float(val) * units.deg if (val := tcs.get("tel_el")) is not None else None
+        tcs_zd = float(val) * units.deg if (val := tcs.get("tel_zd")) is not None else None
+        tcs_airmass = float(val) if (val := tcs.get("airmass")) is not None else None
+        tcs_ha = float(val) * units.deg if (val := tcs.get("tel_ha")) is not None else None
+
         # print data upon request
         if print_data:
             logger.info(f"[Client] Telemetry data:\n{telemetry_data}")
@@ -330,6 +341,14 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             "pointing_ra": ra,
             "pointing_dec": dec,
             "seeing": self.seeing.raw,
+            "tel_time": tcs_time,
+            "tel_ra": tcs_ra,
+            "tel_dec": tcs_dec,
+            "tel_az": tcs_az,
+            "tel_el": tcs_el,
+            "tel_zd": tcs_zd,
+            "tel_airmass": tcs_airmass,
+            "tel_ha": tcs_ha,
         }
 
     def check_telemetry_change(self, current_telemetry, last_telemetry):
