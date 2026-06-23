@@ -98,7 +98,7 @@ class SchedulerOrchestrator:
     def run(self):
         """Run the continuous proposal/approval/submission loop until end condition."""
 
-        logger.info("\n[Orchestrator] Starting Live Scheduler Loop...")
+        logger.info("[Orchestrator] Starting Live Scheduler Loop...")
 
         # XXX add in pre-loop checks:
         # - check initial field lookup

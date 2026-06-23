@@ -379,7 +379,7 @@ def main():
 
     # Big Red Stop Button: handle graceful shutdown on Ctrl+C keyboard interrupt
     except KeyboardInterrupt:
-        logger.warning("\n\n" + "!" * 88)
+        logger.warning("!" * 88)
         logger.warning("EMERGENCY STOP TRIGGERED (Ctrl+C)")
         logger.warning("Halting all scheduler loops.")
         logger.warning("!" * 88)
