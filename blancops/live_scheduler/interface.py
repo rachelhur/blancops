@@ -84,7 +84,7 @@ class CLIInterface(BaseInterface):
         if self.output_dir is None and not self.show_plots:
             logger.warning("[Interface] Warning: No plots will be saved or displayed.")
 
-    def display_chunk(self, chunk_df):
+    def display_chunk(self, chunk_df, completed_df=None, candidate_df=None, current=None):
         """Print the proposed chunk and save a simple RA/Dec plot."""
 
         # print the proposed chunk as a table in the terminal
@@ -112,7 +112,11 @@ class CLIInterface(BaseInterface):
         # center and time-stamp the plot on the scheduler clock so the simulated
         # time is respected during testing and the true UTC during live runs
         live_scheduling_viz.plot_live_schedule_snapshot(
-            proposed_df=chunk_df, time=self.clock.now()
+            proposed_df=chunk_df,
+            completed_df=completed_df,
+            candidate_df=candidate_df,
+            current=current,
+            time=self.clock.now()
         )
         if self.output_dir is not None:
             outname = self.output_dir / f"chunk_proposal_{self.clock.now()}.png"

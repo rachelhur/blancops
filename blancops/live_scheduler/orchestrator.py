@@ -139,7 +139,12 @@ class SchedulerOrchestrator:
                 continue
 
             # get user approval for the chunk before executing
-            self.ui.display_chunk(chunk_df)
+            self.ui.display_chunk(
+                chunk_df=chunk_df,
+                completed_df=self.progress.completed_fields,
+                candidate_df=None,
+                current=self.last_submitted_obs if len(self.last_submitted_obs) else None,
+            )
             approved = self.ui.get_user_decision()
             if not approved: # mask the first field and replan
                 to_mask = chunk_df.iloc[0]["field_id"]
