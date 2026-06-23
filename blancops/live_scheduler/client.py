@@ -421,5 +421,5 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         """Clean up the SCL client and seeing database connection."""
         self.scl_client.close()
         logger.info("[Client] Closed connection to SCLN server.")
-        self.seeing.database.close()
+        self.seeing.database.disconnect()
         logger.info("[Client] Closed connection to seeing database.")
