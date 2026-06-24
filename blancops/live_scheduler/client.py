@@ -257,8 +257,8 @@ class BlancoSCLTelescopeClient(TelescopeClient):
         self.seeing_changed_since_last_check = False
 
         # track current pointing based on submissions
-        self.current_ra, self.current_dec = None, None
         self.current_time = self.clock.now()
+        self.current_ra, self.current_dec = ephemerides.get_source_ra_dec("zenith", time=self.current_time)
 
         # track the last submitted observation for telemetry reporting
         self.last_submitted_obs_row = pd.Series()
