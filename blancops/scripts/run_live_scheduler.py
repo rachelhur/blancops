@@ -168,6 +168,16 @@ def parse_args():
         ),
     )
     path_group.add_argument(
+        "--obs-history-filename",
+        type=Path,
+        default=defaults.get("obs_history_filename", None),
+        help=(
+            "Optional prior observing-history CSV (columns: field_id, filter, "
+            "timestamp) used to seed the survey backlog before this session's "
+            "own logged visits are replayed on top."
+        ),
+    )
+    path_group.add_argument(
         "--output-directory",
         type=Path,
         default=defaults.get("output_directory", "./observing_logs"),
@@ -357,6 +367,7 @@ def main():
             model_path_or_alias=args.model_path_or_alias,
             field_lookup_dir=args.field_lookup_dir,
             fields_path=args.fields_path,
+            obs_history_path=args.obs_history_filename,
             device=args.device,
             field_choice_method=args.field_choice_method,
             clock=clock,

@@ -186,6 +186,7 @@ class MockModelRunner(ModelRunner):
 
 class AIModelRunner(ModelRunner):
     def __init__(self, model_path_or_alias: str, field_lookup_dir: Path, fields_path: Path = None,
+                 obs_history_path: Path = None,
                  device: str = "cpu", field_choice_method: str = "interp",
                  mode='test', clock=None, sun_elevation_deg=DES.sun_el_limit, seeing_window="15m"):
         self.device = device
@@ -195,6 +196,11 @@ class AIModelRunner(ModelRunner):
         # Fields and Lookups
         self.fields_dir = Path(field_lookup_dir)
         self.lookups = self._get_lookups(fields_path, self.fields_dir)
+
+        # Prior-survey backlog (visited x out of target before this session).
+        # Replayed ahead of the session's own logged visits in
+        # resume_interrupted_session so the env's counts reflect both.
+        self._backlog_history = self._load_backlog(obs_history_path)
 
         # Model
         self._build_agent(model_path_or_alias=model_path_or_alias, field_choice_method=field_choice_method)
@@ -240,6 +246,29 @@ class AIModelRunner(ModelRunner):
         return env
 
     @staticmethod
+    def _load_backlog(obs_history_path):
+        """Load a prior observing-history CSV into a completed-visit frame.
+
+        Args
+        ----
+        obs_history_path : Path or None
+            CSV with columns field_id, filter, timestamp. None disables seeding.
+
+        Returns
+        -------
+        pandas.DataFrame or None
+            The loaded history, or None when no path was given.
+        """
+        if obs_history_path is None:
+            return None
+        history = pd.read_csv(obs_history_path)
+        logger.info(
+            "[Model] Loaded %d backlog visits from %s.",
+            len(history), obs_history_path,
+        )
+        return history
+
+    @staticmethod
     def _get_lookups(fields_path, fields_dir):
         if fields_path:
             lookups = LookupTables.build_lookups_from_fields(fields_path=fields_path, outdir=fields_dir, write_to_disk=True)
@@ -279,8 +308,19 @@ class AIModelRunner(ModelRunner):
         self.env.record_visit(obs_row)
 
     def resume_interrupted_session(self, completed_obs) -> None:
-        """Rebuild the live env's survey state from this night's visit history."""
-        self.env.resume_interrupted_session(completed_obs)
+        """Rebuild the live env's survey state from the backlog plus this session's visits.
+
+        The static backlog (``_backlog_history``) is replayed every restart and
+        the session's own logged visits are accumulated on top, since
+        ``LiveBlancoEnv.resume_interrupted_session`` rebuilds counts from a
+        single frame rather than incrementally.
+        """
+        frames = [
+            f for f in (self._backlog_history, completed_obs)
+            if f is not None and len(f) > 0
+        ]
+        combined = pd.concat(frames, ignore_index=True) if frames else completed_obs
+        self.env.resume_interrupted_session(combined)
 
     def resolve_rollout_telemetry(self, telemetry: pd.Series | dict) -> dict:
         """Normalize raw client telemetry to env-canonical form.
