@@ -377,7 +377,7 @@ class AIModelRunner(ModelRunner):
             proposed_schedule['timestamp'].append(info.get('timestamp'))
 
             ra, dec = self.lookups.fields[["ra", "dec"]].loc[field_id]
-            field_name += f"{field_id}-{ra}-{dec}-{filter}"
+            field_name = f"{field_id}-{ra}-{dec}-{filter}"
             exp_time = float(self.lookups.fidfilt_exptime[int(field_id), int(filter_idx)])
 
             proposed_schedule['field_name'].append(field_name)
