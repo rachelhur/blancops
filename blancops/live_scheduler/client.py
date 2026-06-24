@@ -354,7 +354,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             "tel_ha": tcs_ha,
         }
 
-    def check_telemetry_change(self, current_telemetry, last_telemetry):
+    def check_telemetry_change(self):
         """Returns True if the seeing data has changed since the last telemetry check."""
         changed = self.seeing_changed_since_last_check
         self.seeing_changed_since_last_check = False
