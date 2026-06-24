@@ -355,7 +355,9 @@ class AIModelRunner(ModelRunner):
     def _rollout(self, init_obs: dict, init_info: dict, chunk_size: int) -> pd.DataFrame:
         proposed_schedule = {'bin_idx': [],
                     'field_id': [],
+                    'field_name': [],
                     'filter': [],
+                    'expTime': [],
                     'timestamp': [],
                     'ra': [],
                     'dec': [],
@@ -366,16 +368,20 @@ class AIModelRunner(ModelRunner):
         obs, info = init_obs, init_info
         for i in range(chunk_size):
             bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, self.hpGrid)
+            filter = IDX2FILTER[filter_idx]
             actions = {'bin': np.int32(bin_idx), 'field_id': np.int32(field_id), 'filter_idx': np.int32(filter_idx)}
 
             proposed_schedule['bin_idx'].append(bin_idx)
             proposed_schedule['field_id'].append(field_id)
-            proposed_schedule['filter'].append(IDX2FILTER[filter_idx])
+            proposed_schedule['filter'].append(filter)
             proposed_schedule['timestamp'].append(info.get('timestamp'))
 
-
             ra, dec = self.lookups.fields[["ra", "dec"]].loc[field_id]
+            field_name += f"{field_id}-{ra}-{dec}-{filter}"
+            exp_time = float(self.lookups.fidfilt_exptime[int(field_id), int(filter_idx)])
 
+            proposed_schedule['field_name'].append(field_name)
+            proposed_schedule['expTime'].append(exp_time)
             proposed_schedule['ra'].append(ra)
             proposed_schedule['dec'].append(dec)
 
@@ -386,9 +392,9 @@ class AIModelRunner(ModelRunner):
         for key, val in proposed_schedule.items():
             if key in ['bin_idx', 'field_id', 'timestamp']:
                 dtype = np.int64
-            elif key in ['ra', 'dec']:
+            elif key in ['ra', 'dec', 'expTime']:
                 dtype = np.float64
-            elif key == 'filter':
+            elif key in ['filter', 'field_name']:
                 dtype = str
             proposed_schedule[key] = np.array(val, dtype=dtype)
 
