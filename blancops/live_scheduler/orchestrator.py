@@ -161,8 +161,8 @@ class SchedulerOrchestrator:
                 candidate_df=None,
                 current=self.last_submitted_obs if len(self.last_submitted_obs) else None,
             )
-            if self.auto_approve:
-                approved = True
+            if self.auto_approve: # auto-approve all chunks except the first
+                approved = not self.first_exposure
             else:
                 approved, gw_trigger = self.ui.get_user_decision()
                 if gw_trigger:
@@ -194,10 +194,11 @@ class SchedulerOrchestrator:
                 obs_row = chunk_df.iloc[submit_idx]
 
                 # submit the observation the first time through without waiting further
-                if self.first_exposure and self.progress.check_start_condition():
+                if self.first_exposure and self.progress.check_start_condition() and self.client.check_exposure_status():
                     self.client.submit_observation(obs_row)
                     self.model.record_visit(obs_row)
                     self.last_submitted_obs = obs_row
+                    self.progress.record_completion(obs_row)
                     self.first_exposure = False
                     logger.info(
                         f"[Orchestrator] First observation submitted: {obs_row['field_id']}"
