@@ -112,7 +112,7 @@ def parse_args():
     ui_group.add_argument(
         "--show-plots",
         action="store_true",
-        default=defaults.get("show_plots", True),
+        default=defaults.get("show_plots", False),
         help="Whether to display proposed chunks interactively or just save to disk.",
     )
     ui_group.add_argument(
