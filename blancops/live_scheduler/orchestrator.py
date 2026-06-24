@@ -21,6 +21,7 @@ class SchedulerOrchestrator:
         observing_poll_rate_sec=1,
         telemetry_poll_rate_sec=20,
         clock=None,
+        auto_approve=False,
         # XXX add needed pathing arguments
     ):
         """
@@ -48,6 +49,9 @@ class SchedulerOrchestrator:
             Cadence for telemetry checks that can trigger replanning.
         clock: Clock, optional
             Clock instance to use for simulated time management. Default to real-time.
+        auto_approve: bool [False]
+            Whether to skip user approval of proposed chunks. When set, the scheduler
+            automatically accepts all proposed chunks.
         """
 
         # scheduler components
@@ -65,7 +69,7 @@ class SchedulerOrchestrator:
         self.n_to_submit = min(self.chunk_size - self.min_chunk_size, self.chunk_size)
         self.observing_poll_rate_sec = observing_poll_rate_sec
         self.telemetry_poll_rate_sec = telemetry_poll_rate_sec
-
+        self.auto_approve = auto_approve
 
         # track the state of the current session
         self.session_masked_fields = pd.DataFrame( # XXX Paul: do something with this.....?
@@ -145,7 +149,10 @@ class SchedulerOrchestrator:
                 candidate_df=None,
                 current=self.last_submitted_obs if len(self.last_submitted_obs) else None,
             )
-            approved = self.ui.get_user_decision()
+            if self.auto_approve:
+                approved = True
+            else:
+                approved = self.ui.get_user_decision()
             if not approved: # mask the first field and replan
                 to_mask = chunk_df.iloc[0]["field_id"]
                 self.masked_field_ids.append(to_mask)

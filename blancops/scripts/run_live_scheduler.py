@@ -230,6 +230,15 @@ def parse_args():
             'Format is a number followed by a time unit, e.g. "15m" for 15 minutes.'
         ),
     )
+    operational_group.add_argument(
+        "--auto-approve",
+        action="store_true",
+        default=defaults.get("auto_approve", False),
+        help=(
+            "Whether to skip user approval of proposed chunks. When set, the scheduler "
+            "automatically accepts all proposed chunks."
+        ),
+    )
 
     # ==================================================================================
     # Observing Limits
@@ -387,6 +396,7 @@ def main():
         observing_poll_rate_sec=args.observing_poll_rate_sec,
         telemetry_poll_rate_sec=args.telemetry_poll_rate_sec,
         clock=clock,
+        auto_approve=args.auto_approve
     )
 
     # run the scheduler loop
