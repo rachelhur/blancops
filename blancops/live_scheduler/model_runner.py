@@ -190,7 +190,7 @@ class AIModelRunner(ModelRunner):
                  device: str = "cpu", field_choice_method: str = "interp",
                  mode='test', clock=None, sun_elevation_deg=DES.sun_el_limit, seeing_window="15m"):
         self.device = device
-        self.TESTING_MODE = mode == 'test' # XXX remove before production
+        # self.TESTING_MODE = mode == 'test' # XXX remove before production
         self.clock = clock or Clock()
 
         # Fields and Lookups
@@ -206,12 +206,12 @@ class AIModelRunner(ModelRunner):
         self._build_agent(model_path_or_alias=model_path_or_alias, field_choice_method=field_choice_method)
         logger.info(f"Loaded model weights from {model_path_or_alias} into memory.")
 
-        if self.TESTING_MODE:
-            now_ts = self.clock.now()
-            zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=now_ts)
-            telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': now_ts}
-        else:
-            pass
+        # if self.TESTING_MODE:
+        now_ts = self.clock.now()
+        zenith_ra, zenith_dec = ephemerides.get_source_ra_dec("zenith", time=now_ts)
+        telemetry = {'ra': zenith_ra, 'dec': zenith_dec, 'filter_idx': 0, 'timestamp': now_ts}
+        # else:
+        #     pass
 
         self.env = self._build_env(
             telemetry_now=telemetry,
