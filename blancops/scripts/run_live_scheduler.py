@@ -249,6 +249,15 @@ def parse_args():
             "automatically accepts all proposed chunks."
         ),
     )
+    operational_group.add_argument(
+        "--ra-dec-recovery",
+        action="store_true",
+        default=defaults.get("ra_dec_recovery", False),
+        help=(
+            "When recovering from completed observing history logs, whether to use the "
+            "last logged RA/Dec as the initial pointing. Default uses zenith."
+        ),
+    )
 
     # ==================================================================================
     # Observing Limits
@@ -407,7 +416,8 @@ def main():
         observing_poll_rate_sec=args.observing_poll_rate_sec,
         telemetry_poll_rate_sec=args.telemetry_poll_rate_sec,
         clock=clock,
-        auto_approve=args.auto_approve
+        auto_approve=args.auto_approve,
+        ra_dec_recovery=args.ra_dec_recovery,
     )
 
     # run the scheduler loop

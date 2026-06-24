@@ -22,6 +22,7 @@ class SchedulerOrchestrator:
         telemetry_poll_rate_sec=20,
         clock=None,
         auto_approve=False,
+        ra_dec_recovery=False,
         # XXX add needed pathing arguments
     ):
         """
@@ -52,6 +53,9 @@ class SchedulerOrchestrator:
         auto_approve: bool [False]
             Whether to skip user approval of proposed chunks. When set, the scheduler
             automatically accepts all proposed chunks.
+        ra_dec_recovery: bool, [False]
+            When recovering from completed observing history logs, whether to use the
+            last logged RA/Dec as the initial pointing. Default uses zenith.
         """
 
         # scheduler components
@@ -70,6 +74,7 @@ class SchedulerOrchestrator:
         self.observing_poll_rate_sec = observing_poll_rate_sec
         self.telemetry_poll_rate_sec = telemetry_poll_rate_sec
         self.auto_approve = auto_approve
+        self.ra_dec_recovery = ra_dec_recovery
 
         # track the state of the current session
         self.session_masked_fields = pd.DataFrame( # XXX Paul: do something with this.....?
@@ -120,6 +125,13 @@ class SchedulerOrchestrator:
 
         # rebuild survey state from this night's log if the session was restarted
         self.model.resume_interrupted_session(self.progress.completed_fields)
+        if self.ra_dec_recovery and len(self.progress.completed_fields):
+            last_obs = self.progress.completed_fields.iloc[-1]
+            self.client.current_ra = last_obs["ra"]
+            self.client.current_dec = last_obs["dec"]
+            logger.info(
+                f"[Orchestrator] Recovered current RA/Dec from history: {last_obs['ra']}, {last_obs['dec']}"
+            )
 
         while not self.progress.check_end_condition():
             # ==========================================================================

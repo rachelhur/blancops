@@ -304,15 +304,11 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             response = json.loads(response_str)
             telemetry_data = response.get("telemetry", {})
 
-            # extract current RA/Dec, falling back to last known values if not reported
-            # XXX should check if this is actually reported in response
-            ra = telemetry_data.get("ra", self.current_ra)
-            dec = telemetry_data.get("dec", self.current_dec)
-
         except Exception as e:
             logger.exception(f"[Client] Error fetching telemetry: {e}")
 
         # tcs info has some pointing info, but not all fields guaranteed to be present
+        # NB: the tcs report is a few minutes delayed, so it's better to track submits
         tcs = telemetry_data.get("tcs_infot", {})
         tcs_time = time_utils.standardize_time(val) if (val := tcs.get("time_recorded")) is not None else None
         tcs_ra = float(val) * units.deg if (val := tcs.get("tel_ra")) is not None else None
@@ -333,7 +329,7 @@ class BlancoSCLTelescopeClient(TelescopeClient):
             pred = self.seeing.predict(band='i', el=90 * units.deg, now=self.clock.now()) / units.arcsec
             logger.info(f"[Client] Current seeing prediction (i, zenith): {pred:.3f} arcsec")
         else:
-            logger.info("[Client] No seeing data logged yet.")
+            logger.info("[Client] No seeing data logged; dataframe empty.")
         self.seeing_changed_since_last_check = changed or self.seeing_changed_since_last_check
 
         return {
