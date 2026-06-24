@@ -161,8 +161,8 @@ class SchedulerOrchestrator:
                 candidate_df=None,
                 current=self.last_submitted_obs if len(self.last_submitted_obs) else None,
             )
-            if self.auto_approve: # auto-approve all chunks except the first
-                approved = not self.first_exposure
+            if self.auto_approve and not self.first_exposure: # auto-approve all chunks except the first
+                approved = True
             else:
                 approved, gw_trigger = self.ui.get_user_decision()
                 if gw_trigger:
