@@ -200,11 +200,12 @@ class SchedulerOrchestrator:
                     and self.progress.check_start_condition()
                 ):
                     self.client.submit_observation(obs_row)
+                    self.progress.record_completion(obs_row)
                     self.model.record_visit(obs_row)
                     logger.info(
                         f"[Orchestrator] Observation {obs_row['field_id']} submitted after {self.last_submitted_obs['field_id']} finished."
                     )
-                    self.progress.record_completion(self.last_submitted_obs)
+                    #self.progress.record_completion(self.last_submitted_obs)
                     self.last_submitted_obs = obs_row
                     submit_idx += 1
                     continue # move to next observation in the chunk
@@ -245,8 +246,8 @@ class SchedulerOrchestrator:
         # record the last submitted observation
         # NOTE self.last_submitted_obs is a pd.Series, need
         # to either convert to dict or use len()
-        if len(self.last_submitted_obs):
-            self.progress.record_completion(self.last_submitted_obs)
+        #if len(self.last_submitted_obs):
+        #    self.progress.record_completion(self.last_submitted_obs)
 
         # announce session end
         if self.progress.check_end_condition():
