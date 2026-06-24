@@ -164,7 +164,11 @@ class SchedulerOrchestrator:
             if self.auto_approve:
                 approved = True
             else:
-                approved = self.ui.get_user_decision()
+                approved, gw_trigger = self.ui.get_user_decision()
+                if gw_trigger:
+                    logger.info("[Orchestrator] User triggered gravitational-wave follow-up observations.")
+                    self.priority_trigger = True
+                    continue
             if not approved: # mask the first field and replan
                 to_mask = chunk_df.iloc[0]["field_id"]
                 self.masked_field_ids.append(to_mask)

@@ -135,10 +135,13 @@ class CLIInterface(BaseInterface):
             )
             if resp == "Y":
                 logger.info("[Interface] Chunk accepted.")
-                return True
+                return True, False
             elif resp == "N":
                 logger.info("[Interface] Chunk rejected.")
-                return False
+                return False, False
+            elif resp == "NT":
+                logger.info("[Interface] Chunk rejected with temporary GW follow-up trigger.")
+                return False, True
             else:
                 logger.warning("[Interface] Invalid input, please enter Y or N.")
 
