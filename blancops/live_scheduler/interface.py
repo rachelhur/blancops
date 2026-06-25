@@ -154,10 +154,12 @@ class CLIInterface(BaseInterface):
 
         Returns
         -------
-        bool, str
-            Tuple of (signal_received, signal_type) where signal_received indicates
-            whether a valid signal was detected, and signal_type is a string label for
-            the type of signal (e.g. 'replan', 'gw_trigger') or None
+        str
+            Returns the type of signal detected, or None if no signal detected. Options:
+            - r = 'replan': requested a replan of the current chunk
+            - t = 'gw-trigger': requested a gravitational-wave follow-up (temporary)
+            - q = 'shutdown': requested a graceful shutdown of the scheduler
+            - None: no signal detected
         """
         # select.select checks if a file descriptor is ready to be read
         # [sys.stdin] is the list of objects we want to check
@@ -168,11 +170,14 @@ class CLIInterface(BaseInterface):
             user_input = sys.stdin.readline().strip().lower()
             if user_input == 'r':
                 logger.info("[Interface] Soft interrupt detected! 'r' entered.")
-                return True, 'replan'
+                return 'replan'
             elif user_input == 't':
                 logger.info("[Interface] Gravitational-wave trigger signal detected! 't' entered.")
-                return True, 'gw-trigger'
+                return 'gw-trigger'
+            elif user_input == 'q':
+                logger.info("[Interface] Shutdown signal detected! 'q' entered.")
+                return 'shutdown'
             else: # ignore other input; note that reading the input cleared the buffer
                 pass
                 
-        return False, None
+        return None

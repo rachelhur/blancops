@@ -86,6 +86,7 @@ class SchedulerOrchestrator:
         self.first_exposure = True
         self.last_submitted_obs = {}
         self.last_telemetry_check = -float("inf")
+        self.shutdown_requested = False
 
     # def _apply_mask_update(self, to_add, to_remove):
     #     """Apply an operator mask add/remove to the session mask state.
@@ -113,6 +114,20 @@ class SchedulerOrchestrator:
     #             drop=True
     #         )
     #     self.session_masked_propids -= set(to_remove.get("propids", set()))
+
+    def shutdown_cleanup(self, message="Executing shutdown."):
+        """
+        Cleanup before a shutdown of the scheduler.
+
+        Arguments
+        ---------
+        message: str ["Executing shutdown."]
+            Message to log when shutting down.
+        """
+        logger.info(f"[Orchestrator] {message}")
+        self.client.close()
+        logger.info("[Orchestrator] Scheduler shutdown complete.")
+
 
     def run(self):
         """Run the continuous proposal/approval/submission loop until end condition."""
@@ -193,43 +208,43 @@ class SchedulerOrchestrator:
             while submit_idx < self.n_to_submit and not self.progress.check_end_condition():
                 obs_row = chunk_df.iloc[submit_idx]
 
-                # submit the observation the first time through without waiting further
-                if self.first_exposure and self.progress.check_start_condition() and self.client.check_exposure_status():
-                    self.client.submit_observation(obs_row)
-                    self.model.record_visit(obs_row)
-                    self.last_submitted_obs = obs_row
-                    self.progress.record_completion(obs_row)
-                    self.first_exposure = False
-                    logger.info(
-                        f"[Orchestrator] First observation submitted: {obs_row['field_id']}"
-                    )
-                    submit_idx += 1
-                    continue # move to next observation in the chunk
-
-                # otherwise wait for current exposure to finish
+                # check whether the current exposure finished
                 time.sleep(self.observing_poll_rate_sec)
                 exposure_finished = self.client.check_exposure_status()
 
-                # submit the next observation if exposure is finished and start condition is met
+                # exit gracefully if requested by user and exposure is finished
+                if self.shutdown_requested and exposure_finished:
+                    self.shutdown_cleanup(
+                        message="Shutdown requested and current exposure finished. Exiting loop."
+                    )
+                    return
+
+                # submit the observation if ready for a new exposure
                 if (
-                    not self.first_exposure
-                    and exposure_finished
-                    and self.progress.check_start_condition()
+                    not self.shutdown_requested # don't submit if shutdown requested
+                    and exposure_finished # ready for a new exposure
+                    and self.progress.check_start_condition() # good to start
+                    and not self.progress.check_end_condition() # haven't reached end
                 ):
                     self.client.submit_observation(obs_row)
-                    self.progress.record_completion(obs_row)
                     self.model.record_visit(obs_row)
-                    logger.info(
-                        f"[Orchestrator] Observation {obs_row['field_id']} submitted after {self.last_submitted_obs['field_id']} finished."
-                    )
-                    #self.progress.record_completion(self.last_submitted_obs)
+                    self.progress.record_completion(obs_row)
+                    if self.first_exposure:
+                        logger.info(
+                            f"[Orchestrator] First observation submitted: {obs_row['field_id']}-{obs_row['filter']}"
+                        )
+                    else:
+                        logger.info(
+                            f"[Orchestrator] Observation {obs_row['field_id']}-{obs_row['filter']} submitted after {self.last_submitted_obs['field_id']}-{self.last_submitted_obs['filter']} finished."
+                        )
                     self.last_submitted_obs = obs_row
+                    self.first_exposure = False
                     submit_idx += 1
                     continue # move to next observation in the chunk
 
                 # check for user-triggered soft interrupt to replan chunk
-                replan = self.ui.check_for_replan_signal()
-                if replan[0] and replan[1] == "replan":
+                signal = self.ui.check_for_replan_signal()
+                if signal == "replan":
                     self.masked_field_ids.append(obs_row["field_id"])
                     logger.info(
                         f"[Orchestrator] User requested a replan. Aborting chunk and masking field: {obs_row['field_id']}"
@@ -237,14 +252,21 @@ class SchedulerOrchestrator:
                     break # exit the submission loop to replan the chunk
 
                 # check for user-triggered gravitational wave trigger
-                if replan[0] and replan[1] == "gw-trigger":
+                if signal == "gw-trigger":
                     logger.info("[Orchestrator] User triggered gravitational-wave follow-up observations.")
                     self.priority_trigger = True
                     break # exit the submission loop to replan the chunk
 
+                # check for user-triggered shutdown signal
+                # NB: don't break the loop, so as to wait for current exposure to finish
+                if signal == "shutdown":
+                    logger.info("[Orchestrator] User requested a graceful shutdown of the scheduler. Waiting for current exposure to finish...")
+                    self.shutdown_requested = True
+                    continue
+
                 # periodically check for telemetry, field list changes => trigger replan
                 delta = self.clock.now() - self.last_telemetry_check
-                if delta > self.telemetry_poll_rate_sec:
+                if delta > self.telemetry_poll_rate_sec and not self.shutdown_requested:
                     logger.info("[Orchestrator] Performing periodic telemetry/field check")
                     new_telemetry = self.client.get_telemetry()
                     self.last_telemetry_check = self.clock.now()
@@ -268,7 +290,10 @@ class SchedulerOrchestrator:
 
         # announce session end
         if self.progress.check_end_condition():
-            logger.info("[Orchestrator] Observing run complete (end condition met).")
+            self.shutdown_cleanup(
+                message="Observing run complete (end condition met)."
+            )
         else:
-            logger.info("[Orchestrator] Observing run complete (unknown exit).")
-        self.client.close()
+            self.shutdown_cleanup(
+                message="Observing run complete (unknown exit)."
+            )
