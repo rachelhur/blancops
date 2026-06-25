@@ -70,7 +70,7 @@ def to_lookup_fields_df(
     filt: str,
     count: int | dict[str, int] = 1,
     exptime: float = 90.0,
-    priority: int | None = None,
+    priority: int = 0,
     *,
     ra_col: str = "RA",
     dec_col: str = "DEC",
