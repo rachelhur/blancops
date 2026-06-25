@@ -86,6 +86,12 @@ class CLIInterface(BaseInterface):
         if self.output_dir is None and not self.show_plots:
             logger.warning("[Interface] Warning: No plots will be saved or displayed.")
 
+        # set up a single, persistent matplotlib interactive mode
+        if self.show_plots:
+            plt.ion()
+            self.fig = plt.figure(figsize=(10.5, 8.5)) # live_scheduling_viz default
+            self.fig.canvas.manager.set_window_title("Live Scheduler - Current Chunk")
+
     def display_chunk(self, chunk_df, completed_df=None, candidate_df=None, current=None):
         """Print the proposed chunk and save a simple RA/Dec plot."""
 
@@ -109,7 +115,15 @@ class CLIInterface(BaseInterface):
             )
             return
 
-        # Generate and save a plot for quick visual inspection.
+        # clear the existing window or ensure background cleanup
+        if self.show_plots:
+            plt.figure(self.fig.number) # make our persistent window the active one
+            plt.close('all') # clear the old plot elements
+        else:
+            plt.close('all') # if only saving to disk, prevent memory leaks
+
+        # generate the plot
+        # NB: this will draw onto the currently active figure we just cleared
         # XXX update to include completed, future, and current fields in the plot
         # center and time-stamp the plot on the scheduler clock so the simulated
         # time is respected during testing and the true UTC during live runs
@@ -120,13 +134,18 @@ class CLIInterface(BaseInterface):
             current=current,
             time=self.clock.now()
         )
+
+        # 2ave uniquely by timestamp (this acts on the currently active figure)
         if self.output_dir is not None:
             outname = self.output_dir / f"chunk_proposal_{self.clock.now()}.png"
             plt.savefig(outname)
             logger.info(f"[Interface] Plot saved to {outname}")
+
+        # update the persistent window
         if self.show_plots:
-            plt.show(block=False)
-            plt.pause(0.1)
+            self.fig.canvas.draw_idle()  # request a redraw
+            self.fig.canvas.flush_events() # process GUI events (prevent window freeze)
+            plt.pause(0.01) # give the ssh -X loop a tiny breather to render
 
     def get_user_decision(self):
         """Prompt for Y/N/Q approval and return scheduler decision payload."""
