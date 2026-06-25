@@ -54,8 +54,10 @@ class BaseInterface(ABC):
         -------
         approved: bool
             Whether the user approves the proposed chunk for execution.
-        masked_fields: list
-            List of field IDs to mask in the next proposal if the chunk is rejected.
+        gw_trigger: bool
+            Whether the user triggered a GW follow-up.
+        quit_requested: bool
+            Whether the user requested a clean shutdown.
         """
 
         pass
@@ -127,23 +129,26 @@ class CLIInterface(BaseInterface):
             plt.pause(0.1)
 
     def get_user_decision(self):
-        """Prompt for Y/N approval and return scheduler decision payload."""
+        """Prompt for Y/N/Q approval and return scheduler decision payload."""
 
         while True:
             resp = (
-                input("Approve this chunk? [Y]es, [N]o (mask fields): ").strip().upper()
+                input("Approve this chunk? [Y]es, [N]o (mask fields), [NT] No and trigger GW ToO, [Q]uit: ").strip().upper()
             )
             if resp == "Y":
                 logger.info("[Interface] Chunk accepted.")
-                return True, False
+                return True, False, False
             elif resp == "N":
                 logger.info("[Interface] Chunk rejected.")
-                return False, False
+                return False, False, False
             elif resp == "NT":
                 logger.info("[Interface] Chunk rejected with temporary GW follow-up trigger.")
-                return False, True
+                return False, True, False
+            elif resp == "Q":
+                logger.info("[Interface] Clean shutdown requested at prompt.")
+                return False, False, True
             else:
-                logger.warning("[Interface] Invalid input, please enter Y or N.")
+                logger.warning("[Interface] Invalid input, please enter Y, N, NT, or Q.")
 
     def check_for_replan_signal(self):
         """

@@ -149,6 +149,34 @@ class SchedulerOrchestrator:
             )
 
         while not self.progress.check_end_condition():
+
+            # ==========================================================================
+            # Handle user-requested shutdowns if requested in previous loop
+            # ==========================================================================
+            if self.shutdown_requested:
+                logger.info("[Orchestrator] User requested a graceful shutdown. Waiting for current exposure to finish...")
+                
+                # defend against infinite hangs (e.g. telescope disconnects)
+                timeout_sec = 330 # estimated time for 90deg slew + 90s exposure
+                wait_start = self.clock.now()
+
+                # wait for exposure to finish or timeout
+                timed_out = False
+                while not self.client.check_exposure_status():
+                    elapsed = self.clock.now() - wait_start
+                    if elapsed > timeout_sec:
+                        logger.error(f"[Orchestrator] CRITICAL: Exposure wait timed out after {timeout_sec}s! Forcing shutdown.")
+                        timed_out = True
+                        break # exit the while loop to execute cleanup
+
+                    time.sleep(self.observing_poll_rate_sec)
+
+                # cleanup and exit
+                self.shutdown_cleanup(
+                    message="Shutdown requested and current exposure finished (or timed out). Exiting loop."
+                )
+                return
+
             # ==========================================================================
             # Generate observing chunk, get user approval
             # ==========================================================================
@@ -176,26 +204,34 @@ class SchedulerOrchestrator:
                 candidate_df=None,
                 current=self.last_submitted_obs if len(self.last_submitted_obs) else None,
             )
-            if self.auto_approve and not self.first_exposure: # auto-approve all chunks except the first
-                approved = True
+            if self.auto_approve and not self.first_exposure:
+                approved, gw_trigger, quit_requested = True, False, False
             else:
-                approved, gw_trigger = self.ui.get_user_decision()
-                if gw_trigger:
-                    logger.info("[Orchestrator] User triggered gravitational-wave follow-up observations.")
-                    self.priority_trigger = True
-                    continue
-            if not approved: # mask the first field and replan
+                approved, gw_trigger, quit_requested = self.ui.get_user_decision()
+
+            # handle user-requested shutdown
+            self.shutdown_requested = self.shutdown_requested or quit_requested
+            if self.shutdown_requested:
+                continue
+            
+            # handle disapproval with a GW trigger request
+            if gw_trigger:
+                self.priority_trigger = True
+                logger.info("[Orchestrator] User triggered gravitational-wave follow-up observations.")
+                continue
+
+            # handle other disapprovals: mask the first field and replan
+            if not approved:
                 to_mask = chunk_df.iloc[0]["field_id"]
                 self.masked_field_ids.append(to_mask)
                 logger.info(f"[Orchestrator] User rejected the proposed chunk. Masking field: {to_mask}")
                 continue
-            else: # reset the mask list
+            else: # reset the mask list since the chunk was approved
                 self.masked_field_ids = []
 
             # ==========================================================================
             # Execute waiting/submission loop with the approved chunk
             # ==========================================================================
-            exposure_finished = self.client.check_exposure_status()
 
             # end observing for the night if end condition is met
             if self.progress.check_end_condition():
@@ -211,13 +247,6 @@ class SchedulerOrchestrator:
                 # check whether the current exposure finished
                 time.sleep(self.observing_poll_rate_sec)
                 exposure_finished = self.client.check_exposure_status()
-
-                # exit gracefully if requested by user and exposure is finished
-                if self.shutdown_requested and exposure_finished:
-                    self.shutdown_cleanup(
-                        message="Shutdown requested and current exposure finished. Exiting loop."
-                    )
-                    return
 
                 # submit the observation if ready for a new exposure
                 if (
@@ -260,9 +289,9 @@ class SchedulerOrchestrator:
                 # check for user-triggered shutdown signal
                 # NB: don't break the loop, so as to wait for current exposure to finish
                 if signal == "shutdown":
-                    logger.info("[Orchestrator] User requested a graceful shutdown of the scheduler. Waiting for current exposure to finish...")
+                    logger.info("[Orchestrator] User requested a graceful shutdown of the scheduler not in the prompt.")
                     self.shutdown_requested = True
-                    continue
+                    break # exit the submission loop to enter shutdown loop at top
 
                 # periodically check for telemetry, field list changes => trigger replan
                 delta = self.clock.now() - self.last_telemetry_check
