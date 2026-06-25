@@ -323,32 +323,37 @@ def main():
     if args.stop_sun_elevation_deg is not None:
         args.stop_sun_elevation_deg = args.stop_sun_elevation_deg * units.deg
 
+    # set up simulated clock for testing
+    clock = time_utils.Clock()
+    if args.sim_time_now is not None:
+        fake_start_ts = time_utils.standardize_time(args.sim_time_now)
+        clock = time_utils.Clock(offset=fake_start_ts - clock.now(real=True))
+
     # Setup logger. The format arg determines how message is formatted. For example, with the format below, a message will be printed like:
     # 2026-05-01 13:40:05 - INFO - Initializing blancops Live Scheduler...".
+    now_real = time_utils.unix_to_datetime(clock.now(real=True))
+    now_real = now_real.strftime("%Y%m%d_%H%M%S")
     logger = configure_logger(
         level="info",
         log_to_stdout=True,
         log_to_file=True,
         outdir=args.output_directory / "logs",
-        filename="run_live_scheduler.log",
+        filename=f"run_live_scheduler_{now_real}.log",
         use_tqdm=True
     )
+
+    # log the clock settings
+    if args.sim_time_now is not None:
+        logger.info(
+            "[Scheduler] Fake clock enabled: real UTC shifted by %.3f seconds.",
+            clock.offset,
+        )
 
     # log the parsed arguments
     logger.info(f"User-provided command line call: {' '.join(sys.argv)}")
     logger.info("Parsed arguments:")
     for arg, value in vars(args).items():
         logger.info(f"  {arg}: {value}")
-
-    # set up simulated clock for testing
-    clock = time_utils.Clock()
-    if args.sim_time_now is not None:
-        fake_start_ts = time_utils.standardize_time(args.sim_time_now)
-        clock = time_utils.Clock(offset=fake_start_ts - clock.now(real=True))
-        logger.info(
-            "[Scheduler] Fake clock enabled: real UTC shifted by %.3f seconds.",
-            clock.offset,
-        )
 
     # initialize requested telescope client
     logger.info("Initializing blancops Live Scheduler...")
