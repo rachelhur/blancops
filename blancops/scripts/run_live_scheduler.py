@@ -204,6 +204,16 @@ def parse_args():
         ),
     )
     operational_group.add_argument(
+        "--sim-time-offset",
+        type=str,
+        default=defaults.get("sim_time_offset", None),
+        help=(
+            "Optional fixed offset to shift the scheduler time base from the real "
+            "clock. This is an alternative to --sim-time-now. Provide offset in format "
+            "expected by time_utils.standardize_timedelta()."
+        ),
+    )
+    operational_group.add_argument(
         "--chunk-size",
         type=int,
         default=defaults.get("chunk_size", 3),
@@ -325,9 +335,17 @@ def main():
 
     # set up simulated clock for testing
     clock = time_utils.Clock()
-    if args.sim_time_now is not None:
+    if args.sim_time_now is not None and args.sim_time_offset is not None:
+        raise ValueError(
+            "You can specify --sim-time-now or --sim-time-offset, but not both."
+        )
+    elif args.sim_time_now is not None:
         fake_start_ts = time_utils.standardize_time(args.sim_time_now)
         clock = time_utils.Clock(offset=fake_start_ts - clock.now(real=True))
+    elif args.sim_time_offset is not None:
+        clock = time_utils.Clock(
+            offset=time_utils.standardize_timedelta(args.sim_time_offset)
+        )
 
     # Setup logger. The format arg determines how message is formatted. For example, with the format below, a message will be printed like:
     # 2026-05-01 13:40:05 - INFO - Initializing blancops Live Scheduler...".
@@ -343,11 +361,17 @@ def main():
     )
 
     # log the clock settings
-    if args.sim_time_now is not None:
+    if args.sim_time_now is not None or args.sim_time_offset is not None:
+        now_sim = time_utils.unix_to_datetime(clock.now())
+        now_sim = now_sim.strftime("%Y-%m-%d %H:%M:%S UTC")
+        now_real = time_utils.unix_to_datetime(clock.now(real=True))
+        now_real = now_real.strftime("%Y-%m-%d %H:%M:%S UTC")
         logger.info(
             "[Scheduler] Fake clock enabled: real UTC shifted by %.3f seconds.",
             clock.offset,
         )
+        logger.info(f"[Scheduler] Simulated current UTC time: {now_sim}")
+        logger.info(f"[Scheduler] Real current UTC time: {now_real}")
 
     # log the parsed arguments
     logger.info(f"User-provided command line call: {' '.join(sys.argv)}")
