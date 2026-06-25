@@ -248,12 +248,17 @@ class SchedulerOrchestrator:
                 time.sleep(self.observing_poll_rate_sec)
                 exposure_finished = self.client.check_exposure_status()
 
+                # check whether minimal time has past since last exposure submission
+                t_since_last_submit = self.clock.now() - self.client.last_exposure_submit_time
+                sufficient_time_passed = t_since_last_submit > self.client.last_exposure_duration
+
                 # submit the observation if ready for a new exposure
                 if (
                     not self.shutdown_requested # don't submit if shutdown requested
                     and exposure_finished # ready for a new exposure
                     and self.progress.check_start_condition() # good to start
                     and not self.progress.check_end_condition() # haven't reached end
+                    and sufficient_time_passed # don't submit too quickly
                 ):
                     self.client.submit_observation(obs_row)
                     self.model.record_visit(obs_row)
