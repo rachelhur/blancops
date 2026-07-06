@@ -28,7 +28,7 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
     keeps ot_now = ot_at_sunset + (ts - sunset_ts) monotonic across
     half-night transitions).
     """
- 
+
     def __init__(
         self,
         *,
@@ -178,8 +178,8 @@ class OfflineBlancoEnv(BaseBlancoOfflineEnv):
             end_ts = sunset_ts + (sunrise_ts - sunset_ts) / 2
         elif portion == "half2":
             start_ts = sunset_ts + (sunrise_ts - sunset_ts) / 2
-            
-        
+
+
         # Anchor ot_at_sunset so that
         #     ot_now @ start_ts  ==  OT clock at the moment we rolled
         #                            over from the previous night.

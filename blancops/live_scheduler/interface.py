@@ -189,7 +189,7 @@ class CLIInterface(BaseInterface):
         # [sys.stdin] is the list of objects we want to check
         # 0.0 timeout: tell select to return instantly (non-blocking)
         if sys.stdin in select.select([sys.stdin], [], [], 0.0)[0]:
-            
+
             # entering this block means user hit Enter; read the line and clean buffer
             user_input = sys.stdin.readline().strip().lower()
             if user_input == 'r':
@@ -203,5 +203,5 @@ class CLIInterface(BaseInterface):
                 return 'shutdown'
             else: # ignore other input; note that reading the input cleared the buffer
                 pass
-                
+
         return None
