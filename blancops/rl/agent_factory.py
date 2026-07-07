@@ -29,12 +29,13 @@ class AgentFactory:
         self.aliases = self._load_aliases()
 
     def build_agent(
-        self, 
-        model_path_or_alias: str, 
-        lookups: Path, 
+        self,
+        model_path_or_alias: str,
+        lookups: Path,
         field_choice_method: str,
         device: str = 'cpu',
-        weights_filename: str = None # Now defaults to None for auto-detection
+        weights_filename: str = None, # Now defaults to None for auto-detection
+        action_decode: str = 'joint'
     ) -> Tuple[Agent, ExperimentConfig, dict]:
         
         # If model_path_or_alias is an absolute path or a path that exists, prefer that
@@ -64,9 +65,10 @@ class AgentFactory:
 
         agent = Agent(
             policy=loaded_policy,
-            cfg=cfg, 
-            lookups=lookups, 
-            field_choice_method=field_choice_method
+            cfg=cfg,
+            lookups=lookups,
+            field_choice_method=field_choice_method,
+            action_decode=action_decode
         )
         
         return agent, cfg, norm_stats

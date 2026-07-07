@@ -31,6 +31,8 @@ def get_args():
     # Model choice
     parser.add_argument('-m', '--model_path_or_alias', type=str, default="bc_v1", help='Model alias or relative path to trained model directory')
     parser.add_argument('-c', '--field_choice_method', type=str, default='interp', choices=['random', 'interp'], help="Field selection method within a chosen bin.")
+    parser.add_argument('--action_decode', type=str, default='joint', choices=['joint', 'filter_first'], help="Bin/filter decode: 'joint' argmax, or 'filter_first' (choose filter over all visible bins, then best available bin).")
+    parser.add_argument('--dump_moonset_q', action='store_true', help="Print a one-shot per-filter Q breakdown at the first post-moonset step (diagnostic).")
 
     # Field and Schedule info
     parser.add_argument('--field_lookup_dir', type=Path, required=True, help='Relative path to field lookup dir')
@@ -135,12 +137,14 @@ def main():
         lookups=lookups,
         field_choice_method=args.field_choice_method,
         device=device,
+        action_decode=args.action_decode,
     )
     runner = OfflineRunner(
         agent=agent, policy=agent.policy, cfg=model_cfg,
         lookups=lookups, num_episodes=args.num_episodes, outdir=outdir,
         save_SISPI=args.save_sispi, save_movie=args.save_movie,
-        save_mollweide=args.save_mollweide
+        save_mollweide=args.save_mollweide,
+        dump_moonset_q=args.dump_moonset_q
     )
 
     # ---------------------------------

@@ -25,7 +25,8 @@ _PROGRAM_PLACEHOLDER = 'ai-scheduler-test'
 class OfflineRunner:
     def __init__(self, agent, policy, cfg, lookups, num_episodes=1,
                  outdir=None, save_SISPI=True, SISPI_fn="sispi.json",
-                 save_state_features=False, save_movie=False, save_mollweide=False):
+                 save_state_features=False, save_movie=False, save_mollweide=False,
+                 dump_moonset_q=False):
         self.agent = agent
         self.cfg = cfg
         self.policy = policy
@@ -40,6 +41,10 @@ class OfflineRunner:
         # When True, also saves glob/bin observation arrays as .npz per night
         # for use with diagnostic plot functions. Off by default to protect memory.
         self.save_state_features = save_state_features
+        # One-shot per-filter Q breakdown at the first post-moonset step.
+        self.dump_moonset_q = dump_moonset_q
+        self._moonset_dumped = False
+        self._prev_moon_el = None
 
         self.outdir.mkdir(parents=True, exist_ok=True)
         self._nights_dir = self.outdir / 'nights'
@@ -185,6 +190,29 @@ class OfflineRunner:
         return out
 
     # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+
+    def _maybe_dump_moonset_q(self, obs, info):
+        """Print the per-filter Q breakdown once, at the first post-moonset step."""
+        if not self.dump_moonset_q or self._moonset_dumped:
+            return
+        # Local import breaks the offline_runner <-> evaluations package cycle.
+        from blancops.rl.evaluations.helpers import dump_filter_q_breakdown
+        t = info.get('timestamp')
+        if t is None:
+            return
+        moon_radec = ephemerides.get_source_ra_dec('moon', time=t)
+        _, moon_el = ephemerides.equatorial_to_topographic(moon_radec[0], moon_radec[1], time=t)
+        if self._prev_moon_el is not None and self._prev_moon_el > 0 and moon_el <= 0:
+            logger.info(
+                f"[moonset q-dump] ts={t} moon el {self._prev_moon_el:.4f}->{moon_el:.4f} rad"
+            )
+            dump_filter_q_breakdown(self.policy, obs, info, IDX2FILTER)
+            self._moonset_dumped = True
+        self._prev_moon_el = moon_el
+
+    # ------------------------------------------------------------------
     # Main rollout
     # ------------------------------------------------------------------
 
@@ -196,6 +224,8 @@ class OfflineRunner:
 
         for ep_num in tqdm(range(self.num_episodes)):
             obs, info = env.reset()
+            self._moonset_dumped = False
+            self._prev_moon_el = None
             running_reward = 0
             terminated = False
             truncated = False
@@ -228,6 +258,8 @@ class OfflineRunner:
                         bin_idx = WAIT_SIGNAL
                     else:
                         bin_idx, filter_idx, field_id = self.agent.choose_bin_filter_field(obs, info, hpGrid, epsilon=None)
+
+                    self._maybe_dump_moonset_q(obs, info)
 
                     obs_timestamp = info.get('timestamp')
                     pre_step_glob = obs['global_state']

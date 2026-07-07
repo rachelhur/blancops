@@ -11,24 +11,55 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Agent:
-    def __init__(self, policy, cfg, lookups, field_choice_method='interp', device=None):
+    def __init__(self, policy, cfg, lookups, field_choice_method='interp', action_decode='joint', device=None):
         self.policy = policy
         self.lookups = lookups
         self.cfg = cfg
         self.device = device if device is not None else next(policy.parameters()).device
         self.field_choice_method = field_choice_method
-        
-    def _choose_bin_and_filter(self, x_glob, x_bin, action_mask, epsilon=None):
-        # Delegate directly to the policy
+        self.action_decode = action_decode
+
+    def _choose_bin_and_filter(self, x_glob, x_bin, action_mask, info, epsilon=None):
+        do_filt = 'filter' in self.cfg.data.action_space
+        visible_bin_mask = info.get('visible_bin_mask') if info is not None else None
+
+        if self.action_decode == 'filter_first' and do_filt and action_mask is not None and visible_bin_mask is not None:
+            return self._filter_first_decode(x_glob, x_bin, action_mask, visible_bin_mask)
+
+        # Joint argmax over the flat (bin, filter) table (default).
         action_tensor = self.policy.select_action(x_glob=x_glob, x_bin=x_bin, action_mask=action_mask)
         action = int(action_tensor.item()) if hasattr(action_tensor, 'item') else int(action_tensor)
-        
-        if 'filter' in self.cfg.data.action_space:
+
+        if do_filt:
             bin_idx = action // self.policy.num_filters
             filter_idx = action % self.policy.num_filters
         else:
             bin_idx = action
             filter_idx = NO_FILTER_SIGNAL
+        return bin_idx, filter_idx
+
+    def _filter_first_decode(self, x_glob, x_bin, action_mask, visible_bin_mask):
+        """Choose the filter over all visible bins, then the best available bin for it."""
+        num_filters = self.policy.num_filters
+        with torch.no_grad():
+            raw_scores = self.policy.core_net(x_glob, x_bin)  # [1, n_bins * n_filters]
+        n_bins = x_bin.shape[1]
+        q_map = raw_scores.view(n_bins, num_filters)  # [n_bins, n_filters]
+
+        avail = action_mask.view(n_bins, num_filters).bool()          # [n_bins, n_filters]
+        visible = torch.as_tensor(visible_bin_mask, device=q_map.device, dtype=torch.bool)  # [n_bins]
+        neg_inf = torch.finfo(q_map.dtype).min
+
+        # Filter score: best Q over observable bins, as if the sky were populated.
+        vis_scores = q_map.masked_fill(~visible.unsqueeze(1), neg_inf)  # [n_bins, n_filters]
+        filter_scores = vis_scores.max(dim=0).values                   # [n_filters]
+        # Restrict to filters that have at least one currently-available action.
+        filter_scores = filter_scores.masked_fill(~avail.any(dim=0), neg_inf)
+        filter_idx = int(filter_scores.argmax().item())
+
+        # Best available bin for the chosen filter.
+        bin_scores = q_map[:, filter_idx].masked_fill(~avail[:, filter_idx], neg_inf)  # [n_bins]
+        bin_idx = int(bin_scores.argmax().item())
         return bin_idx, filter_idx
     
     def _determine_valid_fields(self, bin_idx, filter_idx, info):
@@ -60,7 +91,7 @@ class Agent:
         action_tensor_mask = torch.as_tensor(info.get('action_mask', None), device=self.device, dtype=torch.bool) if info.get('action_mask', None) is not None else None
         
         # Choose action in action space
-        bin_idx, filter_idx = self._choose_bin_and_filter(glob_tensor, bin_tensor, action_tensor_mask, epsilon)
+        bin_idx, filter_idx = self._choose_bin_and_filter(glob_tensor, bin_tensor, action_tensor_mask, info, epsilon)
 
         # Get valid fields in bin
         valid_field_ids = self._determine_valid_fields(bin_idx, filter_idx, info)

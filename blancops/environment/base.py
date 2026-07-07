@@ -211,6 +211,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._action_mask: np.ndarray | None = None
         self._is_new_night: bool = False
         self._valid_fields_per_bin: dict | None = None
+        self._visible_bin_mask: np.ndarray | None = None
 
         # Coordinate-system-specific caches (RA/Dec mode only). Populated
         # lazily by _compute_bin_assignments on first use.
@@ -508,6 +509,7 @@ class BaseBlancoEnv(gym.Env, ABC):
             # 'n_visited': self._n_visits_cur.copy(),
             'survey_progress_tracker': self._survey_progress_tracker.copy(),
             'valid_fields_per_bin': dict(self._valid_fields_per_bin) if self._valid_fields_per_bin is not None else {},
+            'visible_bin_mask': self._visible_bin_mask.copy() if self._visible_bin_mask is not None else None,
             'timestamp': self._ts,
             'is_new_night': bool(self._is_new_night),
             'night_idx': int(self._night_idx),
@@ -1011,6 +1013,7 @@ class BaseBlancoEnv(gym.Env, ABC):
             else:
                 self._action_mask = np.zeros(shape=self.nbins, dtype=bool)
             self._valid_fields_per_bin = defaultdict(list)
+            self._visible_bin_mask = np.zeros(shape=self.nbins, dtype=bool)
             return self._action_mask
 
         fields_az, fields_el = ephemerides.equatorial_to_topographic(
@@ -1066,7 +1069,52 @@ class BaseBlancoEnv(gym.Env, ABC):
             self._valid_fields_per_bin[b].append(fid)
 
         self._action_mask = action_mask
+        self._visible_bin_mask = self._compute_visible_bin_mask()
         return action_mask
+
+    def _compute_visible_bin_mask(self) -> np.ndarray:
+        """Boolean mask over HEALPix bins observable at the current timestamp.
+
+        Evaluates the horizon, airmass, and equatorial-envelope constraints at
+        each bin center rather than at catalog fields, so a bin counts as
+        visible even when no field currently lives in it. This is the "sky as
+        if fully populated" view the filter-first decoder uses to score filter
+        preference in the dense regime the policy was trained on, decoupled
+        from sparse ("island") field layouts. It is not a legality mask and
+        does not gate `step`.
+
+        Returns
+        -------
+        Boolean array of shape ``(nbins,)``; True where the bin center clears
+        the horizon, airmass, and (for equatorial mounts) HA/Dec envelope.
+        """
+        lon = self.hpGrid.lon  # [nbins] radians (az if azel grid, else ra)
+        lat = self.hpGrid.lat  # [nbins] radians (el if azel grid, else dec)
+
+        if self.hpGrid.is_azel:
+            bin_el = lat
+        else:
+            _, bin_el = ephemerides.equatorial_to_topographic(
+                ra=lon, dec=lat, time=self._ts
+            )
+
+        above_horizon = bin_el > 0
+        airmass = np.full_like(bin_el, 10.0)  # sentinel for below-horizon bins
+        airmass[above_horizon] = 1 / np.cos(90 * units.deg - bin_el[above_horizon])
+        effective_airmass_limit = min(self.airmass_limit, self.airmass_failsafe)
+        visible = airmass < effective_airmass_limit
+
+        # Equatorial mount HA/Dec envelope, evaluated over bin centers. Skipped
+        # for alt-az grids, where bin centers carry no RA to form an hour angle.
+        if self._equatorial_limit is not None and not self.hpGrid.is_azel:
+            lst = self._local_sidereal_time(self._ts)
+            ha = (lst - lon + np.pi) % (2.0 * np.pi) - np.pi
+            envelope = np.asarray(
+                self._equatorial_limit.satisfies(ha, np.degrees(lat)), dtype=bool
+            )
+            visible = visible & envelope
+
+        return visible
 
     # -----------------------------------------------------------------------
     # Construction-time hook and feature validation
