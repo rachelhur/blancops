@@ -49,6 +49,7 @@ def get_args():
     parser.add_argument('--save_sispi', action='store_true', help='Whether to save SISPI-format json files.')
     parser.add_argument('--save_movie', action='store_true', help='Whether to save gif files.')
     parser.add_argument('--save_mollweide', action='store_true', help='Whether to save png files.')
+    parser.add_argument('--save_state_features', action='store_true', help='Whether to save per-night glob/bin observation arrays as _obs.npz files.')
 
     # Logging
     parser.add_argument('-l', '--logging_level', type=str, default='info', choices=['info', 'debug', 'warning', 'error'], help='Logging level.')
@@ -144,6 +145,7 @@ def main():
         lookups=lookups, num_episodes=args.num_episodes, outdir=outdir,
         save_SISPI=args.save_sispi, save_movie=args.save_movie,
         save_mollweide=args.save_mollweide,
+        save_state_features=args.save_state_features,
         dump_moonset_q=args.dump_moonset_q
     )
 

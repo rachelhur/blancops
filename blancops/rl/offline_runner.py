@@ -234,7 +234,7 @@ class OfflineRunner:
             # Lightweight per-step schedule records — only ~5 scalars each
             per_night_rows = []
             # Optional obs feature buffers (only populated when save_obs_features=True)
-            per_night_obs = {'glob_observations': [], 'bin_observations': []} if self.save_state_features else None
+            per_night_obs = {'glob_observations': [], 'bin_observations': [], 'action_masks': []} if self.save_state_features else None
 
             episode_manifest = {}  # night_key -> csv path
             reward = 0
@@ -290,6 +290,9 @@ class OfflineRunner:
                         per_night_obs['bin_observations'].append(
                             self._restore_nans(pre_step_bin, pre_step_bin_nan_mask)
                         )
+                        per_night_obs['action_masks'].append(
+                            np.asarray(action_mask, dtype=bool)
+                        )
 
                     running_reward += reward
                     last_bin_idx = bin_idx
@@ -309,7 +312,7 @@ class OfflineRunner:
 
                         per_night_rows = []
                         if self.save_state_features:
-                            per_night_obs = {'glob_observations': [], 'bin_observations': []}
+                            per_night_obs = {'glob_observations': [], 'bin_observations': [], 'action_masks': []}
                             gc.collect()
 
                         night_idx = info.get('night_idx')
