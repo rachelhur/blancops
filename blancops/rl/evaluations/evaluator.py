@@ -69,7 +69,7 @@ def build_evaluators(
 ) -> Tuple['SingleStepEvaluator', 'MultiStepEvaluator']:
     """Build SS and MS evaluators for the validation set from a config."""
     cfg = (
-        load_and_validate(cfg_or_cfg_path, None)
+        load_and_validate(cfg_or_cfg_path)
         if isinstance(cfg_or_cfg_path, str)
         else cfg_or_cfg_path
     )
