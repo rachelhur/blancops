@@ -90,6 +90,27 @@ def main():
 
     plot_metric_distributions_with_ss_overlay(ms_evaluator=m_eval, ss_evaluator=s_eval)
     plt.savefig(outdir / 'ms' / 'survey_quality_distributions.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    s_eval.plot_filter_confusion()
+    plt.savefig(outdir / 'ss' / 'filter_confusion.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    m_eval.plot_2dhist_per_filter('ra', 'dec', normalization='probability')
+    plt.savefig(outdir / 'ms' / 'ra_vs_dec_per_filter.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    m_eval.plot_layer1_weights()
+    plt.savefig(outdir / 'ms' / 'layer1_weights.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    s_eval.plot_cdf_pointing_error(per_filter=True)
+    plt.savefig(outdir / 'ss' / 'cdf_pointing_error_per_filter.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    s_eval.plot_cdf_pointing_error()
+    plt.savefig(outdir / 'ss' / 'cdf_pointing_error.png', dpi=300, bbox_inches='tight')
+    plt.close()
 
 
 
