@@ -23,6 +23,7 @@ def main():
     parser.add_argument('-c', '--cfg_path', type=str, default=None, help="Path to config file. If passed, all other arguments are ignored")
     parser.add_argument('-l', '--logging_level', type=str, default='debug', help='Logging level. Options: info, debug')
     parser.add_argument('-f', '--force_overwrite', action='store_true', help='Whether to force overwrite previous rollout files.')
+    parser.add_argument('--action_decoding', type=str, default='joint', choices=['joint', 'filter_first'], help='Action decoding strategy to use.')
     parser.add_argument('--save_movies', action='store_true', help='Whether to save movie files.')
     parser.add_argument('--save_mollweides', action='store_true', help='Whether to save movie files.')
 
@@ -38,11 +39,12 @@ def main():
     device = get_system_device()
 
     # Resolve the model dir from where the config was loaded (machine-portable)
+    suffix = '_filter_first' if args.action_decoding == 'filter_first' else ''
     if cfg.orig_cfg_path:
         cfg_dir = Path(cfg.orig_cfg_path).parent
         outdir = cfg_dir.parent if cfg_dir.name == "configs" else cfg_dir
     else:
-        outdir = Path(cfg.outdir) / 'holdout_eval'
+        outdir = Path(cfg.outdir) / f'holdout_eval{suffix}'
 
     # ------------------------------
     # Initialize logger
@@ -60,7 +62,13 @@ def main():
     # Build and run evaluators
     # ------------------------------
     logger.info("Building evaluators...")
-    s_eval, m_eval = build_evaluators(cfg, device=device, save_movie=args.save_movies, save_mollweide=args.save_mollweides)
+    s_eval, m_eval = build_evaluators(
+        cfg,
+        device=device,
+        save_movie=args.save_movies,
+        save_mollweide=args.save_mollweides,
+        action_decoding=args.action_decoding
+    )
 
     logger.info("Running evaluators...")
     s_eval.run()

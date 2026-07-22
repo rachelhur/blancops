@@ -66,6 +66,7 @@ def build_evaluators(
     save_movie=False,
     save_mollweide=False,
     data_dir=None,
+    action_decoding='joint'
 ) -> Tuple['SingleStepEvaluator', 'MultiStepEvaluator']:
     """Build SS and MS evaluators for the validation set from a config."""
     cfg = (
@@ -127,6 +128,7 @@ def build_evaluators(
         lookups=lookups,
         field_choice_method='interp',
         device=device,
+        action_decode=action_decoding
     )
     runner = OfflineRunner(
         agent=agent, policy=agent.policy, cfg=cfg,
