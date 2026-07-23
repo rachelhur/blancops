@@ -60,7 +60,7 @@ class PolicyBase(nn.Module, ABC):
         metrics["ang_sep"] = compute_slew_distance(predicted_bins, expert_bins, hpGrid)
         metrics["unique_bins"] = len(torch.unique(predicted_bins)) / len(hpGrid.lon)
         return metrics
-    
+
 class BCPolicyBase(PolicyBase, ABC):
     """A loss strategy for BC. Wraps a network and defines how its outputs
     map to a loss against expert actions."""
@@ -106,7 +106,7 @@ class BCPolicyBase(PolicyBase, ABC):
                 metrics.update(heavy)
 
         return metrics
-    
+
 
 class QPolicyBase(BCPolicyBase):
     """Adapts a network's output to a flat `(batch, num_actions)` Q-tensor.
