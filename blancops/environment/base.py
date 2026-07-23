@@ -1072,8 +1072,8 @@ class BaseBlancoEnv(gym.Env, ABC):
         self._visible_bin_mask = self._compute_visible_bin_mask()
         return action_mask
 
-    def _compute_visible_bin_mask(self) -> np.ndarray:
-        """Boolean mask over HEALPix bins observable at the current timestamp.
+    def _compute_visible_bin_mask(self, timestamp: float | None = None) -> np.ndarray:
+        """Boolean mask over HEALPix bins observable at a given timestamp.
 
         Evaluates the horizon, airmass, and equatorial-envelope constraints at
         each bin center rather than at catalog fields, so a bin counts as
@@ -1083,11 +1083,19 @@ class BaseBlancoEnv(gym.Env, ABC):
         from sparse ("island") field layouts. It is not a legality mask and
         does not gate `step`.
 
+        Args
+        ----
+        timestamp: Unix time to evaluate the mask at. Defaults to the env's
+            current timestamp. Pass an explicit value to compute the mask
+            off-line (e.g. for one-step-ahead evaluation). Ignored for alt-az
+            grids (time-invariant bins).
+
         Returns
         -------
         Boolean array of shape ``(nbins,)``; True where the bin center clears
         the horizon, airmass, and (for equatorial mounts) HA/Dec envelope.
         """
+        ts = self._ts if timestamp is None else timestamp
         lon = self.hpGrid.lon  # [nbins] radians (az if azel grid, else ra)
         lat = self.hpGrid.lat  # [nbins] radians (el if azel grid, else dec)
 
@@ -1095,7 +1103,7 @@ class BaseBlancoEnv(gym.Env, ABC):
             bin_el = lat
         else:
             _, bin_el = ephemerides.equatorial_to_topographic(
-                ra=lon, dec=lat, time=self._ts
+                ra=lon, dec=lat, time=ts
             )
 
         above_horizon = bin_el > 0
@@ -1107,7 +1115,7 @@ class BaseBlancoEnv(gym.Env, ABC):
         # Equatorial mount HA/Dec envelope, evaluated over bin centers. Skipped
         # for alt-az grids, where bin centers carry no RA to form an hour angle.
         if self._equatorial_limit is not None and not self.hpGrid.is_azel:
-            lst = self._local_sidereal_time(self._ts)
+            lst = self._local_sidereal_time(ts)
             ha = (lst - lon + np.pi) % (2.0 * np.pi) - np.pi
             envelope = np.asarray(
                 self._equatorial_limit.satisfies(ha, np.degrees(lat)), dtype=bool

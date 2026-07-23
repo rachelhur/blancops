@@ -41,6 +41,7 @@ from blancops.data.feature_cache import RawFeatureCache, ValDatasetCache
 from blancops.data.features.normalizations import build_normalizer
 from blancops.data.lookup_tables import LookupTables, TrainLookupTables
 from blancops.environment.historic_env import HistoricBlancoEnv
+from blancops.rl.agent import filter_first_decode
 from blancops.rl.agent_factory import AgentFactory
 from blancops.rl.checkpointer import get_checkpoint
 from blancops.rl.offline_runner import OfflineRunner
@@ -164,8 +165,19 @@ def build_evaluators(
     ss_plotter = EvaluationPlotter(ss_outdir, style=style)
     ms_plotter = EvaluationPlotter(ms_outdir, style=style)
 
+    # Precompute per-sample visible-bin masks for filter_first single-step
+    # decoding, aligned to the SS timestamps used for field placement.
+    ss_visible_masks = None
+    if action_decoding == 'filter_first' and 'filter' in action_space:
+        ss_ts = ss_data.expert_df['timestamp'].to_numpy(dtype=float)
+        ss_visible_masks = np.stack(
+            [env._compute_visible_bin_mask(ts) for ts in ss_ts]
+        )
+
     ss_eval = SingleStepEvaluator(policy=agent.policy, data_container=ss_data,
-                                  plotter=ss_plotter, device=device)
+                                  plotter=ss_plotter, device=device,
+                                  action_decode=action_decoding,
+                                  visible_bin_masks=ss_visible_masks)
     ms_eval = MultiStepEvaluator(runner=runner, env=env, policy=agent.policy,
                                  data_container=ms_data, plotter=ms_plotter, device=device)
     return ss_eval, ms_eval
@@ -398,9 +410,14 @@ class SingleStepEvaluator(Evaluator):
 
     def __init__(self, policy, data_container: SingleStepDataContainer,
                  plotter: EvaluationPlotter, device: str = 'cuda',
-                 field_choice_method: str = 'interp'):
+                 field_choice_method: str = 'interp',
+                 action_decode: str = 'joint', visible_bin_masks=None):
         super().__init__(policy, data_container, plotter, device)
         self.field_choice_method = field_choice_method
+        self.action_decode = action_decode
+        # [n_states, n_bins] bool, aligned to dataset.curr_compact_idxs order;
+        # required for filter_first decoding, unused otherwise.
+        self.visible_bin_masks = visible_bin_masks
 
     def run(self) -> None:
         agent_bin_idxs, agent_filter_idxs, agent_field_ids = self._batch_single_step()
@@ -420,8 +437,15 @@ class SingleStepEvaluator(Evaluator):
         chunk = len(compact_idxs) // n_slices
         action_outputs = []
         score_outputs  = []
+        ff_bin_outputs = []
+        ff_filter_outputs = []
 
         dataset = self.data.dataset
+
+        do_filter = 'filter' in self.data.action_space
+        filter_first = (self.action_decode == 'filter_first' and do_filter
+                        and self.visible_bin_masks is not None)
+        need_scores = self.field_choice_method == 'interp' or filter_first
 
         for i in range(n_slices):
             sl = slice(i * chunk, None if i == n_slices - 1 else (i + 1) * chunk)
@@ -430,16 +454,29 @@ class SingleStepEvaluator(Evaluator):
             bins  = dataset.bin_states[idxs].to(self.device) if dataset.include_bin_features else None
             masks = dataset.action_masks[idxs].to(self.device)
             with torch.no_grad():
-                action_outputs.append(self.policy.select_action(glob, bins, masks))
+                scores = self.policy.core_net(glob, bins) if need_scores else None
+                if filter_first:
+                    visible = torch.as_tensor(
+                        self.visible_bin_masks[sl], device=self.device, dtype=torch.bool
+                    )
+                    b_idx, f_idx = filter_first_decode(scores, masks, visible, _NUM_FILTERS)
+                    ff_bin_outputs.append(b_idx.cpu())
+                    ff_filter_outputs.append(f_idx.cpu())
+                else:
+                    action_outputs.append(self.policy.select_action(glob, bins, masks))
                 if self.field_choice_method == 'interp':
-                    score_outputs.append(self.policy.core_net(glob, bins).cpu())
+                    score_outputs.append(scores.cpu())
 
-        bin_idxs = torch.cat(action_outputs).cpu().detach().numpy()
-        if 'filter' in self.data.action_space:
-            filter_idxs = bin_idxs % _NUM_FILTERS
-            bin_idxs    = bin_idxs // _NUM_FILTERS
+        if filter_first:
+            bin_idxs    = torch.cat(ff_bin_outputs).numpy()
+            filter_idxs = torch.cat(ff_filter_outputs).numpy()
         else:
-            filter_idxs = None
+            bin_idxs = torch.cat(action_outputs).cpu().detach().numpy()
+            if do_filter:
+                filter_idxs = bin_idxs % _NUM_FILTERS
+                bin_idxs    = bin_idxs // _NUM_FILTERS
+            else:
+                filter_idxs = None
 
         # Log active-bin coverage diagnostic (fraction of bins with no sentinel features)
         active_bin_mask = getattr(dataset, 'active_bin_mask', None)

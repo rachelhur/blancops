@@ -38,13 +38,15 @@ def main():
     cfg = load_and_validate(cfg_path)
     device = get_system_device()
 
-    # Resolve the model dir from where the config was loaded (machine-portable)
+    # Resolve the model dir from where the config was loaded (machine-portable).
     suffix = '_filter_first' if args.action_decoding == 'filter_first' else ''
+    eval_subdir = f'holdout_eval{suffix}'
     if cfg.orig_cfg_path:
         cfg_dir = Path(cfg.orig_cfg_path).parent
-        outdir = cfg_dir.parent if cfg_dir.name == "configs" else cfg_dir
+        base = cfg_dir.parent if cfg_dir.name == "configs" else cfg_dir
     else:
-        outdir = Path(cfg.outdir) / f'holdout_eval{suffix}'
+        base = Path(cfg.outdir)
+    outdir = base / eval_subdir
 
     # ------------------------------
     # Initialize logger
@@ -65,6 +67,7 @@ def main():
     s_eval, m_eval = build_evaluators(
         cfg,
         device=device,
+        eval_outdir=eval_subdir,
         save_movie=args.save_movies,
         save_mollweide=args.save_mollweides,
         action_decoding=args.action_decoding
