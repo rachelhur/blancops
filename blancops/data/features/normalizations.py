@@ -108,8 +108,66 @@ def apply_cyclical_features(features, base_names, cyclical_names):
         if any(name == cyc or name.endswith(f"_{cyc}") for cyc in cyclical_names):
             features[f"{name}_cos"] = np.cos(features[name])
             features[f"{name}_sin"] = np.sin(features[name])
-            
-            
+
+
+def _mask_cols(mask):
+    """Integer column indices of a boolean feature mask."""
+    if torch.is_tensor(mask):
+        mask = mask.cpu().numpy()
+    return np.where(np.asarray(mask))[0]
+
+
+def _column_stats(state, train_state_idxs, mask, is_torch):
+    """NaN-aware mean and population std per masked column, over train rows.
+
+    Runs one column at a time so the masked copy of the whole state array is
+    never materialized; at nside 32 that copy is tens of GB.
+
+    Args:
+        state: (..., n_features) array or tensor.
+        train_state_idxs: Row indices contributing to the statistics.
+        mask: Boolean mask over the feature axis.
+        is_torch: Whether state is a torch tensor.
+
+    Returns:
+        Tuple of per-column mean and std, ordered as the masked columns.
+    """
+    idxs = torch.as_tensor(train_state_idxs) if is_torch else train_state_idxs
+    means, stds = [], []
+    for c in _mask_cols(mask):
+        col = state[..., c][idxs]
+        if is_torch:
+            mn = torch.nanmean(col)
+            sd = torch.clamp(torch.sqrt(torch.nanmean((col - mn) ** 2)), min=1e-6)
+        else:
+            mn = np.nanmean(col)
+            sd = np.clip(np.nanstd(col), a_min=1e-6, a_max=None)
+        means.append(mn)
+        stds.append(sd)
+    if is_torch:
+        return torch.stack(means), torch.stack(stds)
+    return np.array(means, dtype=np.float32), np.array(stds, dtype=np.float32)
+
+
+def _scale_columns_inplace(state, mask, mean, std):
+    """Apply ``(x - mean) / std`` to masked columns in place, one column at a time.
+
+    ``state[..., c]`` is a view for both backends, so the arithmetic writes
+    straight into ``state`` without allocating a copy of the masked block.
+
+    Args:
+        state: Array or tensor, modified in place.
+        mask: Boolean mask over the feature axis.
+        mean: Per-column means, or None to divide only.
+        std: Per-column standard deviations.
+    """
+    for i, c in enumerate(_mask_cols(mask)):
+        col = state[..., c]
+        if mean is not None:
+            col -= mean[i]
+        col /= std[i]
+
+
 class StateNormalizer:
     def __init__(
         self,
@@ -204,24 +262,14 @@ class StateNormalizer:
 
         # 1. Z-Score (Global Mean/Std)
         if self.do_z and m['z'].sum() > 0:
-            train_data = state[train_state_idxs][..., m['z']]
-            train_flat = train_data.reshape(-1, train_data.shape[-1])
-
-            mean = backend.nanmean(train_flat, dim=0) if is_torch else np.nanmean(train_flat, axis=0)
-            std = self._calc_std(train_flat, mean, backend, is_torch)
-
-            state[..., m['z']] = (state[..., m['z']] - mean) / std
+            mean, std = _column_stats(state, train_state_idxs, m['z'], is_torch)
+            _scale_columns_inplace(state, m['z'], mean, std)
             z_stats_out = self._build_stats_dict(self.active_features['z'], mean, std)
 
         # 2. Relative Local Mean Z-Score (Global Std only)
         if self.do_rel and m['rel'].sum() > 0:
-            train_data = state[train_state_idxs][..., m['rel']]
-            train_flat = train_data.reshape(-1, train_data.shape[-1])
-
-            mean = backend.nanmean(train_flat, dim=0) if is_torch else np.nanmean(train_flat, axis=0)
-            std = self._calc_std(train_flat, mean, backend, is_torch)
-
-            state[..., m['rel']] = state[..., m['rel']] / std
+            mean, std = _column_stats(state, train_state_idxs, m['rel'], is_torch)
+            _scale_columns_inplace(state, m['rel'], None, std)
             rel_stats_out = self._build_stats_dict(self.active_features['rel'], mean, std)
 
         # 3. Local Z-Score (per-sample std across bins — no global stats stored)
@@ -229,9 +277,9 @@ class StateNormalizer:
             self._apply_local_z_score(state, m['local_z'], is_torch)
 
         if self.fix_nans:
+            assert not np.isnan(self.sentinel_value), "sentinel_value must not be NaN"
             nan_mask = backend.isnan(state)
             state[nan_mask] = self.sentinel_value
-            assert state.isnan().sum() == 0, f"State contains nans"
 
         return state, z_stats_out, rel_stats_out, nan_mask
 
@@ -243,12 +291,12 @@ class StateNormalizer:
         # 1. Apply Z-Score
         if self.do_z and m['z'].sum() > 0:
             mean, std = self._extract_stats_arrays(z_stats_dict, self.active_features['z'], backend, state)
-            state[..., m['z']] = (state[..., m['z']] - mean) / std
+            _scale_columns_inplace(state, m['z'], mean, std)
 
         # 2. Apply Relative Norm
         if self.do_rel and m['rel'].sum() > 0:
             _, std = self._extract_stats_arrays(rel_stats_dict, self.active_features['rel'], backend, state)
-            state[..., m['rel']] = state[..., m['rel']] / std
+            _scale_columns_inplace(state, m['rel'], None, std)
 
         # 3. Local Z-Score (per-sample std across bins — no stored stats needed)
         if self.do_local_z and m['local_z'].sum() > 0:
@@ -256,8 +304,8 @@ class StateNormalizer:
 
         nan_mask = backend.isnan(state) if self.fix_nans else None
         if self.fix_nans:
+            assert not np.isnan(self.sentinel_value), "sentinel_value must not be NaN"
             state[nan_mask] = self.sentinel_value
-            assert backend.isnan(state).sum() == 0, "State contains nans"
         return state, nan_mask
 
     def _apply_stateless_norms(self, state, backend, m):
