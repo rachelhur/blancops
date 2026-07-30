@@ -24,26 +24,29 @@ logger = logging.getLogger(__name__)
 
 
 def _load_val_df(cache_path: Path) -> pd.DataFrame:
-    """Load the val-night DataFrame from a ``val_dataset_cache.pt``.
+    """Load the split-night DataFrame from a ``<split>_dataset_cache.pt``.
 
-    Duck-types both storage forms: a plain dict (``data['val_df']``) and a
-    ``ValDatasetCache`` instance (``data.val_df``).
+    Accepts both storage forms (plain dict and ``DatasetCache`` instance) and
+    both key generations: ``split_df`` as written now, and ``val_df`` as
+    written before the split rename.
 
     Args:
-        cache_path: Path to the torch-saved validation dataset cache.
+        cache_path: Path to the torch-saved split dataset cache.
 
     Returns:
-        The validation-night DataFrame (all enriched columns, val nights only).
+        The split-night DataFrame (all enriched columns, split nights only).
     """
     data = torch.load(cache_path, weights_only=False)
     if isinstance(data, dict):
-        val_df = data["val_df"]
+        val_df = data.get("split_df", data.get("val_df"))
     else:
-        val_df = getattr(data, "val_df", None)
+        val_df = getattr(data, "split_df", None)
+        if val_df is None:
+            val_df = getattr(data, "val_df", None)
     if val_df is None:
         raise KeyError(
-            f"Could not find 'val_df' in {cache_path}. Got a "
-            f"{type(data).__name__} without a 'val_df' entry/attribute."
+            f"Could not find 'split_df' or 'val_df' in {cache_path}. Got a "
+            f"{type(data).__name__} without either entry/attribute."
         )
     return val_df
 

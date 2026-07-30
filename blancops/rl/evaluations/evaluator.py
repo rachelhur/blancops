@@ -37,7 +37,8 @@ from blancops.ephemerides import ephemerides as _ephemerides
 from blancops.math.interpolate import interpolate_on_sphere
 from blancops.configs.rl_schema import ActionConstraints, load_and_validate
 from blancops.data.dataset import TransitionDataset
-from blancops.data.feature_cache import RawFeatureCache, ValDatasetCache
+from blancops.data.feature_cache import RawFeatureCache, DatasetCache, dataset_cache_path
+from blancops.data.splits import NightSplit
 from blancops.data.features.normalizations import build_normalizer
 from blancops.data.lookup_tables import LookupTables, TrainLookupTables
 from blancops.environment.historic_env import HistoricBlancoEnv
@@ -62,14 +63,33 @@ from .plotters import FILTER_COLORS, EvaluationPlotter, PlotStyle
 def build_evaluators(
     cfg_or_cfg_path,
     device,
-    eval_outdir: str = 'holdout_eval',
+    eval_outdir: str = None,
     style: PlotStyle = None,
     save_movie=False,
     save_mollweide=False,
     data_dir=None,
-    action_decoding='joint'
+    action_decoding='joint',
+    split: str = 'val',
 ) -> Tuple['SingleStepEvaluator', 'MultiStepEvaluator']:
-    """Build SS and MS evaluators for the validation set from a config."""
+    """Build SS and MS evaluators for one split from a config.
+
+    Args:
+        cfg_or_cfg_path: An ExperimentConfig or a path to one.
+        device: Torch device.
+        eval_outdir: Output subdirectory name. Defaults to 'holdout_eval' for
+            the val split and 'test_eval' for the test split.
+        style: Plot style.
+        save_movie: Whether the multi-step runner saves movies.
+        save_mollweide: Whether the multi-step runner saves Mollweide frames.
+        data_dir: Override for the feature cache root.
+        action_decoding: 'joint' or 'filter_first'.
+        split: Which split to evaluate, 'val' or 'test'.
+
+    Returns:
+        The single-step and multi-step evaluators.
+    """
+    if eval_outdir is None:
+        eval_outdir = 'holdout_eval' if split == 'val' else f'{split}_eval'
     cfg = (
         load_and_validate(cfg_or_cfg_path)
         if isinstance(cfg_or_cfg_path, str)
@@ -93,28 +113,38 @@ def build_evaluators(
 
     # Load val dataset from cache or reconstruct from feature cache
     lookups = TrainLookupTables.load_from_dir(DES_DATA_DIR / "lookups")
-    val_cache_path = outdir / "checkpoints" / "val_dataset_cache.pt"
+    val_cache_path = dataset_cache_path(outdir, split)
     _data_dir = Path(data_dir) if data_dir is not None else DES_DATA_DIR
     is_azel = 'azel' in cfg.data.action_space
     coord = 'azel' if is_azel else 'radec'
     feature_cache_dir = _data_dir / f"feature_cache_nside{cfg.data.nside}_{coord}"
 
-    if ValDatasetCache.exists(val_cache_path):
-        val_dataset = ValDatasetCache.load(val_cache_path)
+    if DatasetCache.exists(val_cache_path):
+        val_dataset = DatasetCache.load(val_cache_path)
     else:
         if not RawFeatureCache.exists(feature_cache_dir):
             raise FileNotFoundError(
-                f"Neither val dataset cache ({val_cache_path}) nor feature cache "
+                f"Neither {split} dataset cache ({val_cache_path}) nor feature cache "
                 f"({feature_cache_dir}) found."
             )
+        split_json = outdir / "configs" / "split.json"
+        if NightSplit.exists(split_json):
+            split_nights = NightSplit.load(split_json).nights_for(split)
+        else:
+            split_nights = cfg.data.val_nights if split == 'val' else cfg.data.test_nights
+        if not split_nights:
+            raise ValueError(
+                f"No {split} nights found in {split_json} or in the config; "
+                f"cannot reconstruct the {split} dataset."
+            )
         full_cache = RawFeatureCache.load(feature_cache_dir)
-        val_nights = cfg.data.val_nights
-        val_raw_cache = full_cache.filter_nights(val_nights)
+        val_raw_cache = full_cache.filter_nights(split_nights)
         val_dataset = TransitionDataset(
             mode='test', cache=val_raw_cache, cfg=cfg, lookups=lookups,
             z_score_stats=zscore_stats, rel_norm_stats=rel_norm_stats,
+            split_role=split,
         )
-        ValDatasetCache.from_transition_dataset(val_dataset).save(val_cache_path)
+        DatasetCache.from_transition_dataset(val_dataset, split=split).save(val_cache_path)
 
     # Build with the dataset's expanded names so filter-dependent features
     # (sky_brightness_g, urgency_r, ...) appear in active_features and can be inverted.

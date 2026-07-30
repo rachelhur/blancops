@@ -6,10 +6,10 @@ Two dataclasses are defined here:
   observation in the training dataset, independent of experiment config.
   Computed once by ``precompute-features`` and shared across training runs.
 
-- ``ValDatasetCache``: stores normalized tensors for the validation-night
-  subset only, built after a training run has fixed the val/train split and
-  normalization stats. Loaded by the evaluation pipeline to avoid
-  re-processing on repeated runs.
+- ``DatasetCache``: stores normalized tensors for one split's nights (val or
+  test), built after a training run has fixed the split and normalization
+  stats. Loaded by the evaluation pipeline to avoid re-processing on repeated
+  runs. ``ValDatasetCache`` remains as a backwards-compatible alias.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -83,6 +83,25 @@ def _compute_slew_distances(df, current_state_idxs, next_state_idxs, hpGrid):
     curr_coords = np.array((hpGrid.lon[curr_bids], hpGrid.lat[curr_bids]))
     next_coords = np.array((hpGrid.lon[next_bids], hpGrid.lat[next_bids]))
     return geometry.angular_separation(curr_coords, next_coords).astype(np.float32)
+
+
+def _nights_in_date_range(night_dts, start_date, end_date) -> List[str]:
+    """Filter night datetimes to an inclusive date range.
+
+    Args:
+        night_dts: DatetimeIndex of unique nights.
+        start_date: Inclusive lower bound (``'YYYY-MM-DD'``), or None.
+        end_date: Inclusive upper bound (``'YYYY-MM-DD'``), or None.
+
+    Returns:
+        The retained nights as ``'YYYY-MM-DD'`` strings.
+    """
+    mask = np.ones(len(night_dts), dtype=bool)
+    if start_date is not None:
+        mask &= night_dts >= pd.to_datetime(start_date)
+    if end_date is not None:
+        mask &= night_dts <= pd.to_datetime(end_date)
+    return night_dts[mask].strftime('%Y-%m-%d').tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -336,20 +355,45 @@ class RawFeatureCache:
         )
 
         if start_date is not None or end_date is not None:
-            night_dts = pd.to_datetime(cache.global_df['night'].unique())
-            mask = np.ones(len(night_dts), dtype=bool)
-            if start_date is not None:
-                mask &= night_dts >= pd.to_datetime(start_date)
-            if end_date is not None:
-                mask &= night_dts <= pd.to_datetime(end_date)
-            filtered_nights = night_dts[mask].strftime('%Y-%m-%d').tolist()
-            logger.info(
-                f"Filtering cache to {len(filtered_nights)} nights "
-                f"({start_date} to {end_date})"
-            )
-            cache = cache.filter_nights(filtered_nights, label='date range')
+            all_nights = pd.to_datetime(cache.global_df['night'].unique())
+            filtered_nights = _nights_in_date_range(all_nights, start_date, end_date)
+            # Filtering copies bin_features out of the memmap, so skip it when
+            # the range already covers every cached night.
+            if len(filtered_nights) < len(all_nights):
+                logger.info(
+                    f"Filtering cache to {len(filtered_nights)} nights "
+                    f"({start_date} to {end_date})"
+                )
+                cache = cache.filter_nights(filtered_nights, label='date range')
+            else:
+                logger.info(
+                    f"Date range ({start_date} to {end_date}) covers all "
+                    f"{len(all_nights)} cached nights; skipping filter."
+                )
 
         return cache
+
+    @classmethod
+    def nights_in_range(cls, cache_dir: Path,
+                        start_date: str | None = None,
+                        end_date: str | None = None) -> List[str]:
+        """Night strings held by a cache, reading only the night column.
+
+        Skips bin_features and transitions entirely so callers that just need
+        the night list do not materialize the feature arrays.
+
+        Args:
+            cache_dir: Directory written by ``save()``.
+            start_date: Inclusive lower bound on night (``'YYYY-MM-DD'``).
+            end_date: Inclusive upper bound on night (``'YYYY-MM-DD'``).
+
+        Returns:
+            The night strings within the date range, in ascending order.
+        """
+        nights = pd.read_parquet(
+            Path(cache_dir) / 'global_df.parquet', columns=['night']
+        )['night']
+        return _nights_in_date_range(pd.to_datetime(nights.unique()), start_date, end_date)
 
     @classmethod
     def exists(cls, cache_dir: Path) -> bool:
@@ -361,15 +405,15 @@ class RawFeatureCache:
 
 
 # ---------------------------------------------------------------------------
-# ValDatasetCache
+# DatasetCache
 # ---------------------------------------------------------------------------
 
 @dataclass
-class ValDatasetCache:
-    """Post-normalization tensors for the validation-night subset.
+class DatasetCache:
+    """Post-normalization tensors for one split's nights.
 
-    Built after a training run fixes val nights and normalization stats.
-    Saved as ``outdir/checkpoints/val_dataset_cache.pt`` (``torch.save``).
+    Built after a training run fixes the night split and normalization stats.
+    Saved as ``outdir/checkpoints/<split>_dataset_cache.pt`` (``torch.save``).
 
     Exposes the same attributes queried by the evaluator infrastructure
     (``DataContainer``, ``SingleStepEvaluator``) so it can be used as a
@@ -398,28 +442,37 @@ class ValDatasetCache:
     next_state_idxs: np.ndarray
     state_idxs: np.ndarray
 
-    # Val-night DataFrame (all enriched columns, val nights only, local index)
-    val_df: pd.DataFrame
+    # Split-night DataFrame (all enriched columns, split nights only, local index)
+    split_df: pd.DataFrame
 
     # Metadata
     global_feature_names: List[str]
     bin_feature_names: List[str]
     dataset_dims: dict
-    val_nights: List[str]
+    split_nights: List[str]
     nside: int
     is_azel: bool
+    split: str = 'val'
 
     # ------------------------------------------------------------------
-    # Duck-typed properties for evaluator compatibility
+    # Properties for evaluator compatibility
     # ------------------------------------------------------------------
 
     @property
     def _df(self) -> pd.DataFrame:
-        return self.val_df
+        return self.split_df
+
+    @property
+    def val_df(self) -> pd.DataFrame:
+        return self.split_df
+
+    @property
+    def val_nights(self) -> List[str]:
+        return self.split_nights
 
     @property
     def unique_nights(self):
-        return self.val_df['night'].unique()
+        return self.split_df['night'].unique()
 
     @property
     def _prenorm_bin_states(self) -> Optional[torch.Tensor]:
@@ -445,11 +498,19 @@ class ValDatasetCache:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_transition_dataset(cls, dataset) -> 'ValDatasetCache':
-        """Build from a ``TransitionDataset`` that was constructed on a
-        val-nights-only ``RawFeatureCache``.  All transitions in the source
-        dataset are treated as val transitions.
+    def from_transition_dataset(cls, dataset, split: str = 'val') -> 'DatasetCache':
+        """Build from a ``TransitionDataset`` constructed on a single split's
+        ``RawFeatureCache``. All transitions in the source dataset belong to
+        that split.
+
+        Args:
+            dataset: The source TransitionDataset.
+            split: Split name, 'val' or 'test'.
+
+        Returns:
+            The populated DatasetCache.
         """
+        split_nights = dataset.night_split.nights_for(split)
         return cls(
             states=dataset.states,
             bin_states=dataset.bin_states,
@@ -464,13 +525,49 @@ class ValDatasetCache:
             current_state_idxs=dataset.current_state_idxs,
             next_state_idxs=dataset.next_state_idxs,
             state_idxs=dataset.state_idxs,
-            val_df=dataset._df,
+            split_df=dataset._df,
             global_feature_names=dataset.global_feature_names,
             bin_feature_names=dataset.bin_feature_names,
             dataset_dims=dataset.dataset_dims,
-            val_nights=list(dataset.val_nights) if dataset.val_nights else [],
+            split_nights=list(split_nights),
             nside=dataset.hpGrid.nside,
             is_azel=dataset.hpGrid.is_azel,
+            split=split,
+        )
+
+    # ------------------------------------------------------------------
+    # Transition alignment
+    # ------------------------------------------------------------------
+
+    def to_transition_tensors(
+        self,
+        idxs: Optional[np.ndarray] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
+        """Expand the compact per-state tensors into per-transition rows. Used only
+        in run_explain.py for now.
+
+        Args:
+            idxs: transition indices to expand; None expands all. Subsetting
+                here, before the gather, keeps peak memory proportional to the
+                sample instead of the full transition set.
+
+        Returns:
+            global_obs     [n_transitions, n_global]
+            bin_obs        [n_transitions, n_bins, n_bin_feats]
+            expert_actions [n_transitions]
+            valid_mask     [n_transitions, n_bins * n_filters] bool
+        """
+        curr = torch.as_tensor(self.curr_compact_idxs, dtype=torch.long)
+        actions = self.actions.long()
+        if idxs is not None:
+            idxs = torch.as_tensor(idxs, dtype=torch.long)
+            curr = curr[idxs]
+            actions = actions[idxs]
+        return (
+            self.states[curr],               # [n_transitions, n_global]
+            self.bin_states[curr] if self.bin_states is not None else None,           # [n_transitions, n_bins, n_bin_feats]
+            actions,                         # [n_transitions]
+            self.action_masks[curr].bool(),  # [n_transitions, n_actions]
         )
 
     # ------------------------------------------------------------------
@@ -479,20 +576,36 @@ class ValDatasetCache:
 
     def save(self, path: Path) -> None:
         path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         # torch.save pickles non-tensor fields (DataFrame, lists, dicts)
         torch.save(dataclasses.asdict(self), path)
-        logger.info(f"ValDatasetCache saved to {path}")
+        logger.info(f"DatasetCache ({self.split}) saved to {path}")
 
     @classmethod
-    def load(cls, path: Path) -> 'ValDatasetCache':
+    def load(cls, path: Path) -> 'DatasetCache':
         d = torch.load(path, weights_only=False)
         # Restore numpy arrays from any tensors that torch.save may have converted
         for key in ('curr_compact_idxs', 'next_compact_idxs',
                     'current_state_idxs', 'next_state_idxs', 'state_idxs'):
             if isinstance(d[key], torch.Tensor):
                 d[key] = d[key].numpy()
+        # Migrate caches written before the split rename
+        if 'val_df' in d:
+            d['split_df'] = d.pop('val_df')
+        if 'val_nights' in d:
+            d['split_nights'] = d.pop('val_nights')
+        d.setdefault('split', 'val')
         return cls(**d)
 
     @classmethod
     def exists(cls, path: Path) -> bool:
         return Path(path).exists()
+
+
+# Backwards-compatible alias for code and pickles predating the split rename
+ValDatasetCache = DatasetCache
+
+
+def dataset_cache_path(outdir, split: str = 'val') -> Path:
+    """Location of a split's DatasetCache: <outdir>/checkpoints/<split>_dataset_cache.pt"""
+    return Path(outdir) / "checkpoints" / f"{split}_dataset_cache.pt"

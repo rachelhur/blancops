@@ -19,7 +19,7 @@ Two helpers split the computation by data dependency:
 
 A third helper, ``apply_cyclical_global_features``, expands cyclical
 features to ``_cos``/``_sin`` pairs. It works on either a dict (live) or a
-pandas DataFrame (offline) via duck-typed `in` / ``[k]`` / ``[k] = v``.
+pandas DataFrame (offline) via `in` / ``[k]`` / ``[k] = v``.
 """
 from datetime import time, timezone, timedelta
 import datetime

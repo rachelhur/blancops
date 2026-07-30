@@ -10,6 +10,7 @@ from blancops.configs.constants import _DEFAULT_NORM_MAPPING, _FILTER_DEP_FEATUR
 from blancops.configs.constants import FILTER2IDX
 from blancops.configs.constants import _ALLOWED_NORMS_PER_FEATURE, _NORM_TYPES
 from blancops.survey.profiles import DES
+from blancops.data.splits import NightSplit
 
 class ActionConstraints(BaseModel):
     sun_el_limit: float = DES.sun_el_limit
@@ -156,10 +157,13 @@ class TrainDataConfig(BaseDataConfig):
     days: List[int] = [i+1 for i in range(31)]
     filters: List[str] = [filt for filt in FILTER2IDX.keys()]
 
-    # Configurations required for validation
-    train_nights: Optional[List[str]] = None
+    # Split specification: each of val and test is either an explicit night
+    # list or a fraction of the total night count. Explicit lists win.
     val_nights: Optional[List[str]] = None
-    train_val_split: float  = 0.9
+    val_frac: Optional[float] = None
+    test_nights: Optional[List[str]] = None
+    test_frac: Optional[float] = None
+    train_val_split: float = 0.9  # deprecated; feeds val_frac when val_frac is None
 
     @field_validator('train_val_split')
     @classmethod
@@ -167,6 +171,34 @@ class TrainDataConfig(BaseDataConfig):
         if not 0 < v < 1:
             raise ValueError('train_val_split must be between 0 and 1 exclusive')
         return v
+
+    @field_validator('val_frac', 'test_frac')
+    @classmethod
+    def validate_split_frac(cls, v):
+        if v is not None and not 0 < v < 1:
+            raise ValueError('split fractions must be between 0 and 1 exclusive')
+        return v
+
+    @model_validator(mode='after')
+    def validate_split_fracs_sum(self) -> 'TrainDataConfig':
+        total = (self.val_frac or 0.0) + (self.test_frac or 0.0)
+        if total >= 1:
+            raise ValueError(f'val_frac + test_frac must be < 1, got {total}')
+        return self
+
+    @property
+    def effective_val_frac(self) -> Optional[float]:
+        """Validation fraction actually used, falling back to the deprecated
+        ``train_val_split`` when neither ``val_nights`` nor ``val_frac`` is set.
+
+        Returns:
+            The fraction, or None when explicit val nights are supplied.
+        """
+        if self.val_nights:
+            return None
+        if self.val_frac is not None:
+            return self.val_frac
+        return 1.0 - self.train_val_split
 
     @field_validator('years', 'months', 'days', 'filters')
     @classmethod
@@ -496,7 +528,7 @@ def load_and_validate(yaml_path: str | Path) -> ExperimentConfig:
     cfg.orig_cfg_path = str(Path(yaml_path).resolve())
     return cfg
 
-def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_names: dict, lr_scheduler_kwargs: dict, val_nights: List[str], outdir: str | Path) -> ExperimentConfig:
+def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_names: dict, lr_scheduler_kwargs: dict, night_split: NightSplit, outdir: str | Path) -> ExperimentConfig:
     """Resolves config by filling in fields calculated after data processing. Saves the resolved config to the output directory."""
     # UPDATE CONFIG.DATA
     data_updates = {
@@ -507,7 +539,8 @@ def resolve_and_save(cfg: ExperimentConfig, dataset_dims: dict, dataset_feature_
         "num_actions": int(dataset_dims['num_actions']),
         # "global_features": dataset_feature_names['global_features'],
         # "bin_features": dataset_feature_names['bin_features'],
-        "val_nights": val_nights
+        "val_nights": list(night_split.val),
+        "test_nights": list(night_split.test),
     }
     updated_data = cfg.data.model_copy(update=data_updates)
     # UPDATE CONFIG.TRAIN

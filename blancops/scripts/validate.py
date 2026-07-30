@@ -26,6 +26,8 @@ def main():
     parser.add_argument('--action_decoding', type=str, default='joint', choices=['joint', 'filter_first'], help='Action decoding strategy to use.')
     parser.add_argument('--save_movies', action='store_true', help='Whether to save movie files.')
     parser.add_argument('--save_mollweides', action='store_true', help='Whether to save movie files.')
+    parser.add_argument('--split', type=str, default='val', choices=['val', 'test'],
+                        help='Which split to evaluate.')
 
     args = parser.parse_args()
 
@@ -40,7 +42,8 @@ def main():
 
     # Resolve the model dir from where the config was loaded (machine-portable).
     suffix = '_filter_first' if args.action_decoding == 'filter_first' else ''
-    eval_subdir = f'holdout_eval{suffix}'
+    base_subdir = 'holdout_eval' if args.split == 'val' else f'{args.split}_eval'
+    eval_subdir = f'{base_subdir}{suffix}'
     if cfg.orig_cfg_path:
         cfg_dir = Path(cfg.orig_cfg_path).parent
         base = cfg_dir.parent if cfg_dir.name == "configs" else cfg_dir
@@ -70,7 +73,8 @@ def main():
         eval_outdir=eval_subdir,
         save_movie=args.save_movies,
         save_mollweide=args.save_mollweides,
-        action_decoding=args.action_decoding
+        action_decoding=args.action_decoding,
+        split=args.split,
     )
 
     logger.info("Running evaluators...")

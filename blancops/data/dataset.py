@@ -18,8 +18,37 @@ from blancops.math import geometry
 from blancops.configs.constants import _CYCLICAL_FEATURE_NAMES, _NUM_FILTERS, FILTER2IDX, ZENITH_FILTER
 
 from blancops.data.features.normalizations import StateNormalizer, build_normalizer_kwargs, setup_feature_names
+from blancops.data.splits import NightSplit, resolve_night_split
 
 logger = logging.getLogger(__name__)
+
+
+# Rows per chunk when gathering bin features; caps the transient read to
+# chunk * n_bins * n_all_feats floats regardless of dataset size.
+_BIN_GATHER_CHUNK = 1024
+
+
+def _gather_bin_features(bin_features, rows, cols):
+    """Read selected rows and feature columns of a bin-feature array in chunks.
+
+    Selecting rows and columns in one pass avoids materializing the
+    all-columns intermediate, which at nside 32 is over 100 GB on its own.
+
+    Args:
+        bin_features: (n_rows, n_bins, n_all_feats) array or memmap.
+        rows: Row indices to gather.
+        cols: Feature-column indices to keep.
+
+    Returns:
+        (len(rows), n_bins, len(cols)) float32 array.
+    """
+    rows = np.asarray(rows)
+    n_bins = bin_features.shape[1]
+    out = np.empty((len(rows), n_bins, len(cols)), dtype=np.float32)
+    for start in range(0, len(rows), _BIN_GATHER_CHUNK):
+        chunk_rows = rows[start:start + _BIN_GATHER_CHUNK]
+        out[start:start + len(chunk_rows)] = bin_features[chunk_rows][:, :, cols]
+    return out
 
 
 def _overwrite_fwhm_with_causal(df, seeing_cfg):
@@ -79,7 +108,7 @@ class TransitionDataset(torch.utils.data.Dataset):
 
     Accepts a pre-computed ``RawFeatureCache`` instead of a raw DataFrame so
     feature engineering is skipped.  Only normalization, reward/action/mask
-    construction, and train/val splitting happen here.
+    construction, and train/val/test splitting happen here.
     """
 
     def __init__(
@@ -90,8 +119,10 @@ class TransitionDataset(torch.utils.data.Dataset):
         lookups=None,
         z_score_stats=None,
         rel_norm_stats=None,
+        split_role=None,
     ):
         norm_kwargs = build_normalizer_kwargs(cfg.data.norm)
+        self._split_role = split_role
         self._setup_configuration(cfg, norm_kwargs)
         self.lookups = lookups
         self.hpGrid = ephemerides.HealpixGrid(
@@ -101,7 +132,7 @@ class TransitionDataset(torch.utils.data.Dataset):
 
         self._load_from_cache(cache)
         self._build_transitions(cfg.data.action_space)
-        self._split_data(cfg.data.train_val_split, cfg.train.seed)
+        self._split_data(cfg)
         self._normalize_states(mode, cfg, norm_kwargs, z_score_stats, rel_norm_stats)
         self._format_tensors_for_network(cfg.model.network)
         self._validate_dataset()
@@ -170,9 +201,9 @@ class TransitionDataset(torch.utils.data.Dataset):
 
         if self.include_bin_features:
             bin_indices = [cache.bin_feature_names.index(f) for f in self.bin_feature_names]
-            _state_bin = cache.bin_features[cache.state_idxs]
-            self._prenorm_bin_states = _state_bin[:, :, bin_indices]
-            del _state_bin
+            self._prenorm_bin_states = _gather_bin_features(
+                cache.bin_features, cache.state_idxs, bin_indices
+            )
         else:
             self._prenorm_bin_states = None
 
@@ -359,38 +390,58 @@ class TransitionDataset(torch.utils.data.Dataset):
         return action_mask
 
     # ------------------------------------------------------------------
-    # Train / val split
+    # Train / val / test split
     # ------------------------------------------------------------------
 
-    def _split_data(self, train_val_split, seed):
-        val_split = 1 - train_val_split
-        self.train_transition_idxs, self.val_transition_idxs = self._determine_split(val_split, seed)
-        train_c = self.curr_compact_idxs[self.train_transition_idxs]
-        train_n = self.next_compact_idxs[self.train_transition_idxs]
-        self.train_state_idxs = np.unique(np.concatenate([train_c, train_n]))
+    def _split_data(self, cfg):
+        """Assign transitions to train, val, and test.
 
-    def _determine_split(self, val_split, random_seed, method='by_night'):
-        np.random.seed(random_seed)
-        if method == 'by_night':
-            num_val_nights = max(1, int(self.n_nights * val_split))
-            val_nights = np.random.choice(self.unique_nights, size=num_val_nights, replace=False)
-            transition_nights = self._df.iloc[self.next_state_idxs - 1]['night']
-            val_mask = np.isin(transition_nights, val_nights)
-            train_indices = np.where(~val_mask)[0]
-            val_indices = np.where(val_mask)[0]
-            self.val_nights = val_nights.astype(str).tolist()
-            self.train_nights = set(self.unique_nights) - set(val_nights)
-        elif method == 'by_transition':
-            num_transitions = len(self.next_state_idxs)
-            shuffled = np.random.permutation(num_transitions)
-            val_size = max(1, int(num_transitions * val_split))
-            val_indices = shuffled[:val_size]
-            train_indices = shuffled[val_size:]
-            self.val_nights = []
-            self.train_nights = set()
+        When ``split_role`` was passed to the constructor the cache already
+        holds a single split's nights, so resolution is skipped and every
+        transition is assigned to that split.
+
+        Args:
+            cfg: The experiment config.
+        """
+        n_transitions = len(self.next_state_idxs)
+        all_idxs = np.arange(n_transitions)
+        empty = np.array([], dtype=int)
+        nights = [str(n) for n in self.unique_nights]
+
+        if self._split_role is not None:
+            if self._split_role not in ('train', 'val', 'test'):
+                raise ValueError(f"Unknown split_role '{self._split_role}'.")
+            self.night_split = NightSplit(
+                train=sorted(nights) if self._split_role == 'train' else [],
+                val=sorted(nights) if self._split_role == 'val' else [],
+                test=sorted(nights) if self._split_role == 'test' else [],
+                seed=int(cfg.train.seed),
+            )
+            self.train_transition_idxs = all_idxs if self._split_role == 'train' else empty
+            self.val_transition_idxs = all_idxs if self._split_role == 'val' else empty
+            self.test_transition_idxs = all_idxs if self._split_role == 'test' else empty
+            train_c = self.curr_compact_idxs
+            train_n = self.next_compact_idxs
         else:
-            raise ValueError(f"Unknown split method: {method}")
-        return train_indices, val_indices
+            self.night_split = resolve_night_split(
+                unique_nights=nights,
+                seed=int(cfg.train.seed),
+                val_nights=cfg.data.val_nights,
+                val_frac=cfg.data.effective_val_frac,
+                test_nights=cfg.data.test_nights,
+                test_frac=cfg.data.test_frac,
+            )
+            transition_nights = self._df.iloc[self.next_state_idxs - 1]['night'].astype(str).to_numpy()
+            self.train_transition_idxs = np.where(np.isin(transition_nights, self.night_split.train))[0]
+            self.val_transition_idxs = np.where(np.isin(transition_nights, self.night_split.val))[0]
+            self.test_transition_idxs = np.where(np.isin(transition_nights, self.night_split.test))[0]
+            train_c = self.curr_compact_idxs[self.train_transition_idxs]
+            train_n = self.next_compact_idxs[self.train_transition_idxs]
+
+        self.train_nights = self.night_split.train
+        self.val_nights = self.night_split.val
+        self.test_nights = self.night_split.test
+        self.train_state_idxs = np.unique(np.concatenate([train_c, train_n]))
 
     # ------------------------------------------------------------------
     # Normalisation
