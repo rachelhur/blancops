@@ -35,7 +35,7 @@ class MLP(nn.Module):
 
 class ContextualScoreMLP(nn.Module):
     """
-    Scores each candidate from [encoded global state, candidate features].
+    Scores each candidate from [encoded global state, candidate bin features].
     """
 
     def __init__(self, global_dim: int, bin_feat_dim: int,
