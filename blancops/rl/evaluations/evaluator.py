@@ -137,7 +137,7 @@ def build_evaluators(
                 f"No {split} nights found in {split_json} or in the config; "
                 f"cannot reconstruct the {split} dataset."
             )
-        full_cache = RawFeatureCache.load(feature_cache_dir)
+        full_cache = RawFeatureCache.load(feature_cache_dir, mmap_bin=True)
         val_raw_cache = full_cache.filter_nights(split_nights)
         val_dataset = TransitionDataset(
             mode='test', cache=val_raw_cache, cfg=cfg, lookups=lookups,
@@ -256,19 +256,19 @@ class Evaluator(ABC):
         for i, name in enumerate(self.data.dataset.bin_feature_names):
             print(f'Feature: {name:30} | Gradient: {bin_grads[i].item() / peak:.6f}')
 
-    def plot_layer1_weights(self, ax=None):
-        if ax is None:
-            _, ax = plt.subplots(figsize=(20, 5))
-        names = self.data.dataset.global_feature_names + self.data.dataset.bin_feature_names
-        weights = self.policy.core_net.net[0].weight.data.cpu().detach().numpy()
-        means = weights.mean(axis=0)
-        stds  = weights.std(axis=0)
-        xs = np.arange(len(names))
-        ax.errorbar(xs, means[:len(names)], yerr=stds[:len(names)], color='black', fmt='none')
-        ax.scatter(xs, means[:len(names)], color='C0')
-        ax.set_xticks(xs)
-        ax.set_xticklabels(names, rotation=45)
-        return ax
+    # def plot_layer1_weights(self, ax=None):
+    #     if ax is None:
+    #         _, ax = plt.subplots(figsize=(20, 5))
+    #     names = self.data.dataset.global_feature_names + self.data.dataset.bin_feature_names
+    #     weights = self.policy.core_net.net[0].weight.data.cpu().detach().numpy()
+    #     means = weights.mean(axis=0)
+    #     stds  = weights.std(axis=0)
+    #     xs = np.arange(len(names))
+    #     ax.errorbar(xs, means[:len(names)], yerr=stds[:len(names)], color='black', fmt='none')
+    #     ax.scatter(xs, means[:len(names)], color='C0')
+    #     ax.set_xticks(xs)
+    #     ax.set_xticklabels(names, rotation=45)
+    #     return ax
 
 
     # ---- Common plot pass-throughs ----------------------------------
@@ -292,12 +292,13 @@ class Evaluator(ABC):
         )
 
 
-    def plot_2dhist(self, feature_x: str, feature_y: str, bins=25):
+    def plot_2dhist(self, feature_x: str, feature_y: str, bins=25, normalization='density'):
         return self.plotter.plot_2dhist(
             feature_x, feature_y,
             self.data.expert_df[feature_x].values, self.data.expert_df[feature_y].values,
             self.data.agent_df[feature_x].values,  self.data.agent_df[feature_y].values,
             bins=bins,
+            normalization=normalization,
         )
 
     def plot_2dhist_res(self, feature_x, feature_y, bins=25, label_fontsize=20, normalization='counts'):
@@ -310,20 +311,36 @@ class Evaluator(ABC):
             normalization=normalization,
         )
 
-    def plot_2dhist_per_filter(self, feature_x, feature_y, bins=25, density=True):
+    def plot_2dhist_per_filter(self, feature_x, feature_y, bins=25, normalization='density'):
+        """Plot one expert/agent 2D histogram figure per filter.
+
+        Args:
+            feature_x: Column plotted on the x axis.
+            feature_y: Column plotted on the y axis.
+            bins: Number of bins per axis.
+            normalization: One of 'counts', 'density' or 'probability', applied
+                within each filter so panels are comparable across filters.
+
+        Returns:
+            Dict mapping filter name to the figure drawn for that filter.
+        """
+        figs = {}
         for filt in FILTER2IDX.keys():
             exp_f_mask = self.data.expert_df['filter'].values == filt
             agent_f_mask = self.data.agent_df['filter'].values == filt
-            self.plotter.plot_2dhist(
+            fig, _ = self.plotter.plot_2dhist(
                 feature_x=feature_x,
                 feature_y=feature_y,
                 expert_x=self.data.expert_df[feature_x][exp_f_mask],
                 expert_y=self.data.expert_df[feature_y][exp_f_mask],
                 agent_x=self.data.agent_df[feature_x][agent_f_mask],
                 agent_y=self.data.agent_df[feature_y][agent_f_mask],
-                density=density
+                bins=bins,
+                normalization=normalization
             )
-            plt.suptitle(f'{filt}-band', fontsize=16)
+            fig.suptitle(f'{filt}-band', fontsize=16)
+            figs[filt] = fig
+        return figs
 
     # ---- Plotter independent plots ----------------------------------
 

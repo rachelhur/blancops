@@ -71,18 +71,43 @@ class EvaluationPlotter:
     # ------------------------------------------------------------------
 
     def plot_2dhist(self, feature_x, feature_y, expert_x, expert_y, agent_x, agent_y,
-                    norm=None, bins=25, label_fontsize=20, return_plt_objects=False, density=True):
+                    norm=None, bins=25, label_fontsize=20, return_plt_objects=False,
+                    normalization='density'):
+        """Plot expert and agent 2D histograms side-by-side.
+
+        Args:
+            feature_x: Column plotted on the x axis.
+            feature_y: Column plotted on the y axis.
+            expert_x: Expert x values.
+            expert_y: Expert y values.
+            agent_x: Agent x values.
+            agent_y: Agent y values.
+            norm: Colour normalization; defaults to a log norm.
+            bins: Number of bins per axis.
+            label_fontsize: Unused; kept for signature parity with the other plots.
+            return_plt_objects: Whether to also return the two histogram arrays.
+            normalization: One of 'counts', 'density' or 'probability'. 'density'
+                divides by the total count and the bin area; 'probability'
+                divides by the total count only, so cells read as the fraction
+                of that panel's observations.
+
+        Returns:
+            The figure and axes, plus the expert and agent histograms when
+            ``return_plt_objects`` is set.
+        """
         if norm is None:
             norm = mcolors.LogNorm()
-        if density==False:
-            cbar_label = 'Counts'
-        else:
-            cbar_label = 'Density'
+        density = normalization == 'density'
+        cbar_label = {
+            'counts': 'Counts',
+            'density': 'Density',
+            'probability': 'Fraction of observations',
+        }[normalization]
         expert_x = _wrap_if_ra(feature_x, expert_x)
         expert_y = _wrap_if_ra(feature_y, expert_y)
         agent_x  = _wrap_if_ra(feature_x, agent_x)
         agent_y  = _wrap_if_ra(feature_y, agent_y)
-        
+
         x_min = min(np.min(expert_x), np.min(agent_x))
         x_max = max(np.max(expert_x), np.max(agent_x))
         y_min = min(np.min(expert_y), np.min(agent_y))
