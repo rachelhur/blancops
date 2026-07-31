@@ -112,21 +112,27 @@ class EvaluationPlotter:
         x_max = max(np.max(expert_x), np.max(agent_x))
         y_min = min(np.min(expert_y), np.min(agent_y))
         y_max = max(np.max(expert_y), np.max(agent_y))
-        
-                
+
+
         x_edges = np.linspace(x_min, x_max, bins + 1)
         y_edges = np.linspace(y_min, y_max, bins + 1)
-        
+
         bins=[x_edges, y_edges]
+
+        use_weights = normalization == 'probability'
+        exp_weights = np.ones_like(expert_x) / len(expert_x) if use_weights else None
+        ag_weights  = np.ones_like(agent_x)  / len(agent_x)  if use_weights else None
 
         fig, axs = plt.subplots(1, 2, figsize=(14, 5), sharex=True, sharey=True)
         exp_counts, _, _, im1 = axs[0].hist2d(expert_x, expert_y, bins=bins,
-                                              cmap=self.style.expert_cmap, norm=norm, density=density)
+                                              cmap=self.style.expert_cmap, norm=norm,
+                                              density=density, weights=exp_weights)
         fig.colorbar(im1, ax=axs[0], location='right', label=cbar_label)
         axs[0].set(xlabel=feature_x, ylabel=feature_y, title='Expert')
 
         ag_counts, _, _, im2 = axs[1].hist2d(agent_x, agent_y, bins=bins,
-                                             cmap=self.style.agent_cmap, norm=norm, density=density)
+                                             cmap=self.style.agent_cmap, norm=norm,
+                                             density=density, weights=ag_weights)
         fig.colorbar(im2, ax=axs[1], location='right', label=cbar_label)
         axs[1].set(xlabel=feature_x, ylabel=feature_y, title='Agent')
 
@@ -135,9 +141,9 @@ class EvaluationPlotter:
         return fig, axs
 
     def plot_2dhist_res(self, feature_x, feature_y, expert_x, expert_y, agent_x, agent_y,
-                        bins=25, label_fontsize=20, return_plt_objects=False, 
+                        bins=25, label_fontsize=20, return_plt_objects=False,
                         normalization='counts', ax=None):
-        
+
         expert_x = _wrap_if_ra(feature_x, expert_x)
         expert_y = _wrap_if_ra(feature_y, expert_y)
         agent_x  = _wrap_if_ra(feature_x, agent_x)
@@ -154,16 +160,16 @@ class EvaluationPlotter:
             exp_hist, _, _ = np.histogram2d(expert_x, expert_y, bins=nbins, range=hrange, density=True)
             agent_hist, _, _ = np.histogram2d(agent_x, agent_y, bins=nbins, range=hrange, density=True)
             cbar_label = 'Residual density\n(agent - expert)'
-            
+
         elif normalization == 'probability':
             exp_hist, _, _ = np.histogram2d(expert_x, expert_y, bins=nbins, range=hrange, density=False)
             agent_hist, _, _ = np.histogram2d(agent_x, agent_y, bins=nbins, range=hrange, density=False)
-            
+
             exp_hist = exp_hist / len(expert_x)
             agent_hist = agent_hist / len(agent_x)
             # Updated label to explicitly state percentage
             cbar_label = 'Residual percentage\n(agent - expert)'
-            
+
         else: # 'counts'
             exp_hist, _, _ = np.histogram2d(expert_x, expert_y, bins=nbins, range=hrange, density=False)
             agent_hist, _, _ = np.histogram2d(agent_x, agent_y, bins=nbins, range=hrange, density=False)
@@ -180,11 +186,11 @@ class EvaluationPlotter:
                        cmap=self.style.res_cmap, aspect='auto', vmin=-lim, vmax=lim)
         unit_x = 'deg' if feature_x in _ANGLE_TOKENS else ''
         unit_y = 'deg' if feature_y in _ANGLE_TOKENS else ''
-        
+
         ax.set_xlabel(feature_x + ' (' + unit_x + ')', fontsize=label_fontsize)
         ax.set_ylabel(feature_y + ' (' + unit_y + ')', fontsize=label_fontsize)
         ax.tick_params(axis='both', labelsize=label_fontsize*(3/4))
-        
+
         cbar_label = 'Residual Relative Density \n(agent - expert)' if normalization == 'probability' else cbar_label
         cbar = fig.colorbar(im, ax=ax, label=cbar_label)
 
@@ -196,11 +202,11 @@ class EvaluationPlotter:
         # Adjust the font sizes for colorbar elements
         cbar.ax.tick_params(labelsize=label_fontsize * (3/4))   # Scale ticks to match plot ticks
         cbar.set_label(cbar_label, fontsize=label_fontsize)      # Match main label font size
-        
-        cbar.ax.tick_params(labelsize=label_fontsize * (3/4))
-        cbar.set_label(cbar_label, fontsize=label_fontsize, labelpad=20) 
 
-        
+        cbar.ax.tick_params(labelsize=label_fontsize * (3/4))
+        cbar.set_label(cbar_label, fontsize=label_fontsize, labelpad=20)
+
+
         if return_plt_objects:
             return fig, ax, exp_hist, agent_hist
         return fig, ax
@@ -308,44 +314,44 @@ class EvaluationPlotter:
 
     def plot_filter_confusion(self, conf_mat, ax=None, label_fontsize=20):
         # Slightly enlarged figure size to accommodate the square aspect ratio and colorbar label
-        FIG_SIZE = (6.0, 5.0) 
-        
+        FIG_SIZE = (6.0, 5.0)
+
         if ax is None:
             fig, ax = plt.subplots(figsize=FIG_SIZE)
-            
-        sns.heatmap(conf_mat, 
-                    annot=True, 
+
+        sns.heatmap(conf_mat,
+                    annot=True,
                     fmt=".2f",           # Limits annotations to 2 decimal places
                     cmap=self.style.agent_cmap,
-                    xticklabels=FILTER2IDX.keys(), 
-                    yticklabels=FILTER2IDX.keys(), 
+                    xticklabels=FILTER2IDX.keys(),
+                    yticklabels=FILTER2IDX.keys(),
                     ax=ax,
                     square=True,         # Forces cells to be perfectly square
                     cbar_kws={'label': 'Fraction of Observations'}, # Adds context to the colorbar
                     annot_kws={"size": label_fontsize*(3/4)}
                     )
-                    
+
         ax.set_xlabel('Agent', fontsize=label_fontsize)
         ax.set_ylabel('Expert', fontsize=label_fontsize)
-        
+
         # Ensures y-tick labels are horizontal and easy to read
         ax.tick_params(axis='x', labelsize=label_fontsize*(3/4))
-        ax.tick_params(axis='y', labelsize=label_fontsize*(3/4), labelrotation=0) 
-        
+        ax.tick_params(axis='y', labelsize=label_fontsize*(3/4), labelrotation=0)
+
         # --- Colorbar Formatting ---
         cbar = ax.collections[0].colorbar
-        
+
         cbar.set_label('Fraction of Observations', size=label_fontsize*(3/4))
-        
+
         # Set the colorbar tick font size
         cbar.ax.tick_params(labelsize=label_fontsize*(3/4))
-        
+
         return ax
 
-    def plot_cdf_pointing_error(self, expert_df, errors_df, tolerance_deg=5.0, 
+    def plot_cdf_pointing_error(self, expert_df, errors_df, tolerance_deg=5.0,
                                 per_filter=False, use_bin=False, label_fontsize=20):
         FIG_SIZE = (5.5, 3.8)
-        
+
         fig, ax = plt.subplots(figsize=FIG_SIZE)
         max_x = 0.0
         error_key = 'angular_separation'
@@ -472,20 +478,20 @@ class EvaluationPlotter:
 
     def plot_violin_per_filter(self, combined_dfs, key_metric, label_fontsize=20):
         FILTER_ORDER = ['g', 'r', 'i', 'z', 'Y']   # left→right: dark→bright time
- 
+
         # Sized for a half-column slot on a 24×36 inch portrait poster.
         # Adjust if your column width differs.
         FIG_SIZE = (6, 3.8)
 
         fig, ax = plt.subplots(figsize=FIG_SIZE)
-        
+
         key_ylabel_mapping = {
             'moon_el': 'Moon elevation (deg)',
             'moon_distance': 'Moon distance (deg)',
             'moon_phase': 'Moon phase (%)',
             'sky_brightness_g': "Sky brightness (g')",
         }
-        
+
         # Split violin: Expert = left half, BC Agent = right half of each violin.
         # Requires seaborn >= 0.12.
         # If you see a DeprecationWarning on 'split', upgrade seaborn or swap to the
@@ -505,7 +511,7 @@ class EvaluationPlotter:
             bw_adjust = 0.8,        # mild smoothing; increase if distributions look spiky
             ax        = ax,
         )
-        
+
         if 'moon' in key_metric:
             ax.axhline(0, color='grey', linewidth=0.8, linestyle='--', zorder=0)
 
@@ -515,7 +521,7 @@ class EvaluationPlotter:
         # ax.set_title('Filter strategy vs lunar conditions', fontsize=11, pad=5)
         # ax.set_ylim(-82, 82)
         ax.tick_params(labelsize=label_fontsize*(3/4))
-        
+
         # Compact legend: plain patches, no seaborn extras
         ax.legend(
             handles=[
@@ -524,48 +530,48 @@ class EvaluationPlotter:
             ],
             fontsize=label_fontsize*(3/4), framealpha=0.9,
         )
-        
+
         sns.despine(ax=ax)
         plt.tight_layout(pad=0.5)
 
     def _plot_metric_distributions(self, combined_df, metrics, label_fontsize=20):
         # Vertical layout for 5 stacked metrics
-        FIG_SIZE = (9, 11.0 * 4/5) 
+        FIG_SIZE = (9, 11.0 * 4/5)
         COLORS = {'Expert': self.style.expert_color, 'BC Agent': self.style.agent_color}
-        
+
         fig, axes = plt.subplots(nrows=len(metrics), ncols=1, figsize=FIG_SIZE)
-        
+
         title_mapping = {
             'airmass': 'Airmass',
             'ha': 'Hour angle (deg)',
             'slew_dist': 'Slew Distance (deg)'
         }
-        
+
         for i, metric in enumerate(metrics):
             ax = axes[i]
-            
+
             # Using smooth KDE density plots to match the visual fidelity of your violins
             sns.kdeplot(
-                data        = combined_df, 
-                x           = metric, 
-                hue         = 'source', 
+                data        = combined_df,
+                x           = metric,
+                hue         = 'source',
                 palette     = COLORS,
                 hue_order   = ['Expert', 'BC Agent'],
-                fill        = True, 
-                alpha       = 0.25, 
-                common_norm = False, 
+                fill        = True,
+                alpha       = 0.25,
+                common_norm = False,
                 cut         = 0,          # Clip KDE at data range (no phantom tails)
                 bw_adjust   = 0.8,        # Match your reference smoothing setting
                 ax          = ax
             )
-            
+
             for source, color in COLORS.items():
                 mean_val = combined_df[combined_df['source'] == source][metric].mean()
                 ax.axvline(
-                    mean_val, 
-                    color=color, 
-                    linestyle='--', 
-                    linewidth=1.0, 
+                    mean_val,
+                    color=color,
+                    linestyle='--',
+                    linewidth=1.0,
                     alpha=0.8
                 )
 
@@ -574,22 +580,22 @@ class EvaluationPlotter:
             ax.set_xlabel('')  # Keeping x-axis clear as the metric title explains the values
             ax.tick_params(labelsize=label_fontsize*(3/4))
             ax.grid(True, alpha=0.2, linestyle=':')
-            
+
             # Clean up default seaborn legend behavior for clean subplots
             if ax.get_legend():
                 ax.get_legend().remove()
-        
+
         # Places a single clean legend at the top right of the overall figure
         axes[0].legend(
             handles=[
                 patches.Patch(color=self.style.expert_color, label='Expert'),
                 patches.Patch(color=self.style.agent_color,  label='BC Agent'),
             ],
-            fontsize=label_fontsize, 
-            framealpha=0.9, 
+            fontsize=label_fontsize,
+            framealpha=0.9,
             loc='upper right',
         )
-        
+
         sns.despine(fig=fig)
         plt.tight_layout(pad=1.0)
         return fig, axes
